@@ -76,6 +76,15 @@ vi.mock(import("~/state/entities"), () => ({
     { id: "project-1", environmentId: "example-environment", title: "Example project" },
   ]) as never,
   useQuietThreadShells: (() => []) as never,
+  useQuietThreadShell: (() => null) as never,
+}));
+// The normal ChatView needs a live environment; QuestChat's own test covers what it hosts.
+vi.mock(import("./QuestChat"), () => ({
+  QuestChat: ({ environmentId, threadId }: { environmentId: string; threadId: string }) => (
+    <section aria-label="Embedded chat">
+      {environmentId}/{threadId}
+    </section>
+  ),
 }));
 vi.mock(import("~/hooks/useHandleNewThread"), () => ({
   useNewThreadHandler: (() => harness.newThread) as never,
@@ -115,7 +124,7 @@ function setup() {
   harness.canWrite = true;
   harness.links = {};
   harness.environments = [{ environmentId: "example-environment", label: "Isolated example" }];
-  useQuestDraftStore.setState({ drafts: {}, panels: {} });
+  useQuestDraftStore.setState({ drafts: {}, panels: {}, conversations: {} });
   const initial: QuestState = {
     schemaVersion: 2,
     revision: 0,
@@ -399,33 +408,104 @@ it("draws the work map as a graph with typed edges, expansion, focus and selecti
   await vi.waitFor(() => expect(edges("follows")).toBe(0));
 });
 
-it("opens a normal draft with Quest context and links it to the Quest", async () => {
+function conversation(threadId: string, title: string): QuestState["conversations"][number] {
+  return { threadId, projectId: "project-1", title, workId: null, questionId: null, linkedAt: at };
+}
+
+it("creates a normal draft inside the Quest and keeps the Quest route", async () => {
   const initial = setup();
   harness.newThread.mockResolvedValueOnce({ draftId: "draft-1", threadId: "thread-1" });
   harness.run.mockResolvedValueOnce({
     _tag: "Success",
-    value: { ...initial, revision: 1 },
+    value: {
+      ...initial,
+      revision: 1,
+      conversations: [{ ...conversation("thread-1", "Example · Part A"), workId: "part-a" }],
+    },
   });
-  await using screen = await render(
-    <SidebarProvider>
-      <QuestPage />
-    </SidebarProvider>,
-    { router: "/quests?view=conversation&about=work:part-a" },
-  );
+  const { screen, router } = await renderRoutes("/quests?view=conversation&about=work:part-a");
+  await using _screen = screen;
+  await expect.element(screen.getByText("No conversation about Part A yet.")).toBeVisible();
   await screen.getByRole("button", { name: "New conversation" }).click();
-  expect(harness.newThread).toHaveBeenCalledTimes(1);
+  await expect
+    .element(screen.getByRole("region", { name: "Embedded chat" }))
+    .toHaveTextContent("example-environment/thread-1");
   const [projectRef, options] = harness.newThread.mock.calls[0]!;
   expect(projectRef).toEqual({ environmentId: "example-environment", projectId: "project-1" });
+  expect(options).toMatchObject({ navigate: false });
   expect(options.prompt).toContain("About: Part A");
   expect(options.prompt).toContain("Part A understanding");
-  await vi.waitFor(() =>
-    expect(harness.run.mock.calls[0]?.[0].input.change).toMatchObject({
-      type: "link",
-      threadId: "thread-1",
-      workId: "part-a",
-      questionId: null,
-    }),
+  expect(harness.run.mock.calls[0]?.[0].input.change).toMatchObject({
+    type: "link",
+    threadId: "thread-1",
+    workId: "part-a",
+    questionId: null,
+  });
+  expect(router.state.location.pathname).toBe("/quests");
+  expect(router.state.location.search).toMatchObject({
+    env: "example-environment",
+    view: "conversation",
+    thread: "thread-1",
+  });
+  await expect.element(screen.getByRole("button", { name: "About Part A" })).toBeVisible();
+});
+
+it("switches, reopens and deep-links linked conversations on their own environment", async () => {
+  const initial = setup();
+  harness.environments.push({ environmentId: "second-environment", label: "Second" });
+  harness.quests["second-environment"] = {
+    ...initial,
+    conversations: [
+      conversation("thread-a", "Conversation A"),
+      conversation("thread-b", "Conversation B"),
+    ],
+  };
+  harness.links["second-environment|thread-a"] = {
+    threadId: "thread-a",
+    workId: null,
+    questionId: null,
+    about: null,
+  };
+  const { screen, router } = await renderRoutes(
+    "/quests?env=second-environment&view=conversation&thread=thread-a",
   );
+  await using _screen = screen;
+  const chat = screen.getByRole("region", { name: "Embedded chat" });
+  await expect.element(chat).toHaveTextContent("second-environment/thread-a");
+  await screen.getByRole("combobox", { name: "Conversation" }).click();
+  await screen.getByRole("option", { name: /^Conversation B/ }).click();
+  await expect.element(chat).toHaveTextContent("second-environment/thread-b");
+  expect(router.state.location.search).toMatchObject({ thread: "thread-b" });
+
+  await router.navigate({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "second-environment", threadId: "thread-a" },
+  });
+  await router.navigate({
+    to: "/quests",
+    search: { env: "second-environment", view: "conversation" },
+  });
+  await expect.element(chat).toHaveTextContent("second-environment/thread-b");
+
+  await router.navigate({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "second-environment", threadId: "thread-a" },
+  });
+  await screen
+    .getByRole("navigation", { name: "Quest conversation" })
+    .getByRole("link", { name: "Open in Quest" })
+    .click();
+  await expect.element(chat).toHaveTextContent("second-environment/thread-a");
+
+  await router.navigate({
+    to: "/quests",
+    search: { env: "second-environment", view: "conversation", thread: "unlinked" },
+  });
+  await expect
+    .element(screen.getByRole("alert"))
+    .toHaveTextContent("This conversation is no longer linked to the Quest.");
+  await screen.getByRole("button", { name: "Show linked conversations" }).click();
+  await expect.element(chat).toHaveTextContent("second-environment/thread-a");
 });
 
 it("shows a linked thread's Quest from the server on a fresh client, without the Quest page", async () => {
@@ -522,8 +602,15 @@ it("keeps unsaved answers and edits while evidence, other panels or a thread are
   expect(harness.run).not.toHaveBeenCalled();
 });
 
-it("opens a quest in the main area from the collapsible sidebar list", async () => {
-  setup();
+it("opens a quest and its conversations in the main area from the sidebar list", async () => {
+  const initial = setup();
+  harness.quests["example-environment"] = {
+    ...initial,
+    conversations: [
+      conversation("thread-a", "Conversation A"),
+      conversation("thread-b", "Conversation B"),
+    ],
+  };
   const storageKey = "t3code:quests-shelf-expanded";
   const previous = localStorage.getItem(storageKey);
   using _storage = {
@@ -568,4 +655,16 @@ it("opens a quest in the main area from the collapsible sidebar list", async () 
   await expect.element(screen.getByRole("dialog")).not.toBeInTheDocument();
   await expect.element(toggle).toBeEnabled();
   expect(router.state.location.pathname).toBe("/quests");
+
+  const nested = screen.getByRole("list", { name: "Market tracking conversations" });
+  await nested.getByRole("link", { name: "Conversation B" }).click();
+  await expect
+    .element(screen.getByRole("region", { name: "Embedded chat" }))
+    .toHaveTextContent("example-environment/thread-b");
+  await expect
+    .element(nested.getByRole("link", { name: "Conversation B" }))
+    .toHaveAttribute("aria-current", "page");
+  await expect
+    .element(nested.getByRole("link", { name: "Conversation A" }))
+    .not.toHaveAttribute("aria-current");
 });

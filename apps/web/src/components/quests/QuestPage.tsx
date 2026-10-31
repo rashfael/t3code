@@ -272,7 +272,14 @@ function QuestWorkspaceView({
       <div className="relative flex min-h-0 flex-1">
         <div
           key={epoch}
-          className={cn("min-w-0 flex-1", view === "map" ? "overflow-hidden" : "overflow-y-auto")}
+          className={cn(
+            "min-w-0 flex-1",
+            view === "overview"
+              ? "overflow-y-auto"
+              : view === "map"
+                ? "overflow-hidden"
+                : "flex flex-col overflow-hidden",
+          )}
         >
           {view === "map" ? (
             <QuestWorkMap
@@ -281,7 +288,11 @@ function QuestWorkspaceView({
               initialFocus={search.work ?? null}
             />
           ) : view === "conversation" ? (
-            <QuestConversations about={search.about ?? null} />
+            <QuestConversations
+              key={search.about ?? ""}
+              about={search.about ?? null}
+              thread={search.thread ?? null}
+            />
           ) : (
             <QuestOverview />
           )}

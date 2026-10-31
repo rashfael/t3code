@@ -10,6 +10,8 @@ interface QuestDraftStoreState {
   readonly drafts: Readonly<Record<string, QuestDraft>>;
   /** The details trail per environment, so a round trip through a thread returns to it. */
   readonly panels: Readonly<Record<string, ReadonlyArray<PanelEntry>>>;
+  /** The conversation last shown per environment, reopened when the route names none. */
+  readonly conversations: Readonly<Record<string, string>>;
 }
 
 /**
@@ -19,6 +21,7 @@ interface QuestDraftStoreState {
 export const useQuestDraftStore = create<QuestDraftStoreState>()(() => ({
   drafts: {},
   panels: {},
+  conversations: {},
 }));
 
 function draftKey(environmentId: EnvironmentId, key: string) {
@@ -64,4 +67,11 @@ export function rememberQuestPanel(environmentId: EnvironmentId, panel: Readonly
 export function draftText(draft: QuestDraft | undefined, field: string, saved: string): string {
   const value = draft?.[field];
   return typeof value === "string" ? value : saved;
+}
+
+export function rememberQuestConversation(environmentId: EnvironmentId, threadId: string) {
+  if (useQuestDraftStore.getState().conversations[environmentId] === threadId) return;
+  useQuestDraftStore.setState((store) => ({
+    conversations: { ...store.conversations, [environmentId]: threadId },
+  }));
 }

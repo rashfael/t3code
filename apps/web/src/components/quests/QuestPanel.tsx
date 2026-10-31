@@ -329,12 +329,19 @@ function WorkInspector({ id }: { id: string }) {
           <dd>
             {conversations.length === 0
               ? "None linked"
-              : conversations
-                  .map((item) => {
-                    const thread = threads.get(item.threadId) ?? null;
-                    return `${thread?.title ?? item.title} (${conversationStatusLabel(thread)})`;
-                  })
-                  .join("; ")}
+              : conversations.map((item) => {
+                  const thread = threads.get(item.threadId) ?? null;
+                  return (
+                    <button
+                      key={item.threadId}
+                      type="button"
+                      className="block text-start underline"
+                      onClick={() => showView("conversation", { thread: item.threadId })}
+                    >
+                      {thread?.title ?? item.title} ({conversationStatusLabel(thread)})
+                    </button>
+                  );
+                })}
           </dd>
         </dl>
       </Block>

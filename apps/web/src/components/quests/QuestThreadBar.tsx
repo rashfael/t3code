@@ -37,8 +37,12 @@ export function QuestThreadBar({
         <Link to="/quests" search={{ env: environmentId, view: "overview" }} className={tab}>
           Overview
         </Link>
-        <Link to="/quests" search={{ env: environmentId, view: "conversation" }} className={tab}>
-          Conversations
+        <Link
+          to="/quests"
+          search={{ env: environmentId, view: "conversation", thread: link.threadId }}
+          className={tab}
+        >
+          Open in Quest
         </Link>
         <Link
           to="/quests"

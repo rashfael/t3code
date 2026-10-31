@@ -1,18 +1,19 @@
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type { ProjectId, QuestConversation, QuestState, ThreadId } from "@t3tools/contracts";
-import { useNavigate } from "@tanstack/react-router";
-import { MessageSquareIcon } from "lucide-react";
-import { useState } from "react";
+import type { ProjectId, QuestConversation, QuestState } from "@t3tools/contracts";
+import { EllipsisIcon, PlusIcon } from "lucide-react";
+import { useEffect, useState } from "react";
 
-import { useComposerDraftStore } from "~/composerDraftStore";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { useProjects, useQuietThreadShells } from "~/state/entities";
 import { Button } from "../ui/button";
+import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { toastManager } from "../ui/toast";
 import { useQuest } from "./questContext";
+import { rememberQuestConversation, useQuestDraftStore } from "./questDraftStore";
 import { QUEST_TITLE, workStateLabels } from "./questModel";
+import { QuestChat } from "./QuestChat";
 
 export function useQuestConversationThreads(): ReadonlyMap<string, EnvironmentThreadShell> {
   const { environmentId, state } = useQuest();
@@ -46,6 +47,12 @@ function parseAbout(state: QuestState, about: string | null): About {
   return { workId: null, questionId: null, title: null };
 }
 
+function aboutValue(conversation: QuestConversation): string {
+  if (conversation.workId) return `work:${conversation.workId}`;
+  if (conversation.questionId) return `question:${conversation.questionId}`;
+  return "";
+}
+
 /** Composer text for a new conversation; the user edits or discards it before anything is sent. */
 function questConversationPrompt(state: QuestState, about: About): string {
   const work = state.work.find((item) => item.id === about.workId);
@@ -75,20 +82,197 @@ function questConversationPrompt(state: QuestState, about: About): string {
   return `${lines.join("\n")}\n\n`;
 }
 
-export function QuestConversations({ about: initialAbout }: { about: string | null }) {
-  const { environmentId, state, canWrite, pending, save, openPanel } = useQuest();
-  const navigate = useNavigate();
+/**
+ * The linked conversation to show: the route's, else the one last shown here, else the newest
+ * about the requested item (none when nothing is about it yet), else the newest.
+ */
+function selectConversation(
+  conversations: ReadonlyArray<QuestConversation>,
+  thread: string | null,
+  remembered: string | null,
+  about: string | null,
+): QuestConversation | null {
+  const byId = (id: string | null) => conversations.find((item) => item.threadId === id) ?? null;
+  if (thread) return byId(thread);
+  if (about) return conversations.findLast((item) => aboutValue(item) === about) ?? null;
+  return byId(remembered) ?? conversations.at(-1) ?? null;
+}
+
+export function QuestConversations({
+  about: requestedAbout,
+  thread,
+}: {
+  about: string | null;
+  thread: string | null;
+}) {
+  const { environmentId, state, canWrite, pending, save, openPanel, showView } = useQuest();
   const handleNewThread = useNewThreadHandler();
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
-  const shells = useQuietThreadShells();
   const threads = useQuestConversationThreads();
-  const draftIdFor = useComposerDraftStore((store) => store.getDraftIdByRef);
-  const [about, setAbout] = useState(initialAbout ?? "");
+  const remembered = useQuestDraftStore((store) => store.conversations[environmentId] ?? null);
+  const [busy, setBusy] = useState(false);
+  const selected = selectConversation(state.conversations, thread, remembered, requestedAbout);
+  const [about, setAbout] = useState(requestedAbout ?? "");
   const [chosenProject, setProjectId] = useState("");
   const projectId = chosenProject || projects[0]?.id || "";
-  const [existing, setExisting] = useState("");
-  const [busy, setBusy] = useState(false);
   const target = parseAbout(state, about);
+
+  const selectedId = selected?.threadId ?? null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- records the shown conversation in the Quest store so a later visit without one in the route reopens it
+  useEffect(() => {
+    if (selectedId) rememberQuestConversation(environmentId, selectedId);
+  }, [environmentId, selectedId]);
+
+  function show(threadId: string) {
+    showView("conversation", { thread: threadId });
+  }
+
+  async function start() {
+    if (busy || pending || !projectId) return;
+    setBusy(true);
+    const title = target.title ? `${QUEST_TITLE} · ${target.title}` : QUEST_TITLE;
+    const result = await handleNewThread(scopeProjectRef(environmentId, projectId as ProjectId), {
+      prompt: questConversationPrompt(state, target),
+      navigate: false,
+    });
+    if (!result) {
+      setBusy(false);
+      return;
+    }
+    // An unsent draft for this project is reused, and it may already be linked here.
+    const linked =
+      state.conversations.some((item) => item.threadId === result.threadId) ||
+      (await save({
+        type: "link",
+        threadId: result.threadId,
+        projectId,
+        title,
+        workId: target.workId,
+        questionId: target.questionId,
+      }));
+    setBusy(false);
+    if (linked) show(result.threadId);
+    else
+      toastManager.add({
+        type: "error",
+        title: "Could not link the conversation to the Quest",
+        description: "Its draft is kept with the project's threads.",
+      });
+  }
+
+  const selectedWork = state.work.find((item) => item.id === selected?.workId);
+  const selectedQuestion = state.questions.find((item) => item.id === selected?.questionId);
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div
+        role="toolbar"
+        aria-label="Quest conversations"
+        className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5"
+      >
+        {state.conversations.length > 0 ? (
+          <QuestSelect
+            label="Conversation"
+            value={selected?.threadId ?? ""}
+            onChange={show}
+            options={[
+              ...(selected ? [] : [{ value: "", label: "Choose a conversation" }]),
+              ...state.conversations.toReversed().map((item) => {
+                const shell = threads.get(item.threadId) ?? null;
+                return {
+                  value: item.threadId,
+                  label: `${shell?.title ?? item.title} · ${conversationStatusLabel(shell)}`,
+                };
+              }),
+            ]}
+          />
+        ) : null}
+        {selectedWork || selectedQuestion ? (
+          <button
+            type="button"
+            className="truncate text-xs text-muted-foreground underline"
+            onClick={() =>
+              openPanel(
+                selectedWork
+                  ? { type: "work", id: selectedWork.id }
+                  : { type: "question", id: selectedQuestion!.id },
+              )
+            }
+          >
+            About {selectedWork?.title ?? selectedQuestion?.title}
+          </button>
+        ) : null}
+        <div className="ms-auto flex items-center gap-1">
+          {canWrite ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy || pending || !projectId}
+              onClick={() => void start()}
+            >
+              <PlusIcon aria-hidden />
+              New conversation
+            </Button>
+          ) : null}
+          {canWrite ? (
+            <ConversationOptions
+              about={about}
+              onAbout={setAbout}
+              projectId={projectId}
+              onProject={setProjectId}
+              projects={projects}
+              selected={selected}
+              onShow={show}
+            />
+          ) : null}
+        </div>
+      </div>
+      {selected ? (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <QuestChat
+            key={selected.threadId}
+            environmentId={environmentId}
+            threadId={selected.threadId}
+          />
+        </div>
+      ) : thread ? (
+        <div className="flex flex-col items-start gap-3 p-6 text-sm">
+          <p role="alert">This conversation is no longer linked to the Quest.</p>
+          <Button size="sm" variant="outline" onClick={() => showView("conversation")}>
+            Show linked conversations
+          </Button>
+        </div>
+      ) : (
+        <div className="p-6 text-sm text-muted-foreground">
+          <p>
+            {target.title ? `No conversation about ${target.title} yet.` : "No conversations yet."}
+          </p>
+          {canWrite ? null : <p className="mt-1">Read only</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConversationOptions({
+  about,
+  onAbout,
+  projectId,
+  onProject,
+  projects,
+  selected,
+  onShow,
+}: {
+  about: string;
+  onAbout: (value: string) => void;
+  projectId: string;
+  onProject: (value: string) => void;
+  projects: ReadonlyArray<{ id: string; title: string }>;
+  selected: QuestConversation | null;
+  onShow: (threadId: string) => void;
+}) {
+  const { environmentId, state, pending, save, showView } = useQuest();
+  const shells = useQuietThreadShells();
+  const [existing, setExisting] = useState("");
   const linked = new Set(state.conversations.map((item) => item.threadId));
   const linkable = shells
     .filter(
@@ -97,52 +281,7 @@ export function QuestConversations({ about: initialAbout }: { about: string | nu
     )
     .toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, 50);
-  const aboutOptions = [
-    { value: "", label: "The whole Quest" },
-    ...state.questions.map((item) => ({
-      value: `question:${item.id}`,
-      label: `Decision · ${item.title}`,
-    })),
-    ...state.work.map((item) => ({ value: `work:${item.id}`, label: item.title })),
-  ];
-
-  function open(conversation: QuestConversation) {
-    const ref = scopeThreadRef(environmentId, conversation.threadId as ThreadId);
-    if (threads.has(conversation.threadId)) {
-      void navigate({
-        to: "/$environmentId/$threadId",
-        params: { environmentId, threadId: ref.threadId },
-      });
-      return;
-    }
-    const draftId = draftIdFor(ref);
-    if (draftId) void navigate({ to: "/draft/$draftId", params: { draftId } });
-  }
-
-  async function start() {
-    if (busy || !projectId) return;
-    setBusy(true);
-    const title = target.title ? `${QUEST_TITLE} · ${target.title}` : QUEST_TITLE;
-    const result = await handleNewThread(scopeProjectRef(environmentId, projectId as ProjectId), {
-      prompt: questConversationPrompt(state, target),
-    });
-    setBusy(false);
-    if (!result) return;
-    const linkedOk = await save({
-      type: "link",
-      threadId: result.threadId,
-      projectId,
-      title,
-      workId: target.workId,
-      questionId: target.questionId,
-    });
-    if (!linkedOk)
-      toastManager.add({
-        type: "error",
-        title: "The conversation opened but was not linked to the Quest",
-        description: "Link it from the Quest’s Conversation view.",
-      });
-  }
+  const target = parseAbout(state, about);
 
   async function link() {
     const shell = linkable.find((item) => item.id === existing);
@@ -156,141 +295,78 @@ export function QuestConversations({ about: initialAbout }: { about: string | nu
         workId: target.workId,
         questionId: target.questionId,
       })
-    )
+    ) {
       setExisting("");
+      onShow(shell.id);
+    }
+  }
+
+  async function unlink() {
+    if (!selected) return;
+    if (await save({ type: "unlink", threadId: selected.threadId })) showView("conversation");
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-6">
-      <section aria-label="Linked conversations">
-        <h2 className="mb-2 text-sm font-semibold">Linked conversations</h2>
-        {state.conversations.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No linked conversations.</p>
-        ) : (
-          <ul className="divide-y rounded-lg border">
-            {state.conversations.map((conversation) => {
-              const thread = threads.get(conversation.threadId) ?? null;
-              const draft =
-                !thread &&
-                draftIdFor(scopeThreadRef(environmentId, conversation.threadId as ThreadId));
-              const aboutWork = state.work.find((item) => item.id === conversation.workId);
-              const aboutQuestion = state.questions.find(
-                (item) => item.id === conversation.questionId,
-              );
-              return (
-                <li
-                  key={conversation.threadId}
-                  className="flex flex-wrap items-center gap-3 px-3 py-2.5"
-                >
-                  <MessageSquareIcon
-                    aria-hidden
-                    className="size-4 shrink-0 text-muted-foreground"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">
-                      {thread?.title ?? conversation.title}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {thread || draft
-                        ? conversationStatusLabel(thread)
-                        : "not available on this client"}
-                      {aboutWork || aboutQuestion ? " · about " : ""}
-                      {aboutWork ? (
-                        <button
-                          type="button"
-                          className="underline"
-                          onClick={() => openPanel({ type: "work", id: aboutWork.id })}
-                        >
-                          {aboutWork.title}
-                        </button>
-                      ) : aboutQuestion ? (
-                        <button
-                          type="button"
-                          className="underline"
-                          onClick={() => openPanel({ type: "question", id: aboutQuestion.id })}
-                        >
-                          {aboutQuestion.title}
-                        </button>
-                      ) : null}
-                    </p>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!thread && !draft}
-                    onClick={() => open(conversation)}
-                  >
-                    Open
-                  </Button>
-                  {canWrite ? (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={pending}
-                      onClick={() => void save({ type: "unlink", threadId: conversation.threadId })}
-                    >
-                      Remove from Quest
-                    </Button>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
-
-      {canWrite ? (
-        <section aria-label="Start or link a conversation" className="mt-8 rounded-lg border p-4">
-          <h2 className="text-sm font-semibold">Discuss</h2>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <label className="text-sm">
-              <span className="mb-1 block text-xs text-muted-foreground">About</span>
-              <QuestSelect label="About" value={about} onChange={setAbout} options={aboutOptions} />
-            </label>
-            <label className="text-sm">
-              <span className="mb-1 block text-xs text-muted-foreground">
-                Project for a new thread
-              </span>
+    <Popover>
+      <PopoverTrigger
+        render={<Button size="icon-sm" variant="ghost" aria-label="Conversation options" />}
+      >
+        <EllipsisIcon aria-hidden />
+      </PopoverTrigger>
+      <PopoverPopup align="end" width="md">
+        <div className="grid gap-3 text-sm">
+          <label>
+            <span className="mb-1 block text-xs text-muted-foreground">New conversation about</span>
+            <QuestSelect
+              label="New conversation about"
+              value={about}
+              onChange={onAbout}
+              options={[
+                { value: "", label: "The whole Quest" },
+                ...state.questions.map((item) => ({
+                  value: `question:${item.id}`,
+                  label: `Decision · ${item.title}`,
+                })),
+                ...state.work.map((item) => ({ value: `work:${item.id}`, label: item.title })),
+              ]}
+            />
+          </label>
+          {projects.length > 1 ? (
+            <label>
+              <span className="mb-1 block text-xs text-muted-foreground">Project</span>
               <QuestSelect
-                label="Project for a new thread"
+                label="Project"
                 value={projectId}
-                onChange={setProjectId}
+                onChange={onProject}
                 options={projects.map((project) => ({ value: project.id, label: project.title }))}
               />
             </label>
-          </div>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button disabled={busy || pending || !projectId} onClick={() => void start()}>
-              New conversation
-            </Button>
-          </div>
-          <div className="mt-5 flex flex-wrap items-end gap-2 border-t pt-4">
-            <label className="min-w-60 flex-1 text-sm">
-              <span className="mb-1 block text-xs text-muted-foreground">
-                Or link an existing thread
-              </span>
+          ) : null}
+          <div className="flex items-end gap-2 border-t pt-3">
+            <label className="min-w-0 flex-1">
+              <span className="mb-1 block text-xs text-muted-foreground">Link a thread</span>
               <QuestSelect
                 label="Existing thread"
                 value={existing}
                 onChange={setExisting}
                 options={[
-                  {
-                    value: "",
-                    label: linkable.length ? "Choose a thread" : "No other threads here",
-                  },
+                  { value: "", label: linkable.length ? "Choose a thread" : "No other threads" },
                   ...linkable.map((shell) => ({ value: shell.id, label: shell.title })),
                 ]}
               />
             </label>
             <Button variant="outline" disabled={!existing || pending} onClick={() => void link()}>
-              Link thread
+              Link
             </Button>
           </div>
-        </section>
-      ) : (
-        <p className="mt-6 text-sm text-muted-foreground">Read only</p>
-      )}
-    </div>
+          {selected ? (
+            <Button variant="ghost" disabled={pending} onClick={() => void unlink()}>
+              Remove “{selected.title}” from Quest
+            </Button>
+          ) : null}
+        </div>
+      </PopoverPopup>
+    </Popover>
   );
 }
 

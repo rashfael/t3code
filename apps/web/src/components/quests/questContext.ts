@@ -11,6 +11,8 @@ export interface QuestSearch {
   readonly question?: string;
   /** `work:<id>` or `question:<id>`, preselecting what a new conversation is about. */
   readonly about?: string;
+  /** The linked conversation shown in the Conversation view. */
+  readonly thread?: string;
 }
 
 const VIEWS: ReadonlyArray<QuestView> = ["overview", "conversation", "map"];
@@ -25,12 +27,14 @@ export function parseQuestSearch(raw: Record<string, unknown>): QuestSearch {
   const work = searchText(raw.work);
   const question = searchText(raw.question);
   const about = searchText(raw.about);
+  const thread = searchText(raw.thread);
   return {
     ...(env ? { env } : {}),
     ...(view ? { view } : {}),
     ...(work ? { work } : {}),
     ...(question ? { question } : {}),
     ...(about ? { about } : {}),
+    ...(thread ? { thread } : {}),
   };
 }
 

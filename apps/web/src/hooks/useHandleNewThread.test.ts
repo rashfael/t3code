@@ -297,6 +297,25 @@ describe.each([
     );
   });
 
+  it("prepares the draft without opening its route when the caller hosts it", async () => {
+    testState.reset(draft);
+    const pendingOpen = useNewThreadHandler()(
+      { environmentId: "environment-ssh", projectId: "project-remote" } as never,
+      { prompt: "Read the playbook. ", navigate: false },
+    );
+
+    testState.completeProjectFileRead(null);
+    const opened = await pendingOpen;
+
+    expect(opened).not.toBeNull();
+    expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalled();
+    expect(testState.draftStore.setPrompt).toHaveBeenCalledWith(
+      opened?.draftId,
+      "Read the playbook. ",
+    );
+    expect(testState.router.navigate).not.toHaveBeenCalled();
+  });
+
   it("abandons a delayed draft open when the project is removed meanwhile", async () => {
     testState.reset(draft);
     const pendingOpen = useNewThreadHandler()(
