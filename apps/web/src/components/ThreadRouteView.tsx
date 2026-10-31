@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 
 import ChatView from "./ChatView";
 import { BackgroundThreadContext } from "./chat/backgroundThread";
+import { QuestThreadBar } from "./quests/QuestThreadBar";
 import { SidebarInset } from "./ui/sidebar";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
@@ -208,6 +209,12 @@ export function ThreadRouteView({
       className="h-svh min-h-0 overflow-hidden overscroll-y-none md:h-dvh"
       inert={background}
     >
+      {background || !view ? null : (
+        <QuestThreadBar
+          environmentId={serverThreadRef?.environmentId ?? draftSession?.environmentId ?? null}
+          threadId={serverThreadRef?.threadId ?? draftSession?.threadId ?? null}
+        />
+      )}
       <BackgroundThreadContext value={background}>{view}</BackgroundThreadContext>
       {background ? null : redirect}
     </SidebarInset>

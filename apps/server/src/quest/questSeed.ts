@@ -1,6 +1,9 @@
-import type { QuestState } from "@t3tools/contracts";
+import type { QuestRelation, QuestWork } from "@t3tools/contracts";
 
-export const questSeed: QuestState = {
+import type { QuestStateV1 } from "./questMigration.ts";
+
+/** The first prototype seed, kept as written so fresh installs and upgrades take the same migration. */
+export const questSeedV1: QuestStateV1 = {
   revision: 0,
   work: [
     {
@@ -146,3 +149,317 @@ export const questSeed: QuestState = {
     },
   ],
 };
+
+const OWNER = "Human Quest owner";
+
+function captured(
+  id: string,
+  parentId: string,
+  title: string,
+  state: QuestWork["state"],
+  understanding: string,
+  documentIds: ReadonlyArray<string>,
+  extra: Partial<Pick<QuestWork, "kind" | "priorAttempts" | "findings">> = {},
+): QuestWork {
+  return {
+    id,
+    parentId,
+    kind: extra.kind ?? "work",
+    title,
+    state,
+    owner: OWNER,
+    agent: "Unassigned",
+    understanding,
+    documentIds: [...documentIds],
+    priorAttempts: extra.priorAttempts ?? "",
+    findings: extra.findings ?? "",
+    handoff: "",
+  };
+}
+
+const index = ["source-index"];
+const queue = ["source-index", "source-queue"];
+const reviewNote =
+  "Listed under “Delivered, awaiting review” in the work index; its acceptance boundary is still outstanding.";
+
+/** Records reconstructed from the captured sources; upgrades add only the ids a saved Quest lacks. */
+export const questExampleWork: ReadonlyArray<QuestWork> = [
+  captured(
+    "a1-contracts",
+    "milestone-a",
+    "A1 · contracts",
+    "done",
+    "Work index: “A1 contracts (reviewed and fixed)”. Review and fix are recorded; wider acceptance of Milestone A is not.",
+    index,
+  ),
+  captured(
+    "a2-ranking",
+    "milestone-a",
+    "A2 · ranking",
+    "active",
+    "Named in Milestone A execution. The capture records no separate status for this slice.",
+    index,
+  ),
+  captured(
+    "a3-finite-plans",
+    "milestone-a",
+    "A3 · finite plans",
+    "review",
+    "Work index: “A3 finite plans (in review)”.",
+    index,
+  ),
+  captured(
+    "a5a-issue-register",
+    "milestone-a",
+    "A5a · issue register",
+    "active",
+    "Named in Milestone A execution. Identity work from the domain queue “now runs through A5a's issue register rather than a separate queue”.",
+    index,
+  ),
+  captured(
+    "n1a-navigation",
+    "milestone-a",
+    "N1a · adopted navigation redesign",
+    "active",
+    "Named in Milestone A execution. The capture records no separate status for this slice.",
+    index,
+  ),
+  captured(
+    "usage-calibration",
+    "milestone-a",
+    "Subscription-usage calibration",
+    "active",
+    "Named in Milestone A execution. The capture records no separate status for this slice.",
+    index,
+  ),
+  captured(
+    "a4-demonstration",
+    "milestone-a",
+    "A4 · small live demonstration",
+    "planned",
+    "Work index: the Milestone A slices are “followed by a small live A4 demonstration within the owner-approved envelope”. Shared-store mutation, live runs and the canonical dist stay with the Milestone A coordinator.",
+    index,
+  ),
+  captured(
+    "review-ac-comparison",
+    "review-deliveries",
+    "AC comparison",
+    "review",
+    reviewNote,
+    index,
+  ),
+  captured(
+    "review-first-browser",
+    "review-deliveries",
+    "Initial product browser",
+    "review",
+    reviewNote,
+    index,
+  ),
+  captured(
+    "review-fleet-bridge",
+    "review-deliveries",
+    "Fleet visualization bridge",
+    "review",
+    `${reviewNote} Original first-wave deliverable: “The fleet feature tool consumes a pinned shared-data export with lossless evidence/status semantics.”`,
+    queue,
+  ),
+  captured(
+    "review-fleet-breadth",
+    "review-deliveries",
+    "Fleet breadth pass",
+    "review",
+    reviewNote,
+    index,
+  ),
+  captured(
+    "review-gap-actions",
+    "review-deliveries",
+    "Gap actions",
+    "review",
+    `${reviewNote} Original first-wave deliverable: “A selected gap plan runs through the CLI and returns visible results.”`,
+    queue,
+  ),
+  captured("review-redesign", "review-deliveries", "Redesign", "review", reviewNote, index),
+  captured(
+    "review-unattended-browser",
+    "review-deliveries",
+    "Unattended browser",
+    "review",
+    reviewNote,
+    index,
+  ),
+  captured(
+    "review-exploration-ux",
+    "review-deliveries",
+    "Exploration UX",
+    "review",
+    `${reviewNote} Original first-wave deliverable: “Candidate-first exploration, useful population/coverage views and clearly explained next actions.”`,
+    queue,
+  ),
+  captured(
+    "review-product-ux",
+    "review-deliveries",
+    "Product UX",
+    "review",
+    `${reviewNote} Original first-wave deliverable: “Readable product, configuration, price and comparison journeys on real populated data.”`,
+    queue,
+  ),
+  captured(
+    "domain-queue",
+    "market",
+    "Domain queue after planning",
+    "planned",
+    "Work index: an ordered domain queue that “remains open”. Priorities order the queue; the capture does not state dependencies between them.",
+    index,
+  ),
+  captured(
+    "queue-identities",
+    "domain-queue",
+    "Priority 1 · trustworthy company and product identities",
+    "planned",
+    "The 43 alias candidates and 31 generic originals now have refined dispositions. The selected directory has 871 entries; finish current-product and legal-company identity before claiming canonical counts.",
+    index,
+  ),
+  captured(
+    "queue-comparison",
+    "domain-queue",
+    "Priority 2 · pulsatrix public/internal comparison",
+    "planned",
+    "Delivered in Fleet analysis: 17 public statements and 12 internal code observations. Per-generation exposure and deployed availability remain unverified; next deepen those boundaries and hardware datasheet profiles.",
+    index,
+  ),
+  captured(
+    "queue-coverage",
+    "domain-queue",
+    "Priority 3 · credible category coverage",
+    "planned",
+    "OCA reconciliation adds 215 provisional CSMS designations. Next qualify DACH CSMS leads and reconcile independent EVSE and fleet rosters. Existing counts remain labels/leads.",
+    index,
+  ),
+  captured(
+    "queue-crawl-review",
+    "domain-queue",
+    "Priority 4 · close crawl/usage review",
+    "planned",
+    "The Opus UI and shared projection are integrated. Independent review is still unrecorded; check the current selected build rather than reapplying the old patch.",
+    index,
+  ),
+  captured(
+    "queue-feature-depth",
+    "domain-queue",
+    "Priority 5 · targeted feature depth",
+    "planned",
+    "Prioritize products with missing or portfolio-only assignments, blocked sources and comparison-critical cells. More rows alone do not fix uncertain identity.",
+    index,
+  ),
+  captured(
+    "deferred-crawl-policy",
+    "deferred",
+    "Remaining crawl policy and pilot evidence",
+    "deferred",
+    "Deferred obligation; limits and acceptance requirements remain open.",
+    index,
+  ),
+  captured(
+    "m2-i3",
+    "deferred",
+    "M2-I3 evaluation",
+    "deferred",
+    "Deferred obligation. Stage 0 completed: seven calls, no repeated paid response. Exact audit matching remains unresolved for eight eligible units per arm; no winning-arm, recall or untouched-generalisation claim is established. Wider I3 limits remain unselected.",
+    ["source-index", "source-attempt"],
+  ),
+  captured(
+    "m2-i3-first-audit",
+    "m2-i3",
+    "First source-only audit · local adaptation refused a quote",
+    "done",
+    "The first real source-only audit used 11,762 input and 4,051 output tokens, then local adaptation refused one ambiguous short quote.",
+    ["source-attempt"],
+    {
+      kind: "attempt",
+      findings:
+        "The paid response succeeded; local processing failed. No result or original failed attempt may be overwritten; the original charge remains included.",
+    },
+  ),
+  captured(
+    "deferred-m2-i4",
+    "deferred",
+    "M2-I4 interpretation",
+    "deferred",
+    "Deferred obligation; limits and acceptance requirements remain open.",
+    index,
+  ),
+  captured(
+    "deferred-m2-i5",
+    "deferred",
+    "M2-I5 historical reconstruction",
+    "deferred",
+    "Deferred obligation; limits and acceptance requirements remain open.",
+    index,
+  ),
+  captured(
+    "deferred-trials",
+    "deferred",
+    "Full Trial A/B/C",
+    "deferred",
+    "Deferred obligation (targeted extraction); limits and acceptance requirements remain open.",
+    index,
+  ),
+  captured(
+    "deferred-report-v1",
+    "deferred",
+    "Report v1",
+    "deferred",
+    "Deferred obligation; limits and acceptance requirements remain open.",
+    index,
+  ),
+  captured(
+    "deferred-restate",
+    "deferred",
+    "Restate adoption",
+    "deferred",
+    "Deferred obligation; limits and acceptance requirements remain open.",
+    index,
+  ),
+  captured(
+    "retired",
+    "market",
+    "Retired records · accepted or explicitly stopped",
+    "done",
+    "Moved to the archive: calibration, quality, F1–F5, M2-I1, M2-I2, import/pilot, first scan/browser plan, scan preparation, first supplier batch and scan expansion. Only those recorded scopes are retired; deferred criteria remain open. No new acceptance was inferred.",
+    index,
+  ),
+];
+
+const a4Prerequisites = [
+  "a1-contracts",
+  "a2-ranking",
+  "a3-finite-plans",
+  "a5a-issue-register",
+  "n1a-navigation",
+  "usage-calibration",
+];
+
+export const questExampleRelations: ReadonlyArray<QuestRelation> = [
+  ...a4Prerequisites.map((id): QuestRelation => ({
+    id: `follows:a4-demonstration:${id}`,
+    type: "follows",
+    from: "a4-demonstration",
+    to: id,
+    provenance: "capture",
+    documentId: "source-index",
+    excerpt:
+      "A1 contracts (reviewed and fixed), A2 ranking, A3 finite plans (in review), A5a issue register, the adopted navigation redesign (N1a) and a subscription-usage calibration, followed by a small live A4 demonstration within the owner-approved envelope.",
+  })),
+  {
+    id: "retries:retained-attempt:m2-i3-first-audit",
+    type: "retries",
+    from: "retained-attempt",
+    to: "m2-i3-first-audit",
+    provenance: "capture",
+    documentId: "source-attempt",
+    excerpt:
+      "The owner selected “Recover the saved audit and continue; no replacement audit call”.",
+  },
+];
