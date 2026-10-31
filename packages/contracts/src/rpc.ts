@@ -1,3 +1,4 @@
+import { QuestState, QuestUpdateInput, QuestError } from "./quest.ts";
 import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
@@ -414,6 +415,8 @@ export const WS_METHODS = {
   projectsWriteFile: "projects.writeFile",
   projectsMutate: "projects.mutate",
   projectsEnsureScratch: "projects.ensureScratch",
+  questGet: "quest.get",
+  questUpdate: "quest.update",
   projectsCreateNew: "projects.createNew",
   projectsCreateFromThread: "projects.createFromThread",
 
@@ -1336,6 +1339,17 @@ const WsProjectsEnsureScratchRpc = Rpc.make(WS_METHODS.projectsEnsureScratch, {
   error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });
 
+const WsQuestGetRpc = Rpc.make(WS_METHODS.questGet, {
+  payload: Schema.Struct({}),
+  success: QuestState,
+  error: Schema.Union([QuestError, EnvironmentAuthorizationError]),
+});
+const WsQuestUpdateRpc = Rpc.make(WS_METHODS.questUpdate, {
+  payload: QuestUpdateInput,
+  success: QuestState,
+  error: Schema.Union([QuestError, EnvironmentAuthorizationError]),
+});
+
 const WsProjectsCreateNewRpc = Rpc.make(WS_METHODS.projectsCreateNew, {
   payload: ProjectCreateNewInput,
   success: ProjectCreateNewResult,
@@ -2100,6 +2114,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,
+  WsQuestGetRpc,
+  WsQuestUpdateRpc,
   WsProjectsCreateNewRpc,
   WsProjectsCreateFromThreadRpc,
   WsProjectsWriteFileRpc,

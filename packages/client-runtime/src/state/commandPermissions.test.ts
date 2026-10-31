@@ -67,6 +67,24 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
+  it.effect("requires the destination orchestration grant to edit Quest state", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const quest = createCommandPermissions(runtime, WS_METHODS.questUpdate);
+        registry.set(sessions(env), AsyncResult.success(grant(false)));
+        expect(registry.get(quest.permissionAtom(env))).toBe(false);
+        expect((yield* quest.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(quest.permissionAtom(env))).toBe(true);
+        yield* quest.authorize(registry, env);
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(registry.get(quest.permissionAtom(other))).toBe(false);
+      }),
+    ),
+  );
   it.effect("requires the destination preview grant to close a browser tab", () =>
     Effect.scoped(
       Effect.gen(function* () {
