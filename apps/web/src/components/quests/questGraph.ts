@@ -119,7 +119,8 @@ export function layoutWorkGraph(
   return {
     nodes,
     edges,
-    width: PADDING * 2 + (deepest + 1) * NODE_WIDTH + deepest * COLUMN_GAP,
+    // Same-column relation curves extend into a gutter beyond the last column of cards.
+    width: PADDING * 2 + (deepest + 1) * (NODE_WIDTH + COLUMN_GAP),
     height: PADDING * 2 + Math.max(1, nextRow) * (NODE_HEIGHT + ROW_GAP) - ROW_GAP,
   };
 }
