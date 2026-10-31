@@ -3434,6 +3434,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           onDraftContextMenu={handleDraftContextMenu}
                         />,
                       ];
+                      const quests = (
+                        <li key="quests-shelf" className="mt-auto list-none pt-2" role="none">
+                          <SidebarQuests treeNavigation />
+                        </li>
+                      );
+                      let questsInserted = false;
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
                           // Folders draw active rows in their own place below.
@@ -3465,6 +3471,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             }
                           }
                           continue;
+                        }
+                        if (
+                          !questsInserted &&
+                          (item.marker === "working-header" ||
+                            item.marker === "snoozed-header" ||
+                            item.marker === "settled-header")
+                        ) {
+                          items.push(quests);
+                          questsInserted = true;
                         }
                         switch (item.marker) {
                           case "pinned-header":
@@ -3512,7 +3527,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               <SidebarSectionHeader
                                 key="working-shelf-header"
                                 marker="working-header"
-                                className="mt-auto"
                                 label="Working"
                                 count={workingThreads.length}
                                 toggle={{
@@ -3527,7 +3541,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               <SidebarSectionHeader
                                 key="snoozed-shelf-header"
                                 marker="snoozed-header"
-                                className={cn(workingThreads.length === 0 && "mt-auto")}
                                 label="Snoozed"
                                 count={snoozedThreads.length}
                                 toggle={{
@@ -3542,9 +3555,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               <SidebarSectionHeader
                                 key="settled-shelf-header"
                                 marker="settled-header"
-                                className={cn(
-                                  workingThreads.length + snoozedThreads.length === 0 && "mt-auto",
-                                )}
                                 label="Settled"
                                 count={settledCount}
                                 dragging={from !== null}
@@ -3576,6 +3586,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             break;
                         }
                       }
+                      if (!questsInserted) items.push(quests);
                       return items;
                     })()}
                     {settledShelfExpanded && hiddenSettledCount > 0 ? (
@@ -3608,7 +3619,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               </DndContext>
             </TooltipProvider>
           ) : null}
-          {!isSearchingThreads ? <SidebarQuests /> : null}
           {!isSearchingThreads &&
           !hasProjectFolders &&
           visibleDraftSessionCount === 0 &&
