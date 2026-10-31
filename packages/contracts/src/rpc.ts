@@ -1,4 +1,10 @@
-import { QuestState, QuestUpdateInput, QuestError } from "./quest.ts";
+import {
+  QuestState,
+  QuestThreadLink,
+  QuestThreadLinkInput,
+  QuestUpdateInput,
+  QuestError,
+} from "./quest.ts";
 import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
@@ -417,6 +423,7 @@ export const WS_METHODS = {
   projectsEnsureScratch: "projects.ensureScratch",
   questGet: "quest.get",
   questUpdate: "quest.update",
+  questThreadLink: "quest.threadLink",
   projectsCreateNew: "projects.createNew",
   projectsCreateFromThread: "projects.createFromThread",
 
@@ -1344,6 +1351,11 @@ const WsQuestGetRpc = Rpc.make(WS_METHODS.questGet, {
   success: QuestState,
   error: Schema.Union([QuestError, EnvironmentAuthorizationError]),
 });
+const WsQuestThreadLinkRpc = Rpc.make(WS_METHODS.questThreadLink, {
+  payload: QuestThreadLinkInput,
+  success: Schema.NullOr(QuestThreadLink),
+  error: Schema.Union([QuestError, EnvironmentAuthorizationError]),
+});
 const WsQuestUpdateRpc = Rpc.make(WS_METHODS.questUpdate, {
   payload: QuestUpdateInput,
   success: QuestState,
@@ -2115,6 +2127,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,
   WsQuestGetRpc,
+  WsQuestThreadLinkRpc,
   WsQuestUpdateRpc,
   WsProjectsCreateNewRpc,
   WsProjectsCreateFromThreadRpc,

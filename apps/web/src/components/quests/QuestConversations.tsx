@@ -162,16 +162,10 @@ export function QuestConversations({ about: initialAbout }: { about: string | nu
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-6">
-      <p className="mb-6 text-sm text-muted-foreground">
-        Quest conversations are normal T3 threads in this environment, with the usual composer,
-        providers and permissions. Opening or linking one sends nothing and starts no agent.
-      </p>
       <section aria-label="Linked conversations">
         <h2 className="mb-2 text-sm font-semibold">Linked conversations</h2>
         {state.conversations.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No conversation is linked to this Quest yet.
-          </p>
+          <p className="text-sm text-muted-foreground">No linked conversations.</p>
         ) : (
           <ul className="divide-y rounded-lg border">
             {state.conversations.map((conversation) => {
@@ -267,11 +261,8 @@ export function QuestConversations({ about: initialAbout }: { about: string | nu
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button disabled={busy || pending || !projectId} onClick={() => void start()}>
-              Open a new conversation
+              New conversation
             </Button>
-            <span className="text-xs text-muted-foreground">
-              Opens a normal draft with the Quest context in the composer. You choose what to send.
-            </span>
           </div>
           <div className="mt-5 flex flex-wrap items-end gap-2 border-t pt-4">
             <label className="min-w-60 flex-1 text-sm">
@@ -297,9 +288,7 @@ export function QuestConversations({ about: initialAbout }: { about: string | nu
           </div>
         </section>
       ) : (
-        <p className="mt-6 text-sm text-muted-foreground">
-          Starting or linking conversations needs write access to this environment.
-        </p>
+        <p className="mt-6 text-sm text-muted-foreground">Read only</p>
       )}
     </div>
   );

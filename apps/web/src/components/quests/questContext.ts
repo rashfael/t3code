@@ -4,11 +4,34 @@ import { createContext, use } from "react";
 export type QuestView = "overview" | "conversation" | "map";
 
 export interface QuestSearch {
+  /** The environment whose Quest is shown; without it, the primary environment's. */
+  readonly env?: string;
   readonly view?: QuestView;
   readonly work?: string;
   readonly question?: string;
   /** `work:<id>` or `question:<id>`, preselecting what a new conversation is about. */
   readonly about?: string;
+}
+
+const VIEWS: ReadonlyArray<QuestView> = ["overview", "conversation", "map"];
+
+function searchText(value: unknown) {
+  return typeof value === "string" && value.length > 0 && value.length <= 200 ? value : undefined;
+}
+
+export function parseQuestSearch(raw: Record<string, unknown>): QuestSearch {
+  const env = searchText(raw.env);
+  const view = VIEWS.find((candidate) => candidate === raw.view);
+  const work = searchText(raw.work);
+  const question = searchText(raw.question);
+  const about = searchText(raw.about);
+  return {
+    ...(env ? { env } : {}),
+    ...(view ? { view } : {}),
+    ...(work ? { work } : {}),
+    ...(question ? { question } : {}),
+    ...(about ? { about } : {}),
+  };
 }
 
 export type PanelEntry =
@@ -28,7 +51,7 @@ export interface QuestWorkspaceContext {
   readonly save: (change: QuestChange) => Promise<boolean>;
   /** `push` keeps the current panel one Back step away; `replace` starts a new panel trail. */
   readonly openPanel: (entry: PanelEntry, mode?: "push" | "replace") => void;
-  readonly showView: (view: QuestView, extra?: Omit<QuestSearch, "view">) => void;
+  readonly showView: (view: QuestView, extra?: Omit<QuestSearch, "view" | "env">) => void;
 }
 
 export const QuestWorkspace = createContext<QuestWorkspaceContext | null>(null);

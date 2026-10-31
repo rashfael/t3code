@@ -1,6 +1,11 @@
 import * as Cause from "effect/Cause";
 import { Atom } from "effect/reactivity";
-import { questAppliedUnderstanding, type QuestState } from "@t3tools/contracts";
+import {
+  questAppliedUnderstanding,
+  type QuestState,
+  type EnvironmentId,
+  type QuestThreadLink,
+} from "@t3tools/contracts";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -16,29 +21,52 @@ import "../../index.css";
 import { SidebarProvider } from "../ui/sidebar";
 import { SidebarQuests } from "../sidebar/SidebarQuests";
 
+type QueryTarget =
+  | { readonly kind: "quest"; readonly environmentId: string }
+  | { readonly kind: "link"; readonly environmentId: string; readonly threadId: string };
+
 const harness = vi.hoisted(() => ({
-  initial: null as QuestState | null,
+  /** Saved Quest per environment, as the server would answer `quest.get`. */
+  quests: {} as Record<string, QuestState>,
+  /** Server answers to `quest.threadLink`, by `environmentId|threadId`. */
+  links: {} as Record<string, QuestThreadLink>,
+  environments: [] as Array<{ environmentId: string; label: string }>,
   run: vi.fn(),
   newThread: vi.fn(),
   canWrite: true,
 }));
 
-vi.mock(import("@t3tools/client-runtime/state/quests"), () => ({
-  createQuestEnvironmentAtoms: (() => ({
-    get: () => null,
+vi.mock(import("./questEnvironment"), () => ({
+  questEnvironment: {
+    get: ({ environmentId }: { environmentId: string }) => ({ kind: "quest", environmentId }),
+    threadLink: ({
+      environmentId,
+      input,
+    }: {
+      environmentId: string;
+      input: { threadId: string };
+    }) => ({
+      kind: "link",
+      environmentId,
+      threadId: input.threadId,
+    }),
     read: {},
     update: { permissionAtom: () => Atom.make(harness.canWrite) },
-  })) as never,
+  } as never,
 }));
-vi.mock(import("~/connection/runtime"), () => ({ connectionAtomRuntime: null as never }));
 vi.mock(import("~/state/environments"), () => ({
   usePrimaryEnvironmentId: () => "example-environment" as never,
-  useEnvironments: (() => ({
-    environments: [{ environmentId: "example-environment", label: "Isolated example" }],
-  })) as never,
+  useEnvironments: (() => ({ environments: harness.environments })) as never,
 }));
 vi.mock(import("~/state/query"), () => ({
-  useEnvironmentQuery: (() => ({ data: harness.initial })) as never,
+  useEnvironmentQuery: ((target: QueryTarget | null) => ({
+    data:
+      target === null
+        ? null
+        : target.kind === "quest"
+          ? (harness.quests[target.environmentId] ?? null)
+          : (harness.links[`${target.environmentId}|${target.threadId}`] ?? null),
+  })) as never,
 }));
 vi.mock(import("~/state/use-atom-command"), () => ({
   useAtomCommand: (() => harness.run) as never,
@@ -53,6 +81,7 @@ vi.mock(import("~/hooks/useHandleNewThread"), () => ({
   useNewThreadHandler: (() => harness.newThread) as never,
 }));
 import { QuestPage } from "./QuestPage";
+import { useQuestDraftStore } from "./questDraftStore";
 import { QuestThreadBar } from "./QuestThreadBar";
 
 const at = "2026-10-31T20:00:00.000Z";
@@ -84,7 +113,9 @@ function setup() {
   harness.run.mockReset();
   harness.newThread.mockReset();
   harness.canWrite = true;
-  localStorage.removeItem("t3code:quest-conversations");
+  harness.links = {};
+  harness.environments = [{ environmentId: "example-environment", label: "Isolated example" }];
+  useQuestDraftStore.setState({ drafts: {}, panels: {} });
   const initial: QuestState = {
     schemaVersion: 2,
     revision: 0,
@@ -156,8 +187,40 @@ function setup() {
       },
     ],
   };
-  harness.initial = initial;
+  harness.quests = { "example-environment": initial };
   return initial;
+}
+
+/** The Quest page beside a thread route, so tests can leave the Quest and come back. */
+async function renderRoutes(initialEntry: string) {
+  const root = createRootRoute({
+    component: () => (
+      <SidebarProvider>
+        <Outlet />
+      </SidebarProvider>
+    ),
+  });
+  const quest = createRoute({ getParentRoute: () => root, path: "/quests", component: QuestPage });
+  const thread = createRoute({
+    getParentRoute: () => root,
+    path: "/$environmentId/$threadId",
+    component: function ThreadRoute() {
+      const { environmentId, threadId } = thread.useParams();
+      return (
+        <main aria-label="Thread">
+          <QuestThreadBar environmentId={environmentId as EnvironmentId} threadId={threadId} />
+        </main>
+      );
+    },
+  });
+  const router = createRouter({
+    routeTree: root.addChildren([quest, thread]),
+    history: createMemoryHistory({ initialEntries: [initialEntry] }),
+  });
+  const screen = await render(<RouterProvider router={router} />, {
+    router: false, // The scenario navigates between the Quest and a thread route it defines.
+  });
+  return { screen, router };
 }
 
 function renderQuest() {
@@ -224,9 +287,7 @@ it("records, previews, applies and reopens a decision without losing its earlier
   await screen.getByRole("button", { name: /^Decisions/ }).click();
   const details = screen.getByRole("complementary", { name: "Quest details" });
   await details.getByRole("button", { name: /Which summary\?/ }).click();
-  await expect
-    .element(details.getByText("Prototype proposal · not an actual pending request"))
-    .toBeVisible();
+  await expect.element(details.getByText("Proposed", { exact: true })).toBeVisible();
   await expect
     .element(screen.getByRole("button", { name: "Apply recorded answer to work" }))
     .not.toBeInTheDocument();
@@ -279,7 +340,7 @@ it("keeps a rejected work draft and discards it only on an explicit reload", asy
   await expect.element(screen.getByRole("status")).toHaveTextContent("Save failed");
   harness.run.mockResolvedValueOnce({ _tag: "Success", value: initial });
   await screen.getByRole("button", { name: "Reload saved", exact: true }).click();
-  await expect.element(screen.getByText(/^Saved version loaded/)).toBeVisible();
+  await expect.element(screen.getByText(/^Reloaded/)).toBeVisible();
   await screen.getByRole("button", { name: "Edit", exact: true }).click();
   await expect
     .element(screen.getByRole("textbox", { name: "Work title", exact: true }))
@@ -290,19 +351,16 @@ it("reads evidence beside the work that referenced it on a read-only connection"
   setup();
   harness.canWrite = false;
   await using screen = await renderQuest();
-  await screen
-    .getByRole("button", { name: /Part A/ })
-    .first()
-    .click();
+  await screen.getByRole("button", { name: /^Part A Needs human attention/ }).click();
   const details = screen.getByRole("complementary", { name: "Quest details" });
   await expect
     .element(details.getByRole("button", { name: "Edit", exact: true }))
     .not.toBeInTheDocument();
-  await details.getByRole("button", { name: /^Retained source Captured evidence/ }).click();
+  await details.getByRole("button", { name: /^Retained source Evidence/ }).click();
   await expect
     .element(details.getByText("A captured source account", { exact: true }))
     .toBeVisible();
-  await expect.element(details.getByText("Captured evidence · read only")).toBeVisible();
+  await expect.element(details.getByText("Evidence · read only")).toBeVisible();
   await details.getByRole("button", { name: "Back" }).click();
   await expect.element(details.getByRole("heading", { name: "Part A" })).toBeVisible();
   await details.getByRole("button", { name: "Close details" }).click();
@@ -312,61 +370,49 @@ it("reads evidence beside the work that referenced it on a read-only connection"
   expect(harness.run).not.toHaveBeenCalled();
 });
 
-it("navigates the work map by branch and shows recorded relationships with their source", async () => {
+it("draws the work map as a graph with typed edges, expansion, focus and selection", async () => {
   setup();
   await using screen = await renderQuest();
   await screen.getByRole("button", { name: "Work map", exact: true }).click();
-  const map = screen.getByRole("tree", { name: "Work map" });
-  await expect.element(map.getByText("After: Part A")).toBeVisible();
-  await expect.element(map.getByText("Earlier try")).not.toBeInTheDocument();
+  const map = screen.getByRole("group", { name: "Work map" });
+  const edges = (kind: string) => document.querySelectorAll(`[data-edge="${kind}"]`).length;
+  await expect.element(map.getByRole("button", { name: /^Part B ·/ })).toBeVisible();
+  expect(edges("follows")).toBe(1);
+  expect(edges("part")).toBeGreaterThan(0);
+  await expect.element(map.getByRole("button", { name: /^Earlier try/ })).not.toBeInTheDocument();
   await map.getByRole("button", { name: "Expand Part A" }).click();
-  await expect.element(map.getByText("Attempt · Recorded outcome")).toBeVisible();
+  await expect
+    .element(map.getByRole("button", { name: "Earlier try · Attempt · Recorded outcome" }))
+    .toBeVisible();
   await map.getByRole("button", { name: "Focus on Example milestone" }).click();
-  await expect.element(map.getByText("Later branch")).not.toBeInTheDocument();
-  await map
-    .getByRole("button", { name: /Part B/ })
-    .first()
-    .click();
+  await expect.element(map.getByRole("button", { name: /^Later branch/ })).not.toBeInTheDocument();
+  await map.getByRole("button", { name: /^Part B ·/ }).click();
   const details = screen.getByRole("complementary", { name: "Quest details" });
-  await expect.element(details.getByText(/Recorded in a captured source/)).toBeVisible();
   await expect.element(details.getByText("Part A, followed by Part B")).toBeVisible();
+  await expect.element(details.getByRole("button", { name: "Retained source" })).toBeVisible();
   // The test viewport is narrow, where details cover the map until closed.
   await details.getByRole("button", { name: "Close details" }).click();
   await screen.getByRole("button", { name: "Whole Quest" }).click();
-  await expect.element(map.getByText("Later branch")).toBeVisible();
+  await expect.element(map.getByRole("button", { name: /^Later branch/ })).toBeVisible();
   await map.getByRole("button", { name: "Collapse Example milestone" }).click();
-  await expect.element(map.getByText("Part B")).not.toBeInTheDocument();
+  await expect.element(map.getByRole("button", { name: /^Part B ·/ })).not.toBeInTheDocument();
+  await vi.waitFor(() => expect(edges("follows")).toBe(0));
 });
 
-it("opens a normal draft with Quest context, links it, and marks the thread as a Quest conversation", async () => {
+it("opens a normal draft with Quest context and links it to the Quest", async () => {
   const initial = setup();
   harness.newThread.mockResolvedValueOnce({ draftId: "draft-1", threadId: "thread-1" });
-  const linked: QuestState = {
-    ...initial,
-    revision: 1,
-    conversations: [
-      {
-        threadId: "thread-1",
-        projectId: "project-1",
-        title: "Market tracking · Part A",
-        workId: "part-a",
-        questionId: null,
-        linkedAt: at,
-      },
-    ],
-  };
-  harness.run.mockResolvedValueOnce({ _tag: "Success", value: linked });
+  harness.run.mockResolvedValueOnce({
+    _tag: "Success",
+    value: { ...initial, revision: 1 },
+  });
   await using screen = await render(
     <SidebarProvider>
-      <QuestThreadBar environmentId="example-environment" threadId="thread-1" />
       <QuestPage />
     </SidebarProvider>,
     { router: "/quests?view=conversation&about=work:part-a" },
   );
-  await expect
-    .element(screen.getByRole("navigation", { name: "Quest conversation" }))
-    .not.toBeInTheDocument();
-  await screen.getByRole("button", { name: "Open a new conversation" }).click();
+  await screen.getByRole("button", { name: "New conversation" }).click();
   expect(harness.newThread).toHaveBeenCalledTimes(1);
   const [projectRef, options] = harness.newThread.mock.calls[0]!;
   expect(projectRef).toEqual({ environmentId: "example-environment", projectId: "project-1" });
@@ -380,10 +426,100 @@ it("opens a normal draft with Quest context, links it, and marks the thread as a
       questionId: null,
     }),
   );
+});
+
+it("shows a linked thread's Quest from the server on a fresh client, without the Quest page", async () => {
+  setup();
+  harness.links["example-environment|thread-1"] = {
+    threadId: "thread-1",
+    workId: "part-a",
+    questionId: null,
+    about: "Part A",
+  };
+  const { screen } = await renderRoutes("/example-environment/thread-1");
+  await using _screen = screen;
+  const bar = screen.getByRole("navigation", { name: "Quest conversation" });
+  await expect.element(bar.getByText("About: Part A")).toBeVisible();
+  await bar.getByRole("link", { name: "Work map" }).click();
+  await expect.element(screen.getByRole("group", { name: "Work map" })).toBeVisible();
+});
+
+it("returns from a thread to the Quest of that thread's environment", async () => {
+  const initial = setup();
+  harness.environments.push({ environmentId: "second-environment", label: "Second" });
+  harness.quests["second-environment"] = {
+    ...initial,
+    work: initial.work.map((item) =>
+      item.id === "milestone" ? { ...item, title: "Second milestone" } : item,
+    ),
+  };
+  harness.links["second-environment|thread-2"] = {
+    threadId: "thread-2",
+    workId: null,
+    questionId: null,
+    about: null,
+  };
+  const { screen, router } = await renderRoutes("/quests");
+  await using _screen = screen;
+  await expect.element(screen.getByRole("heading", { name: "Example milestone" })).toBeVisible();
+  await screen.getByRole("combobox", { name: "Environment" }).click();
+  await screen.getByRole("option", { name: "Second" }).click();
+  await expect.element(screen.getByRole("heading", { name: "Second milestone" })).toBeVisible();
+  await router.navigate({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "second-environment", threadId: "thread-2" },
+  });
+  await screen
+    .getByRole("navigation", { name: "Quest conversation" })
+    .getByRole("link", { name: "Overview" })
+    .click();
+  await expect.element(screen.getByRole("heading", { name: "Second milestone" })).toBeVisible();
+  expect(router.state.location.search).toMatchObject({ env: "second-environment" });
+});
+
+it("keeps unsaved answers and edits while evidence, other panels or a thread are opened", async () => {
+  setup();
+  const { screen, router } = await renderRoutes("/quests");
+  await using _screen = screen;
+  await screen.getByRole("button", { name: /^Decisions/ }).click();
+  const details = screen.getByRole("complementary", { name: "Quest details" });
+  await details.getByRole("button", { name: /Which summary\?/ }).click();
+  await details.getByRole("textbox", { name: "Answer" }).fill("A drafted answer");
+  await details.getByRole("textbox", { name: "Rationale (optional)" }).fill("Drafted reason");
+  await details.getByRole("button", { name: /^Retained source/ }).click();
   await expect
-    .element(screen.getByRole("navigation", { name: "Quest conversation" }))
+    .element(details.getByText("A captured source account", { exact: true }))
     .toBeVisible();
-  await expect.element(screen.getByText("About: Part A")).toBeVisible();
+  await details.getByRole("button", { name: "Back" }).click();
+  await expect
+    .element(details.getByRole("textbox", { name: "Answer" }))
+    .toHaveValue("A drafted answer");
+  await expect
+    .element(details.getByRole("textbox", { name: "Rationale (optional)" }))
+    .toHaveValue("Drafted reason");
+
+  await details.getByRole("button", { name: "Part A", exact: true }).click();
+  await details.getByRole("button", { name: "Edit", exact: true }).click();
+  await details.getByRole("textbox", { name: "Work title" }).fill("A drafted title");
+  await screen.getByRole("button", { name: "History", exact: true }).click();
+  await router.navigate({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "example-environment", threadId: "thread-1" },
+  });
+  await router.navigate({ to: "/quests" });
+  await expect.element(screen.getByRole("heading", { name: "History", exact: true })).toBeVisible();
+  await router.navigate({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "example-environment", threadId: "thread-1" },
+  });
+  await router.navigate({ to: "/quests", search: { work: "part-a" } });
+  await expect
+    .element(screen.getByRole("textbox", { name: "Work title" }))
+    .toHaveValue("A drafted title");
+  await screen.getByRole("button", { name: "Cancel", exact: true }).click();
+  await screen.getByRole("button", { name: "Edit", exact: true }).click();
+  await expect.element(screen.getByRole("textbox", { name: "Work title" })).toHaveValue("Part A");
+  expect(harness.run).not.toHaveBeenCalled();
 });
 
 it("opens a quest in the main area from the collapsible sidebar list", async () => {

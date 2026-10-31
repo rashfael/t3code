@@ -348,7 +348,7 @@ describe("QuestStore", () => {
   );
 
   it.effect(
-    "links and unlinks conversations without touching the thread or duplicating links",
+    "links and unlinks conversations, answering thread lookups, without duplicating links",
     () =>
       Effect.gen(function* () {
         const { layer } = yield* harness;
@@ -368,6 +368,12 @@ describe("QuestStore", () => {
             expect.objectContaining({ threadId: "thread-1", workId: "a4-demonstration" }),
           ]);
           expect(linked.history.at(-1)?.summary).toContain("A4 · small live demonstration");
+          expect(yield* store.threadLink("thread-1")).toEqual({
+            threadId: "thread-1",
+            workId: "a4-demonstration",
+            questionId: null,
+            about: "A4 · small live demonstration",
+          });
           for (const change of [link, { ...link, threadId: "thread-2", workId: "missing" }]) {
             const rejected = yield* store
               .update({ expectedRevision: linked.revision, change })
@@ -379,6 +385,7 @@ describe("QuestStore", () => {
             change: { type: "unlink", threadId: "thread-1" },
           });
           expect(unlinked.conversations).toEqual([]);
+          expect(yield* store.threadLink("thread-1")).toBeNull();
           expect(unlinked.history.map((entry) => entry.kind)).toEqual([
             "baseline",
             "link",

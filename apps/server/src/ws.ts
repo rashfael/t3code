@@ -2796,6 +2796,7 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.questGet]: () => questStore.get,
         [WS_METHODS.questUpdate]: (input) => questStore.update(input),
+        [WS_METHODS.questThreadLink]: (input) => questStore.threadLink(input.threadId),
         [WS_METHODS.projectsCreateNew]: (input) =>
           managedFolders
             .createNamedProject(input)

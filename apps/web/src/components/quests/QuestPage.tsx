@@ -1,12 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
-import { createQuestEnvironmentAtoms } from "@t3tools/client-runtime/state/quests";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, QuestState } from "@t3tools/contracts";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { CompassIcon, HistoryIcon, ListChecksIcon, RotateCcwIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
-import { connectionAtomRuntime } from "~/connection/runtime";
 import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -16,20 +14,20 @@ import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { SidebarInset, SidebarTrigger } from "../ui/sidebar";
 import {
+  parseQuestSearch,
   QuestWorkspace,
   type PanelEntry,
   type QuestChange,
   type QuestSearch,
   type QuestView,
 } from "./questContext";
-import { rememberQuestConversations } from "./questConversationIndex";
+import { clearQuestDrafts, readQuestPanel, rememberQuestPanel } from "./questDraftStore";
+import { questEnvironment } from "./questEnvironment";
 import { QUEST_TITLE, questionsByStatus } from "./questModel";
 import { QuestConversations } from "./QuestConversations";
 import { QuestOverview } from "./QuestOverview";
 import { QuestPanel } from "./QuestPanel";
 import { QuestWorkMap } from "./QuestWorkMap";
-
-const questEnvironment = createQuestEnvironmentAtoms(connectionAtomRuntime);
 
 const VIEWS: ReadonlyArray<{ value: QuestView; label: string }> = [
   { value: "overview", label: "Overview" },
@@ -37,25 +35,17 @@ const VIEWS: ReadonlyArray<{ value: QuestView; label: string }> = [
   { value: "map", label: "Work map" },
 ];
 
-function readSearch(raw: Record<string, unknown>): QuestSearch {
-  const text = (value: unknown) => (typeof value === "string" && value ? value : undefined);
-  const view = VIEWS.find((candidate) => candidate.value === raw.view)?.value;
-  const work = text(raw.work);
-  const question = text(raw.question);
-  const about = text(raw.about);
-  return {
-    ...(view ? { view } : {}),
-    ...(work ? { work } : {}),
-    ...(question ? { question } : {}),
-    ...(about ? { about } : {}),
-  };
+function useQuestSearch(): QuestSearch {
+  return parseQuestSearch(useSearch({ strict: false }) as Record<string, unknown>);
 }
 
 export function QuestPage() {
   const primaryId = usePrimaryEnvironmentId();
   const { environments } = useEnvironments();
-  const [selectedEnvironment, setSelectedEnvironment] = useState<EnvironmentId | null>(null);
-  const environmentId = selectedEnvironment ?? primaryId;
+  const search = useQuestSearch();
+  const navigate = useNavigate();
+  // The route names its environment, so returning from a thread reopens the same one.
+  const environmentId = (search.env as EnvironmentId | undefined) ?? primaryId;
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden" aria-label="Quest workspace">
       {environmentId ? (
@@ -71,7 +61,11 @@ export function QuestPage() {
                   label: environment.label,
                 }))}
                 onValueChange={(next) => {
-                  if (next !== null) setSelectedEnvironment(next as EnvironmentId);
+                  if (next !== null)
+                    void navigate({
+                      to: "/quests",
+                      search: { env: next, ...(search.view ? { view: search.view } : {}) },
+                    });
                 }}
               >
                 <SelectTrigger size="sm" aria-label="Environment">
@@ -119,10 +113,13 @@ function QuestLoader({
   );
 }
 
-function initialPanel(search: QuestSearch): ReadonlyArray<PanelEntry> {
+function initialPanel(
+  environmentId: EnvironmentId,
+  search: QuestSearch,
+): ReadonlyArray<PanelEntry> {
   if (search.question) return [{ type: "question", id: search.question }];
   if (search.work) return [{ type: "work", id: search.work }];
-  return [];
+  return readQuestPanel(environmentId);
 }
 
 function QuestWorkspaceView({
@@ -134,11 +131,11 @@ function QuestWorkspaceView({
   initial: QuestState;
   environmentPicker: React.ReactNode;
 }) {
-  const search = readSearch(useSearch({ strict: false }) as Record<string, unknown>);
+  const search = useQuestSearch();
   const navigate = useNavigate();
   const view = search.view ?? "overview";
   const [state, setState] = useState(initial);
-  const [panel, setPanel] = useState<ReadonlyArray<PanelEntry>>(() => initialPanel(search));
+  const [panel, setPanelState] = useState(() => initialPanel(environmentId, search));
   const [pending, setPending] = useState(false);
   const [notice, setNotice] = useState("");
   const [epoch, setEpoch] = useState(0);
@@ -147,10 +144,10 @@ function QuestWorkspaceView({
   const update = useAtomCommand(questEnvironment.update, { reportFailure: false });
   const read = useAtomCommand(questEnvironment.read, { reportFailure: false });
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- copies the server's conversation links to localStorage for the thread route's Quest bar
-  useEffect(() => {
-    rememberQuestConversations(environmentId, state);
-  }, [environmentId, state]);
+  function setPanel(next: ReadonlyArray<PanelEntry>) {
+    setPanelState(next);
+    rememberQuestPanel(environmentId, next);
+  }
 
   async function save(change: QuestChange) {
     if (pendingRef.current) return false;
@@ -173,8 +170,6 @@ function QuestWorkspaceView({
       return false;
     }
     setState(result.value);
-    // A link saved while the thread route is opening must still reach the Quest bar.
-    rememberQuestConversations(environmentId, result.value);
     setNotice(`Saved · revision ${result.value.revision}`);
     return true;
   }
@@ -187,18 +182,19 @@ function QuestWorkspaceView({
     pendingRef.current = false;
     setPending(false);
     if (result._tag === "Success") {
+      clearQuestDrafts(environmentId);
       setState(result.value);
       setEpoch((value) => value + 1);
-      setNotice("Saved version loaded. Unsaved drafts were discarded.");
+      setNotice("Reloaded. Unsaved drafts discarded.");
     } else setNotice("Could not reload. Your current draft has been kept.");
   }
 
-  function showView(next: QuestView, extra: Omit<QuestSearch, "view"> = {}) {
-    void navigate({ to: "/quests", search: { view: next, ...extra } });
+  function showView(next: QuestView, extra: Omit<QuestSearch, "view" | "env"> = {}) {
+    void navigate({ to: "/quests", search: { env: environmentId, view: next, ...extra } });
   }
 
   function openPanel(entry: PanelEntry, mode: "push" | "replace" = "replace") {
-    setPanel((stack) => (mode === "push" ? [...stack, entry] : [entry]));
+    setPanel(mode === "push" ? [...panel, entry] : [entry]);
   }
 
   const decisions = questionsByStatus(state.questions);
@@ -274,7 +270,10 @@ function QuestWorkspaceView({
         </nav>
       </header>
       <div className="relative flex min-h-0 flex-1">
-        <div key={epoch} className="min-w-0 flex-1 overflow-y-auto">
+        <div
+          key={epoch}
+          className={cn("min-w-0 flex-1", view === "map" ? "overflow-hidden" : "overflow-y-auto")}
+        >
           {view === "map" ? (
             <QuestWorkMap
               key={search.work ?? ""}
@@ -296,7 +295,7 @@ function QuestWorkspaceView({
               key={`${JSON.stringify(current)}:${state.revision}:${epoch}`}
               entry={current}
               canGoBack={panel.length > 1}
-              onBack={() => setPanel((stack) => stack.slice(0, -1))}
+              onBack={() => setPanel(panel.slice(0, -1))}
               onClose={() => setPanel([])}
             />
           </aside>
@@ -304,16 +303,9 @@ function QuestWorkspaceView({
       </div>
       <footer className="border-t px-4 py-2 text-xs text-muted-foreground">
         <p role="status" aria-live="polite">
-          {pending
-            ? "Saving / loading…"
-            : notice ||
-              `Saved revision ${state.revision} · no provider runs or changes to the original records`}
+          {pending ? "Saving…" : notice || `Revision ${state.revision}`}
+          {canWrite ? null : " · Read only"}
         </p>
-        {canWrite ? null : (
-          <p className="mt-1">
-            This connection can read the Quest. Saving changes needs write access.
-          </p>
-        )}
       </footer>
     </QuestWorkspace>
   );

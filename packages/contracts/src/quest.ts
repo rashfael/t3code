@@ -74,6 +74,18 @@ export const QuestConversation = Schema.Struct({
 });
 export type QuestConversation = typeof QuestConversation.Type;
 
+/** What the thread route needs to show a linked thread's Quest context, without the whole Quest. */
+export const QuestThreadLink = Schema.Struct({
+  threadId: Schema.String,
+  workId: Schema.NullOr(Schema.String),
+  questionId: Schema.NullOr(Schema.String),
+  about: Schema.NullOr(Schema.String),
+});
+export type QuestThreadLink = typeof QuestThreadLink.Type;
+
+export const QuestThreadLinkInput = Schema.Struct({ threadId: Schema.String });
+export type QuestThreadLinkInput = typeof QuestThreadLinkInput.Type;
+
 export const QuestHistoryEntry = Schema.Struct({
   id: Schema.String,
   revision: Schema.Number,

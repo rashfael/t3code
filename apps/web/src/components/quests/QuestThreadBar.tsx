@@ -1,19 +1,25 @@
+import type { EnvironmentId } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { CompassIcon } from "lucide-react";
 
+import { useEnvironmentQuery } from "~/state/query";
+import { questEnvironment } from "./questEnvironment";
 import { QUEST_TITLE } from "./questModel";
-import { useQuestConversation } from "./questConversationIndex";
 
 /** Shown above a normal thread that is linked to the Quest, so the Quest stays one step away. */
 export function QuestThreadBar({
   environmentId,
   threadId,
 }: {
-  environmentId: string | null;
+  environmentId: EnvironmentId | null;
   threadId: string | null;
 }) {
-  const link = useQuestConversation(environmentId, threadId);
-  if (!link) return null;
+  const { data: link } = useEnvironmentQuery(
+    environmentId && threadId
+      ? questEnvironment.threadLink({ environmentId, input: { threadId } })
+      : null,
+  );
+  if (!environmentId || !link) return null;
   const tab = "rounded px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground";
   return (
     <nav
@@ -28,15 +34,19 @@ export function QuestThreadBar({
         <span className="min-w-0 truncate text-muted-foreground">About: {link.about}</span>
       ) : null}
       <span className="ms-auto flex items-center gap-1">
-        <Link to="/quests" search={{ view: "overview" }} className={tab}>
+        <Link to="/quests" search={{ env: environmentId, view: "overview" }} className={tab}>
           Overview
         </Link>
-        <Link to="/quests" search={{ view: "conversation" }} className={tab}>
+        <Link to="/quests" search={{ env: environmentId, view: "conversation" }} className={tab}>
           Conversations
         </Link>
         <Link
           to="/quests"
-          search={link.workId ? { view: "map", work: link.workId } : { view: "map" }}
+          search={{
+            env: environmentId,
+            view: "map",
+            ...(link.workId ? { work: link.workId } : {}),
+          }}
           className={tab}
         >
           Work map

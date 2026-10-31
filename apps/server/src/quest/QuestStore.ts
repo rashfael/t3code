@@ -2,6 +2,7 @@ import {
   QuestError,
   QuestState,
   questAppliedUnderstanding,
+  type QuestThreadLink,
   type QuestHistoryEntry,
   type QuestUpdateInput,
   type QuestWork,
@@ -24,6 +25,7 @@ export class QuestStore extends Context.Service<
   {
     readonly get: Effect.Effect<QuestState, QuestError>;
     readonly update: (input: QuestUpdateInput) => Effect.Effect<QuestState, QuestError>;
+    readonly threadLink: (threadId: string) => Effect.Effect<QuestThreadLink | null, QuestError>;
   }
 >()("t3/quest/QuestStore") {}
 
@@ -329,7 +331,22 @@ const make = Effect.gen(function* () {
     return next;
   }, mutex.withPermits(1));
 
-  return QuestStore.of({ get: mutex.withPermits(1)(read()), update });
+  const threadLink = Effect.fn("QuestStore.threadLink")(function* (threadId: string) {
+    const state = yield* read();
+    const conversation = state.conversations.find((item) => item.threadId === threadId);
+    if (!conversation) return null;
+    return {
+      threadId,
+      workId: conversation.workId,
+      questionId: conversation.questionId,
+      about:
+        state.work.find((item) => item.id === conversation.workId)?.title ??
+        state.questions.find((item) => item.id === conversation.questionId)?.title ??
+        null,
+    };
+  }, mutex.withPermits(1));
+
+  return QuestStore.of({ get: mutex.withPermits(1)(read()), update, threadLink });
 });
 
 export const layer = Layer.effect(QuestStore, make);

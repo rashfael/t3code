@@ -10,6 +10,7 @@ import {
   deliveryLeaves,
   describeCounts,
   questionStatusLabels,
+  questionStatusOrder,
   questionsByStatus,
   reviewGroups,
   rootWork,
@@ -21,15 +22,17 @@ import { HistoryEntryRow } from "./QuestPanel";
 function Section({
   title,
   aside,
+  className,
   children,
 }: {
   title: string;
   aside?: ReactNode;
+  className?: string;
   children: ReactNode;
 }) {
   return (
-    <section className="mt-8 first:mt-0">
-      <div className="mb-3 flex items-baseline justify-between gap-3">
+    <section className={className}>
+      <div className="mb-2 flex items-baseline justify-between gap-3">
         <h2 className="text-sm font-semibold">{title}</h2>
         {aside}
       </div>
@@ -54,16 +57,18 @@ function Row({
       <button
         type="button"
         onClick={onClick}
-        className="flex w-full items-start gap-3 border-b py-3 text-left hover:bg-accent/40"
+        className="flex w-full items-start gap-3 border-b py-2 text-left hover:bg-accent/40"
       >
         <span className="min-w-0 flex-1">
-          <span className="block text-sm font-medium">{title}</span>
+          <span className="flex flex-wrap items-center gap-1.5">
+            <span className="text-sm font-medium">{title}</span>
+            {meta}
+          </span>
           {detail ? (
-            <span className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">
+            <span className="mt-0.5 line-clamp-1 block text-xs text-muted-foreground">
               {detail}
             </span>
           ) : null}
-          {meta ? <span className="mt-1.5 flex flex-wrap gap-1.5">{meta}</span> : null}
         </span>
         <ChevronRightIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
       </button>
@@ -89,79 +94,144 @@ export function QuestOverview() {
   const actionable = state.work.filter(
     (item) => item.state === "attention" && !waitingWork.has(item.id),
   );
+  const decisionCounts = questionStatusOrder.filter((status) => decisions[status].length > 0);
   const recent = state.history.toReversed().slice(0, 4);
   return (
-    <div className="mx-auto max-w-5xl px-6 py-6">
-      <p className="mb-6 max-w-3xl text-sm text-muted-foreground">
-        Reconstructed from captures of the market-tracking work records taken on 31 October 2026.
-        Edits change these prototype records only; nothing here resumes the original work.
-      </p>
-
-      <Section title="Current milestone">
-        {current ? (
-          <div className="rounded-lg border bg-card p-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={workStateVariants[current.state]}>
-                {workStateLabels[current.state]}
-              </Badge>
-              <h3 className="text-base font-semibold">{current.title}</h3>
-            </div>
-            <p className="mt-2 max-w-3xl whitespace-pre-wrap text-sm">{current.understanding}</p>
-            <p className="mt-3 text-xs text-muted-foreground">
-              Parts: {describeCounts(deliveryLeaves(state, current.id))}
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => showView("map", { work: current.id })}
-              >
-                Show in work map
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => openPanel({ type: "work", id: current.id })}
-              >
-                Details
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => showView("conversation", { about: `work:${current.id}` })}
-              >
-                Discuss
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            No current milestone is marked. Choose one from a work item’s details.
-          </p>
-        )}
-      </Section>
-
-      <div className="mt-8 grid gap-8 md:grid-cols-2">
-        <Section title="Understanding">
-          <p className="mb-3 text-xs text-muted-foreground">
-            Decisions and open uncertainty. Recording an answer does not change work until it is
-            applied.
-          </p>
-          <ul className="mb-4 flex flex-wrap gap-2" aria-label="Decisions by status">
-            {(["open", "recorded", "deferred", "applied"] as const).map((status) => (
-              <li key={status}>
-                <button
-                  type="button"
-                  onClick={() => openPanel({ type: "decisions" })}
-                  className="rounded-md border px-2.5 py-1.5 text-xs hover:bg-accent"
+    <div className="mx-auto max-w-6xl px-6 py-5">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <Section title="Current milestone">
+          {current ? (
+            <div className="rounded-lg border bg-card p-3.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={workStateVariants[current.state]}>
+                  {workStateLabels[current.state]}
+                </Badge>
+                <h3 className="text-base font-semibold">{current.title}</h3>
+              </div>
+              <p className="mt-1.5 line-clamp-3 whitespace-pre-wrap text-sm">
+                {current.understanding}
+              </p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                {describeCounts(deliveryLeaves(state, current.id))}
+              </p>
+              <div className="mt-2.5 flex flex-wrap gap-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => showView("map", { work: current.id })}
                 >
-                  <strong className="tabular-nums">{decisions[status].length}</strong>{" "}
-                  {questionStatusLabels[status].toLowerCase()}
-                </button>
-              </li>
-            ))}
-          </ul>
-          <h3 className="mb-1 text-xs font-medium text-muted-foreground">Unresolved</h3>
+                  Show in map
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => openPanel({ type: "work", id: current.id })}
+                >
+                  Details
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => showView("conversation", { about: `work:${current.id}` })}
+                >
+                  Discuss
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No current milestone. Set one from a work item’s details.
+            </p>
+          )}
+        </Section>
+
+        <Section title="Needs attention">
+          {waiting.length + reviews.length + actionable.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nothing waiting.</p>
+          ) : (
+            <ul>
+              {waiting.map((question) => {
+                const status = questQuestionStatus(question);
+                return (
+                  <Row
+                    key={question.id}
+                    title={question.title}
+                    detail={
+                      status === "recorded"
+                        ? `Recorded: ${question.answer ?? ""}`
+                        : (state.work.find((item) => item.id === question.workId)?.title ?? "")
+                    }
+                    meta={
+                      <>
+                        <Badge variant="warning" size="sm">
+                          {status === "recorded" ? "Ready to apply" : "Decision"}
+                        </Badge>
+                        {question.proposal ? (
+                          <Badge variant="outline" size="sm">
+                            Proposed
+                          </Badge>
+                        ) : null}
+                      </>
+                    }
+                    onClick={() => openPanel({ type: "question", id: question.id })}
+                  />
+                );
+              })}
+              {actionable.map((item) => (
+                <Row
+                  key={item.id}
+                  title={item.title}
+                  detail={item.understanding}
+                  meta={
+                    <Badge variant="warning" size="sm">
+                      {workStateLabels[item.state]}
+                    </Badge>
+                  }
+                  onClick={() => openPanel({ type: "work", id: item.id })}
+                />
+              ))}
+              {reviews.map(({ parent, items }) => (
+                <Row
+                  key={parent?.id ?? "root"}
+                  title={parent ? parent.title : "Awaiting review"}
+                  detail={items.map((item) => item.title).join(", ")}
+                  meta={
+                    <Badge variant="secondary" size="sm">
+                      {items.length} to review
+                    </Badge>
+                  }
+                  onClick={() =>
+                    items.length === 1
+                      ? openPanel({ type: "work", id: items[0]!.id })
+                      : showView("map", { work: parent?.id ?? items[0]!.id })
+                  }
+                />
+              ))}
+            </ul>
+          )}
+        </Section>
+      </div>
+
+      <div className="mt-6 grid gap-6 md:grid-cols-2">
+        <Section
+          title="Understanding"
+          aside={
+            decisionCounts.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => openPanel({ type: "decisions" })}
+                className="text-xs text-muted-foreground hover:text-foreground hover:underline"
+              >
+                {decisionCounts
+                  .map(
+                    (status) =>
+                      `${decisions[status].length} ${questionStatusLabels[status].toLowerCase()}`,
+                  )
+                  .join(" · ")}
+              </button>
+            ) : null
+          }
+        >
           {unresolved.length > 0 ? (
             <ul>
               {unresolved.map((item) => (
@@ -180,15 +250,20 @@ export function QuestOverview() {
               ))}
             </ul>
           ) : (
-            <p className="text-sm text-muted-foreground">No unresolved findings are recorded.</p>
+            <p className="text-sm text-muted-foreground">No open findings.</p>
           )}
         </Section>
 
-        <Section title="Delivery">
-          <p className="mb-3 text-xs text-muted-foreground">
-            Counts include only work without sub-parts. Attempts are kept as history and are not
-            counted as progress.
-          </p>
+        <Section
+          title="Delivery"
+          aside={
+            attempts.length > 0 ? (
+              <span className="text-xs text-muted-foreground">
+                {attempts.length} earlier {attempts.length === 1 ? "attempt" : "attempts"}
+              </span>
+            ) : null
+          }
+        >
           <ul>
             {roots.flatMap((root) =>
               childrenOf(state, root.id)
@@ -200,9 +275,7 @@ export function QuestOverview() {
                       key={branch.id}
                       title={branch.title}
                       detail={
-                        leaves.length > 0
-                          ? describeCounts(leaves)
-                          : `No parts · ${workStateLabels[branch.state].toLowerCase()}`
+                        leaves.length > 0 ? describeCounts(leaves) : workStateLabels[branch.state]
                       }
                       onClick={() => showView("map", { work: branch.id })}
                     />
@@ -210,82 +283,12 @@ export function QuestOverview() {
                 }),
             )}
           </ul>
-          <p className="mt-3 text-xs text-muted-foreground">
-            {attempts.length === 0
-              ? "No earlier attempts are recorded."
-              : `${attempts.length} earlier ${attempts.length === 1 ? "attempt is" : "attempts are"} retained in the work map.`}
-          </p>
         </Section>
       </div>
 
-      <Section title="Needs attention">
-        {waiting.length + reviews.length + actionable.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Nothing is waiting for a person.</p>
-        ) : (
-          <ul>
-            {waiting.map((question) => {
-              const status = questQuestionStatus(question);
-              return (
-                <Row
-                  key={question.id}
-                  title={question.title}
-                  detail={
-                    status === "recorded"
-                      ? `Answer recorded: ${question.answer ?? ""}. Apply it or revise it.`
-                      : question.context
-                  }
-                  meta={
-                    <>
-                      <Badge variant="warning" size="sm">
-                        Decision · {questionStatusLabels[status].toLowerCase()}
-                      </Badge>
-                      {question.proposal ? (
-                        <Badge variant="outline" size="sm">
-                          Prototype proposal, not a live request
-                        </Badge>
-                      ) : null}
-                    </>
-                  }
-                  onClick={() => openPanel({ type: "question", id: question.id })}
-                />
-              );
-            })}
-            {actionable.map((item) => (
-              <Row
-                key={item.id}
-                title={item.title}
-                detail={item.understanding}
-                meta={
-                  <Badge variant="warning" size="sm">
-                    {workStateLabels[item.state]}
-                  </Badge>
-                }
-                onClick={() => openPanel({ type: "work", id: item.id })}
-              />
-            ))}
-            {reviews.map(({ parent, items }) => (
-              <Row
-                key={parent?.id ?? "root"}
-                title={`${items.length} awaiting review${parent ? ` · ${parent.title}` : ""}`}
-                detail={items.map((item) => item.title).join(", ")}
-                meta={
-                  <Badge variant="secondary" size="sm">
-                    Review obligation
-                  </Badge>
-                }
-                onClick={() =>
-                  items.length === 1
-                    ? openPanel({ type: "work", id: items[0]!.id })
-                    : showView("map", { work: parent?.id ?? items[0]!.id })
-                }
-              />
-            ))}
-          </ul>
-        )}
-      </Section>
-
       <Section
         title="Recent changes"
+        className="mt-6"
         aside={
           <Button size="xs" variant="ghost" onClick={() => openPanel({ type: "history" })}>
             All history

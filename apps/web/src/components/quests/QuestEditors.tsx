@@ -1,11 +1,12 @@
 import type { QuestDocument, QuestWork } from "@t3tools/contracts";
-import type { ReactNode } from "react";
+import type { FormEvent, ReactNode } from "react";
 
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { useQuest } from "./questContext";
+import { draftText, useQuestDraft } from "./questDraftStore";
 import { workStateLabels } from "./questModel";
 import { QuestSelect } from "./QuestConversations";
 
@@ -22,6 +23,24 @@ function formText(data: FormData, key: string) {
   return String(data.get(key) ?? "");
 }
 
+/** Records typed text into the editor's draft so it survives panel and route changes. */
+function captureText(update: (fields: Record<string, string>) => void) {
+  return (event: FormEvent<HTMLFormElement>) => {
+    const target = event.target;
+    if (
+      (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) &&
+      target.name
+    )
+      update({ [target.name]: target.value });
+  };
+}
+
+/** The editor's draft; its presence is what keeps the editor open. */
+export function useEditorDraft(editor: "work" | "handoff" | "documents" | "document", id: string) {
+  const { environmentId } = useQuest();
+  return useQuestDraft(environmentId, `${editor}:${id}`);
+}
+
 function EditorActions({ onCancel, submit }: { onCancel: () => void; submit: string }) {
   return (
     <div className="flex gap-2">
@@ -35,14 +54,18 @@ function EditorActions({ onCancel, submit }: { onCancel: () => void; submit: str
   );
 }
 
-export function WorkEditor({ work, onCancel }: { work: QuestWork; onCancel: () => void }) {
+export function WorkEditor({ work }: { work: QuestWork }) {
   const { state, save, pending, canWrite } = useQuest();
+  const { draft, update, clear } = useEditorDraft("work", work.id);
+  const text = (field: keyof QuestWork & string) =>
+    draftText(draft, field, String(work[field] ?? ""));
   return (
     <form
-      onSubmit={(event) => {
+      onInput={captureText(update)}
+      onSubmit={async (event) => {
         event.preventDefault();
         const data = new FormData(event.currentTarget);
-        void save({
+        const saved = await save({
           type: "work",
           work: {
             ...work,
@@ -54,21 +77,23 @@ export function WorkEditor({ work, onCancel }: { work: QuestWork; onCancel: () =
             parentId: formText(data, "parentId") || null,
           },
         });
+        if (saved) clear();
       }}
     >
       <fieldset disabled={pending || !canWrite} className="min-w-0">
         <Field label="Work title">
-          <Input name="title" defaultValue={work.title} required />
+          <Input name="title" defaultValue={text("title")} required />
         </Field>
         <Field label="Current understanding">
-          <Textarea name="understanding" defaultValue={work.understanding} rows={7} />
+          <Textarea name="understanding" defaultValue={text("understanding")} rows={7} />
         </Field>
         <div className="grid gap-x-4 sm:grid-cols-2">
           <Field label="Work state">
             <QuestSelect
               label="Work state"
               name="state"
-              defaultValue={work.state}
+              defaultValue={text("state")}
+              onChange={(value) => update({ state: value })}
               options={Object.entries(workStateLabels).map(([value, label]) => ({ value, label }))}
             />
           </Field>
@@ -76,7 +101,8 @@ export function WorkEditor({ work, onCancel }: { work: QuestWork; onCancel: () =
             <QuestSelect
               label="Part of"
               name="parentId"
-              defaultValue={work.parentId ?? ""}
+              defaultValue={text("parentId")}
+              onChange={(value) => update({ parentId: value })}
               options={[
                 { value: "", label: "Quest root" },
                 ...state.work
@@ -86,26 +112,28 @@ export function WorkEditor({ work, onCancel }: { work: QuestWork; onCancel: () =
             />
           </Field>
           <Field label="Human owner">
-            <Input name="owner" defaultValue={work.owner} />
+            <Input name="owner" defaultValue={text("owner")} />
           </Field>
-          <Field label="Agent assignment (separate from ownership)">
-            <Input name="agent" defaultValue={work.agent} />
+          <Field label="Agent">
+            <Input name="agent" defaultValue={text("agent")} />
           </Field>
         </div>
-        <EditorActions onCancel={onCancel} submit="Save work" />
+        <EditorActions onCancel={clear} submit="Save work" />
       </fieldset>
     </form>
   );
 }
 
-export function HandoffEditor({ work, onCancel }: { work: QuestWork; onCancel: () => void }) {
+export function HandoffEditor({ work }: { work: QuestWork }) {
   const { state, save, pending, canWrite } = useQuest();
+  const { draft, update, clear } = useEditorDraft("handoff", work.id);
   return (
     <form
-      onSubmit={(event) => {
+      onInput={captureText(update)}
+      onSubmit={async (event) => {
         event.preventDefault();
         const data = new FormData(event.currentTarget);
-        void save({
+        const saved = await save({
           type: "work",
           work: {
             ...work,
@@ -114,52 +142,55 @@ export function HandoffEditor({ work, onCancel }: { work: QuestWork; onCancel: (
             handoff: formText(data, "handoff"),
           },
         });
+        if (saved) clear();
       }}
     >
       <fieldset disabled={pending || !canWrite} className="min-w-0">
+        <Field label="Previous attempts">
+          <Textarea
+            name="priorAttempts"
+            defaultValue={draftText(draft, "priorAttempts", work.priorAttempts)}
+            rows={4}
+          />
+        </Field>
+        <Field label="Open findings">
+          <Textarea
+            name="findings"
+            defaultValue={draftText(draft, "findings", work.findings)}
+            rows={4}
+          />
+        </Field>
+        <Field label="Handoff">
+          <Textarea
+            name="handoff"
+            defaultValue={draftText(draft, "handoff", work.handoff)}
+            rows={6}
+          />
+        </Field>
         <p className="mb-4 text-xs text-muted-foreground">
-          Saving prepares a handoff for a future attempt. It does not assign an agent or start
-          anything.
-        </p>
-        <Field label="Previous attempts and retained results">
-          <Textarea name="priorAttempts" defaultValue={work.priorAttempts} rows={4} />
-        </Field>
-        <Field label="Unresolved findings and stop conditions">
-          <Textarea name="findings" defaultValue={work.findings} rows={4} />
-        </Field>
-        <Field label="Prepared handoff · scope, evidence, allowed actions">
-          <Textarea name="handoff" defaultValue={work.handoff} rows={6} />
-        </Field>
-        <p className="mb-4 text-xs text-muted-foreground">
-          Evidence included:{" "}
+          Documents:{" "}
           {state.documents
             .filter((doc) => work.documentIds.includes(doc.id))
             .map((doc) => doc.title)
-            .join("; ") || "no documents associated yet"}
+            .join("; ") || "None"}
         </p>
-        <EditorActions onCancel={onCancel} submit="Save prepared handoff" />
+        <EditorActions onCancel={clear} submit="Save handoff" />
       </fieldset>
     </form>
   );
 }
 
-export function DocumentAssociations({
-  work,
-  onCancel,
-}: {
-  work: QuestWork;
-  onCancel: () => void;
-}) {
+export function DocumentAssociations({ work }: { work: QuestWork }) {
   const { state, save, pending, canWrite } = useQuest();
+  const { draft, update, clear } = useEditorDraft("documents", work.id);
+  const drafted = draft?.documentIds;
+  const selected = typeof drafted === "object" ? drafted : work.documentIds;
   return (
     <form
-      onSubmit={(event) => {
+      onSubmit={async (event) => {
         event.preventDefault();
-        const data = new FormData(event.currentTarget);
-        void save({
-          type: "work",
-          work: { ...work, documentIds: data.getAll("documentIds").map(String) },
-        });
+        const saved = await save({ type: "work", work: { ...work, documentIds: [...selected] } });
+        if (saved) clear();
       }}
     >
       <fieldset disabled={pending || !canWrite}>
@@ -168,46 +199,50 @@ export function DocumentAssociations({
             <Checkbox
               name="documentIds"
               value={item.id}
-              defaultChecked={work.documentIds.includes(item.id)}
+              checked={selected.includes(item.id)}
+              onCheckedChange={(checked) =>
+                update({
+                  documentIds: checked
+                    ? [...selected.filter((id) => id !== item.id), item.id]
+                    : selected.filter((id) => id !== item.id),
+                })
+              }
             />
             <span>
-              {item.title} · {item.kind === "evidence" ? "captured evidence" : "living document"}
+              {item.title} · {item.kind === "evidence" ? "evidence" : "living document"}
             </span>
           </label>
         ))}
-        <EditorActions onCancel={onCancel} submit="Save associations" />
+        <EditorActions onCancel={clear} submit="Save associations" />
       </fieldset>
     </form>
   );
 }
 
-export function DocumentEditor({
-  document,
-  onCancel,
-}: {
-  document: QuestDocument;
-  onCancel: () => void;
-}) {
+export function DocumentEditor({ document }: { document: QuestDocument }) {
   const { save, pending, canWrite } = useQuest();
+  const { draft, update, clear } = useEditorDraft("document", document.id);
   return (
     <form
-      onSubmit={(event) => {
+      onInput={captureText(update)}
+      onSubmit={async (event) => {
         event.preventDefault();
         const data = new FormData(event.currentTarget);
-        void save({
+        const saved = await save({
           type: "document",
           document: { ...document, title: formText(data, "title"), body: formText(data, "body") },
         });
+        if (saved) clear();
       }}
     >
       <fieldset disabled={pending || !canWrite}>
         <Field label="Document title">
-          <Input name="title" defaultValue={document.title} required />
+          <Input name="title" defaultValue={draftText(draft, "title", document.title)} required />
         </Field>
         <Field label="Document content">
-          <Textarea name="body" defaultValue={document.body} rows={14} />
+          <Textarea name="body" defaultValue={draftText(draft, "body", document.body)} rows={14} />
         </Field>
-        <EditorActions onCancel={onCancel} submit="Save document" />
+        <EditorActions onCancel={clear} submit="Save document" />
       </fieldset>
     </form>
   );

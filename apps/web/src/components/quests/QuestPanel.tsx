@@ -6,7 +6,7 @@ import {
   type QuestWork,
 } from "@t3tools/contracts";
 import { ArrowLeftIcon, ChevronRightIcon, XIcon } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -19,8 +19,10 @@ import {
   DocumentEditor,
   Field,
   HandoffEditor,
+  useEditorDraft,
   WorkEditor,
 } from "./QuestEditors";
+import { draftText, useQuestDraft } from "./questDraftStore";
 import { QuestMarkdown } from "./QuestMarkdown";
 import {
   childrenOf,
@@ -233,7 +235,9 @@ function ChangeText({ label, text }: { label: string; text: string | null }) {
 function WorkInspector({ id }: { id: string }) {
   const { state, canWrite, pending, save, openPanel, showView } = useQuest();
   const threads = useQuestConversationThreads();
-  const [mode, setMode] = useState<"read" | "edit" | "handoff" | "documents">("read");
+  const edit = useEditorDraft("work", id);
+  const handoff = useEditorDraft("handoff", id);
+  const associations = useEditorDraft("documents", id);
   const work = state.work.find((item) => item.id === id);
   if (!work) return <Missing what="work" />;
   const path = workPath(state, work.id).slice(0, -1);
@@ -250,8 +254,8 @@ function WorkInspector({ id }: { id: string }) {
     .toReversed();
   const title = (otherId: string) =>
     state.work.find((item) => item.id === otherId)?.title ?? otherId;
-  if (mode === "edit") return <WorkEditor work={work} onCancel={() => setMode("read")} />;
-  if (mode === "handoff") return <HandoffEditor work={work} onCancel={() => setMode("read")} />;
+  if (edit.draft) return <WorkEditor work={work} />;
+  if (handoff.draft) return <HandoffEditor work={work} />;
   return (
     <article aria-label={work.title}>
       {path.length > 0 ? (
@@ -281,7 +285,7 @@ function WorkInspector({ id }: { id: string }) {
       <h2 className="mt-2 text-lg font-semibold">{work.title}</h2>
       <div className="mt-3 flex flex-wrap gap-1.5">
         {canWrite ? (
-          <Button size="sm" variant="outline" disabled={pending} onClick={() => setMode("edit")}>
+          <Button size="sm" variant="outline" disabled={pending} onClick={() => edit.update()}>
             Edit
           </Button>
         ) : null}
@@ -319,8 +323,8 @@ function WorkInspector({ id }: { id: string }) {
           <dd>{workStateLabels[work.state]}</dd>
           <dt className="text-muted-foreground">Human owner</dt>
           <dd>{work.owner || "Not recorded"}</dd>
-          <dt className="text-muted-foreground">Agent assignment</dt>
-          <dd>{work.agent || "Not recorded"} (recorded, not a running agent)</dd>
+          <dt className="text-muted-foreground">Agent</dt>
+          <dd>{work.agent || "None"}</dd>
           <dt className="text-muted-foreground">Conversations</dt>
           <dd>
             {conversations.length === 0
@@ -376,12 +380,10 @@ function WorkInspector({ id }: { id: string }) {
                     {label}: {title(other)}
                   </button>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {relation.provenance === "capture"
-                      ? "Recorded in a captured source"
-                      : "Prototype example link, not a recorded fact"}
+                    {relation.provenance === "capture" ? "Source" : "Example link"}
                     {source ? (
                       <>
-                        {" · "}
+                        {": "}
                         <button
                           type="button"
                           className="underline"
@@ -421,10 +423,10 @@ function WorkInspector({ id }: { id: string }) {
       ) : null}
 
       <Block
-        title="Previous attempts, findings and handoff"
+        title="Attempts and handoff"
         action={
           canWrite ? (
-            <Button size="xs" variant="ghost" disabled={pending} onClick={() => setMode("handoff")}>
+            <Button size="xs" variant="ghost" disabled={pending} onClick={() => handoff.update()}>
               Prepare handoff
             </Button>
           ) : null
@@ -435,8 +437,8 @@ function WorkInspector({ id }: { id: string }) {
             {(
               [
                 ["Previous attempts", work.priorAttempts],
-                ["Unresolved findings", work.findings],
-                ["Prepared handoff (not dispatched)", work.handoff],
+                ["Open findings", work.findings],
+                ["Handoff", work.handoff],
               ] as const
             )
               .filter(([, text]) => text)
@@ -455,28 +457,26 @@ function WorkInspector({ id }: { id: string }) {
       <Block
         title="Documents"
         action={
-          canWrite && mode !== "documents" ? (
+          canWrite && !associations.draft ? (
             <Button
               size="xs"
               variant="ghost"
               disabled={pending}
-              onClick={() => setMode("documents")}
+              onClick={() => associations.update()}
             >
               Manage
             </Button>
           ) : null
         }
       >
-        {mode === "documents" ? (
-          <DocumentAssociations work={work} onCancel={() => setMode("read")} />
+        {associations.draft ? (
+          <DocumentAssociations work={work} />
         ) : documents.length > 0 ? (
           <ul>
             {documents.map((doc) => (
               <LinkRow
                 key={doc.id}
-                detail={
-                  doc.kind === "evidence" ? "Captured evidence · read only" : "Living document"
-                }
+                detail={doc.kind === "evidence" ? "Evidence · read only" : "Living document"}
                 onClick={() => openPanel({ type: "document", id: doc.id }, "push")}
               >
                 {doc.title}
@@ -497,7 +497,7 @@ function WorkInspector({ id }: { id: string }) {
           </ul>
         ) : (
           <p className="text-sm text-muted-foreground">
-            No recorded changes since history began (revision {state.history[0]?.revision ?? 0}).
+            No changes since revision {state.history[0]?.revision ?? 0}.
           </p>
         )}
       </Block>
@@ -507,22 +507,22 @@ function WorkInspector({ id }: { id: string }) {
 
 function DocumentView({ id }: { id: string }) {
   const { state, canWrite, pending, openPanel } = useQuest();
-  const [editing, setEditing] = useState(false);
+  const editor = useEditorDraft("document", id);
   const document = state.documents.find((item) => item.id === id);
   if (!document) return <Missing what="document" />;
-  if (editing) return <DocumentEditor document={document} onCancel={() => setEditing(false)} />;
+  if (editor.draft) return <DocumentEditor document={document} />;
   const users = state.work.filter((item) => item.documentIds.includes(document.id));
   return (
     <article aria-label={document.title}>
       <div className="flex items-center gap-2">
         {document.kind === "evidence" ? (
-          <Badge variant="outline">Captured evidence · read only</Badge>
+          <Badge variant="outline">Evidence · read only</Badge>
         ) : (
-          <Badge variant="info">Living document · prototype synthesis</Badge>
+          <Badge variant="info">Living document</Badge>
         )}
         {document.kind === "living" && canWrite ? (
           <span className="ms-auto">
-            <Button size="xs" variant="outline" disabled={pending} onClick={() => setEditing(true)}>
+            <Button size="xs" variant="outline" disabled={pending} onClick={() => editor.update()}>
               Edit
             </Button>
           </span>
@@ -538,11 +538,6 @@ function DocumentView({ id }: { id: string }) {
           </>
         ) : null}
       </p>
-      {document.kind === "evidence" ? (
-        <p className="mt-2 text-xs text-muted-foreground">
-          Links in captured evidence point into the original repository and are shown as text.
-        </p>
-      ) : null}
       <div className="mt-4">
         <QuestMarkdown text={document.body} />
       </div>
@@ -569,11 +564,24 @@ function addedText(before: string, after: string): string {
 }
 
 function QuestionView({ id }: { id: string }) {
-  const { state, canWrite, pending, save, openPanel, showView } = useQuest();
+  const { environmentId, state, canWrite, pending, save, openPanel, showView } = useQuest();
   const question = state.questions.find((item) => item.id === id);
-  const [answer, setAnswer] = useState(question?.answer ?? "");
-  const [rationale, setRationale] = useState(question?.rationale ?? "");
+  const draft = useQuestDraft(environmentId, `question:${id}`);
   if (!question) return <Missing what="decision" />;
+  const answer = draftText(draft.draft, "answer", question.answer ?? "");
+  const rationale = draftText(draft.draft, "rationale", question.rationale ?? "");
+  const setAnswer = (value: string) => draft.update({ answer: value });
+  const setRationale = (value: string) => draft.update({ rationale: value });
+  async function saveAnswer(deferred: boolean) {
+    const saved = await save({
+      type: "answer",
+      questionId: id,
+      answer: deferred ? answer || null : answer,
+      rationale: rationale || null,
+      deferred,
+    });
+    if (saved) draft.clear();
+  }
   const status = questQuestionStatus(question);
   const work = state.work.find((item) => item.id === question.workId);
   const sources = state.documents.filter((doc) => work?.documentIds.includes(doc.id));
@@ -586,9 +594,7 @@ function QuestionView({ id }: { id: string }) {
         <Badge variant={status === "open" || status === "recorded" ? "warning" : "secondary"}>
           {questionStatusLabels[status]}
         </Badge>
-        {question.proposal ? (
-          <Badge variant="outline">Prototype proposal · not an actual pending request</Badge>
-        ) : null}
+        {question.proposal ? <Badge variant="outline">Proposed</Badge> : null}
       </div>
       <h2 className="mt-2 text-lg font-semibold">{question.title}</h2>
       <p className="mt-2 whitespace-pre-wrap text-sm">{question.context}</p>
@@ -614,7 +620,7 @@ function QuestionView({ id }: { id: string }) {
             {sources.map((doc) => (
               <LinkRow
                 key={doc.id}
-                detail={doc.kind === "evidence" ? "Captured evidence" : "Living document"}
+                detail={doc.kind === "evidence" ? "Evidence" : "Living document"}
                 onClick={() => openPanel({ type: "document", id: doc.id }, "push")}
               >
                 {doc.title}
@@ -649,15 +655,12 @@ function QuestionView({ id }: { id: string }) {
               </pre>
             </div>
           ) : (
-            <p className="mt-2 text-xs text-muted-foreground">
-              Applied before history began; the change itself was not recorded.
-            </p>
+            <p className="mt-2 text-xs text-muted-foreground">Applied before history began.</p>
           )}
           {canWrite ? (
             <div className="mt-3">
               <p className="mb-2 text-xs text-muted-foreground">
-                Reopening lets you record a revision. The earlier application stays in the work’s
-                understanding until it is edited.
+                The applied text stays in the work.
               </p>
               <Button
                 size="sm"
@@ -700,50 +703,18 @@ function QuestionView({ id }: { id: string }) {
               />
             </Field>
             <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                disabled={!answer.trim()}
-                onClick={() =>
-                  void save({
-                    type: "answer",
-                    questionId: question.id,
-                    answer,
-                    rationale: rationale || null,
-                    deferred: false,
-                  })
-                }
-              >
+              <Button size="sm" disabled={!answer.trim()} onClick={() => void saveAnswer(false)}>
                 Record answer
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  void save({
-                    type: "answer",
-                    questionId: question.id,
-                    answer: answer || null,
-                    rationale: rationale || null,
-                    deferred: true,
-                  })
-                }
-              >
+              <Button size="sm" variant="outline" onClick={() => void saveAnswer(true)}>
                 Defer
               </Button>
             </div>
           </fieldset>
-          {status === "deferred" ? (
-            <p className="mt-3 text-xs text-muted-foreground">
-              Deferred. The affected work is unchanged.
-            </p>
-          ) : null}
           {preview && work ? (
             <div className="mt-4 rounded-lg border p-3">
               <p className="text-sm font-medium">Applying would change “{work.title}”</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Recorded answer: {question.answer}. This text is added to the work’s current
-                understanding:
-              </p>
+              <p className="mt-1 text-xs text-muted-foreground">Adds to current understanding:</p>
               <pre className="mt-2 whitespace-pre-wrap rounded border bg-success/8 p-2 text-xs">
                 + {addedText(work.understanding, preview)}
               </pre>
@@ -765,9 +736,7 @@ function QuestionView({ id }: { id: string }) {
       <Block title="Record">
         {question.answer &&
         !record.some((entry) => entry.kind === "answer" || entry.kind === "defer") ? (
-          <p className="mb-2 text-xs text-muted-foreground">
-            The current answer was saved before history began; when it was recorded is unknown.
-          </p>
+          <p className="mb-2 text-xs text-muted-foreground">Answer saved before history began.</p>
         ) : null}
         {record.length > 0 ? (
           <ul>
@@ -789,10 +758,6 @@ function DecisionList() {
   return (
     <div>
       <h2 className="text-lg font-semibold">Decisions</h2>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Every prepared question, whatever its state. Answers are recorded first and change work only
-        when applied.
-      </p>
       {questionStatusOrder.map((status) => (
         <Block key={status} title={`${questionStatusLabels[status]} · ${groups[status].length}`}>
           {groups[status].length > 0 ? (
@@ -800,7 +765,7 @@ function DecisionList() {
               {groups[status].map((question: QuestQuestion) => (
                 <LinkRow
                   key={question.id}
-                  detail={`Affects ${state.work.find((item: QuestWork) => item.id === question.workId)?.title ?? "missing work"}${question.proposal ? " · prototype proposal" : ""}`}
+                  detail={`${state.work.find((item: QuestWork) => item.id === question.workId)?.title ?? "Missing work"}${question.proposal ? " · Proposed" : ""}`}
                   onClick={() => openPanel({ type: "question", id: question.id }, "push")}
                 >
                   {question.title}
@@ -821,9 +786,6 @@ function HistoryList() {
   return (
     <div>
       <h2 className="text-lg font-semibold">History</h2>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Saved changes, newest first. The baseline marks where recording began.
-      </p>
       <ul className="mt-3">
         {state.history.toReversed().map((entry) => (
           <HistoryEntryRow key={entry.id} entry={entry} inPanel />
