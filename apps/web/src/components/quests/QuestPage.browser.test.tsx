@@ -1,11 +1,20 @@
 import * as Cause from "effect/Cause";
 import { Atom } from "effect/reactivity";
 import type { QuestState } from "@t3tools/contracts";
-import type { ReactNode } from "react";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  RouterProvider,
+} from "@tanstack/react-router";
 import { expect, it, vi } from "vite-plus/test";
 
 import { render } from "../../../test/render";
 import "../../index.css";
+import { SidebarProvider } from "../ui/sidebar";
+import { SidebarQuests } from "../sidebar/SidebarQuests";
 
 const harness = vi.hoisted(() => ({
   initial: null as QuestState | null,
@@ -33,13 +42,6 @@ vi.mock(import("~/state/query"), () => ({
 vi.mock(import("~/state/use-atom-command"), () => ({
   useAtomCommand: (() => harness.run) as never,
 }));
-vi.mock(import("../AppRouteModal"), () => ({
-  AppRouteModal: ({ children }: { children: ReactNode }) => (
-    <div className="flex h-dvh min-h-0 flex-col">{children}</div>
-  ),
-  AppRouteModalClose: () => <></>,
-}));
-
 import { QuestPage } from "./QuestPage";
 
 function setup() {
@@ -111,7 +113,11 @@ it("keeps recording distinct from applying and offers revision only after applic
     .mockResolvedValueOnce({ _tag: "Success", value: answered })
     .mockResolvedValueOnce({ _tag: "Success", value: applied })
     .mockResolvedValueOnce({ _tag: "Success", value: reopened });
-  await using screen = await render(<QuestPage />);
+  await using screen = await render(
+    <SidebarProvider>
+      <QuestPage />
+    </SidebarProvider>,
+  );
   await screen.getByRole("button", { name: "Prepared question", exact: true }).click();
   await expect
     .element(screen.getByRole("button", { name: "Apply recorded answer to work" }))
@@ -143,7 +149,11 @@ it("keeps recording distinct from applying and offers revision only after applic
 it("keeps a rejected work draft and explicitly reloads even when the saved revision has not changed", async () => {
   const initial = setup();
   harness.run.mockResolvedValueOnce({ _tag: "Success", value: initial });
-  await using screen = await render(<QuestPage />);
+  await using screen = await render(
+    <SidebarProvider>
+      <QuestPage />
+    </SidebarProvider>,
+  );
   const title = screen.getByRole("textbox", { name: "Work title", exact: true });
   await title.fill("Unsaved draft");
   await screen
@@ -177,7 +187,11 @@ it("lets a read-only connection inspect retained documents while preventing edit
       },
     ],
   };
-  await using screen = await render(<QuestPage />);
+  await using screen = await render(
+    <SidebarProvider>
+      <QuestPage />
+    </SidebarProvider>,
+  );
   await screen.getByRole("button", { name: "Documents & evidence", exact: true }).click();
   const picker = screen.getByRole("combobox", { name: "Read or edit a document" });
   await expect.element(picker).toBeEnabled();
@@ -189,4 +203,52 @@ it("lets a read-only connection inspect retained documents while preventing edit
     .element(screen.getByText("A captured source account", { exact: true }))
     .toBeVisible();
   expect(harness.run).not.toHaveBeenCalled();
+});
+
+it("opens a quest in the main area from the collapsible sidebar list", async () => {
+  setup();
+  const storageKey = "t3code:quests-shelf-expanded";
+  const previous = localStorage.getItem(storageKey);
+  using _storage = {
+    [Symbol.dispose]() {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    },
+  };
+  localStorage.removeItem(storageKey);
+  const root = createRootRoute({
+    component: () => (
+      <SidebarProvider>
+        <aside>
+          <SidebarQuests />
+        </aside>
+        <Outlet />
+      </SidebarProvider>
+    ),
+  });
+  const index = createRoute({
+    getParentRoute: () => root,
+    path: "/",
+    component: () => <p>Conversation area</p>,
+  });
+  const quest = createRoute({ getParentRoute: () => root, path: "/quests", component: QuestPage });
+  const router = createRouter({
+    routeTree: root.addChildren([index, quest]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  await using screen = await render(<RouterProvider router={router} />, {
+    router: false, // This scenario supplies the routes whose navigation it exercises.
+  });
+  const toggle = screen.getByRole("button", { name: "Quests 1", exact: true });
+  await toggle.click();
+  await expect
+    .element(screen.getByRole("link", { name: "Market tracking" }))
+    .not.toBeInTheDocument();
+  await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.click();
+  await screen.getByRole("link", { name: "Market tracking" }).click();
+  await expect.element(screen.getByRole("main", { name: "Quest workspace" })).toBeVisible();
+  await expect.element(screen.getByRole("dialog")).not.toBeInTheDocument();
+  await expect.element(toggle).toBeEnabled();
+  expect(router.state.location.pathname).toBe("/quests");
 });

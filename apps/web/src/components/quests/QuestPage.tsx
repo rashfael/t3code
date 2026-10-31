@@ -16,7 +16,7 @@ import { connectionAtomRuntime } from "~/connection/runtime";
 import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { AppRouteModal, AppRouteModalClose } from "../AppRouteModal";
+import { SidebarInset, SidebarTrigger } from "../ui/sidebar";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -49,9 +49,12 @@ export function QuestPage() {
   const [selectedEnvironment, setSelectedEnvironment] = useState<EnvironmentId | null>(null);
   const environmentId = selectedEnvironment ?? primaryId;
   return (
-    <AppRouteModal label="Quests prototype">
-      <header className="flex items-center justify-between gap-4 border-b p-4">
+    <SidebarInset className="h-dvh min-h-0 overflow-hidden" aria-label="Quest workspace">
+      <header className="flex flex-wrap items-center justify-between gap-4 border-b p-4">
         <div className="flex items-center gap-3">
+          <div className="md:hidden">
+            <SidebarTrigger />
+          </div>
           <CompassIcon className="size-5" />
           <h1 className="font-semibold">Quests</h1>
           <Badge variant="outline">Interaction prototype</Badge>
@@ -68,7 +71,6 @@ export function QuestPage() {
               }))}
             />
           </label>
-          <AppRouteModalClose />
         </div>
       </header>
       {environmentId ? (
@@ -76,7 +78,7 @@ export function QuestPage() {
       ) : (
         <p className="p-6">Connect an environment to open its Quest example.</p>
       )}
-    </AppRouteModal>
+    </SidebarInset>
   );
 }
 
@@ -192,7 +194,7 @@ function QuestWorkspace({
             }}
           />
         </aside>
-        <main className="min-w-0 flex-1 overflow-y-auto p-6">
+        <section aria-label="Selected work" className="min-w-0 flex-1 overflow-y-auto p-6">
           {selected ? (
             <>
               <div className="mb-4 flex items-center gap-2">
@@ -246,7 +248,7 @@ function QuestWorkspace({
               ) : null}
             </>
           ) : null}
-        </main>
+        </section>
       </div>
       <footer className="border-t px-6 py-3 text-xs text-muted-foreground">
         <p role="status" aria-live="polite">

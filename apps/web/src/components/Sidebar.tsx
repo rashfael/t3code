@@ -263,6 +263,7 @@ import {
   type SidebarSweepAction,
 } from "./sidebar/SidebarThreadRow";
 import { SidebarDraftBlock } from "./sidebar/SidebarDraftBlock";
+import { SidebarQuests } from "./sidebar/SidebarQuests";
 import {
   SidebarProjectFolderHeader,
   sidebarFolderRowId,
@@ -3607,6 +3608,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               </DndContext>
             </TooltipProvider>
           ) : null}
+          {!isSearchingThreads ? <SidebarQuests /> : null}
           {!isSearchingThreads &&
           !hasProjectFolders &&
           visibleDraftSessionCount === 0 &&
