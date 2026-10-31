@@ -1,11 +1,17 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type { ProjectId, QuestConversation, QuestState } from "@t3tools/contracts";
+import type {
+  ProjectId,
+  QuestConversation,
+  QuestState,
+  ScopedProjectRef,
+} from "@t3tools/contracts";
 import { EllipsisIcon, PlusIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { useProjects, useQuietThreadShells } from "~/state/entities";
+import type { ChatEmbedding } from "../ChatView.logic";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -127,37 +133,54 @@ export function QuestConversations({
     showView("conversation", { thread: threadId });
   }
 
-  async function start() {
-    if (busy || pending || !projectId) return;
+  /** Prepares a draft in the Quest's environment, links it and shows it; resolves whether it shows. */
+  async function openConversation(
+    projectRef: ScopedProjectRef,
+    workspace?: Parameters<ChatEmbedding["openNewThread"]>[1],
+  ): Promise<boolean> {
+    if (projectRef.environmentId !== environmentId) return false;
     setBusy(true);
     const title = target.title ? `${QUEST_TITLE} · ${target.title}` : QUEST_TITLE;
-    const result = await handleNewThread(scopeProjectRef(environmentId, projectId as ProjectId), {
-      prompt: questConversationPrompt(state, target),
-      navigate: false,
-    });
-    if (!result) {
+    let result: Awaited<ReturnType<typeof handleNewThread>>;
+    try {
+      result = await handleNewThread(projectRef, {
+        ...workspace,
+        prompt: questConversationPrompt(state, target),
+        navigate: false,
+      });
+    } catch (error) {
       setBusy(false);
-      return;
+      throw error;
     }
     // An unsent draft for this project is reused, and it may already be linked here.
     const linked =
-      state.conversations.some((item) => item.threadId === result.threadId) ||
-      (await save({
-        type: "link",
-        threadId: result.threadId,
-        projectId,
-        title,
-        workId: target.workId,
-        questionId: target.questionId,
-      }));
+      result !== null &&
+      (state.conversations.some((item) => item.threadId === result.threadId) ||
+        (await save({
+          type: "link",
+          threadId: result.threadId,
+          projectId: projectRef.projectId,
+          title,
+          workId: target.workId,
+          questionId: target.questionId,
+        })));
     setBusy(false);
-    if (linked) show(result.threadId);
-    else
+    if (result === null) return false;
+    if (!linked) {
       toastManager.add({
         type: "error",
         title: "Could not link the conversation to the Quest",
         description: "Its draft is kept with the project's threads.",
       });
+      return false;
+    }
+    show(result.threadId);
+    return true;
+  }
+
+  function start() {
+    if (busy || pending || !projectId) return;
+    void openConversation(scopeProjectRef(environmentId, projectId as ProjectId));
   }
 
   const selectedWork = state.work.find((item) => item.id === selected?.workId);
@@ -207,7 +230,7 @@ export function QuestConversations({
               size="sm"
               variant="outline"
               disabled={busy || pending || !projectId}
-              onClick={() => void start()}
+              onClick={start}
             >
               <PlusIcon aria-hidden />
               New conversation
@@ -232,6 +255,7 @@ export function QuestConversations({
             key={selected.threadId}
             environmentId={environmentId}
             threadId={selected.threadId}
+            onNewConversation={openConversation}
           />
         </div>
       ) : thread ? (

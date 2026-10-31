@@ -79,13 +79,45 @@ vi.mock(import("~/state/entities"), () => ({
   useQuietThreadShell: (() => null) as never,
 }));
 // The normal ChatView needs a live environment; QuestChat's own test covers what it hosts.
-vi.mock(import("./QuestChat"), () => ({
-  QuestChat: ({ environmentId, threadId }: { environmentId: string; threadId: string }) => (
-    <section aria-label="Embedded chat">
-      {environmentId}/{threadId}
-    </section>
-  ),
-}));
+// "Send in background" stands in for the chat asking its host for the next conversation.
+vi.mock(import("./QuestChat"), async () => {
+  const { useState } = await import("react");
+  return {
+    QuestChat: ({
+      environmentId,
+      threadId,
+      onNewConversation,
+    }: {
+      environmentId: string;
+      threadId: string;
+      onNewConversation: (
+        projectRef: { environmentId: string; projectId: string },
+        options: object,
+      ) => Promise<boolean>;
+    }) => {
+      const [opened, setOpened] = useState<boolean | null>(null);
+      return (
+        <>
+          <section aria-label="Embedded chat">
+            {environmentId}/{threadId}
+          </section>
+          <button
+            type="button"
+            onClick={() =>
+              void onNewConversation(
+                { environmentId, projectId: "project-1" },
+                { envMode: "local", branch: "main", worktreePath: null, startFromOrigin: false },
+              ).then(setOpened)
+            }
+          >
+            Send in background
+          </button>
+          {opened === null ? null : <output>{opened ? "opened" : "not opened"}</output>}
+        </>
+      );
+    },
+  } as never;
+});
 vi.mock(import("~/hooks/useHandleNewThread"), () => ({
   useNewThreadHandler: (() => harness.newThread) as never,
 }));
@@ -448,6 +480,45 @@ it("creates a normal draft inside the Quest and keeps the Quest route", async ()
     thread: "thread-1",
   });
   await expect.element(screen.getByRole("button", { name: "About Part A" })).toBeVisible();
+});
+
+it("opens the chat's next conversation in the Quest and keeps the chat when linking fails", async () => {
+  const initial = setup();
+  const linked = { ...initial, conversations: [conversation("thread-1", "Example")] };
+  harness.quests = { "example-environment": linked };
+  harness.newThread
+    .mockResolvedValueOnce({ draftId: "draft-2", threadId: "thread-2" })
+    .mockResolvedValueOnce({ draftId: "draft-3", threadId: "thread-3" });
+  harness.run
+    .mockResolvedValueOnce({
+      _tag: "Success",
+      value: {
+        ...linked,
+        revision: 1,
+        conversations: [...linked.conversations, conversation("thread-2", "Example")],
+      },
+    })
+    .mockResolvedValueOnce({ _tag: "Failure", cause: Cause.fail(new Error("Save failed")) });
+  const { screen, router } = await renderRoutes("/quests?view=conversation&thread=thread-1");
+  await using _screen = screen;
+  const chat = screen.getByRole("region", { name: "Embedded chat" });
+  await screen.getByRole("button", { name: "Send in background" }).click();
+  await expect.element(chat).toHaveTextContent("example-environment/thread-2");
+  expect(harness.newThread.mock.calls[0]).toEqual([
+    { environmentId: "example-environment", projectId: "project-1" },
+    expect.objectContaining({ navigate: false, envMode: "local", branch: "main" }),
+  ]);
+  expect(harness.run.mock.calls[0]?.[0].input.change).toMatchObject({
+    type: "link",
+    threadId: "thread-2",
+  });
+  expect(router.state.location.pathname).toBe("/quests");
+  expect(router.state.location.search).toMatchObject({ thread: "thread-2" });
+
+  await screen.getByRole("button", { name: "Send in background" }).click();
+  await expect.element(screen.getByText("not opened", { exact: true })).toBeVisible();
+  await expect.element(chat).toHaveTextContent("example-environment/thread-2");
+  expect(router.state.location.search).toMatchObject({ thread: "thread-2" });
 });
 
 it("switches, reopens and deep-links linked conversations on their own environment", async () => {

@@ -173,8 +173,12 @@ export function ThreadPanelHeaderControl(props: PanelLayoutControlsProps) {
   );
 }
 
-/** The window's top-right panel controls, with the maximize toggle while the panel is open. */
+/**
+ * The window's top-right panel controls, with the maximize toggle while the panel is open. Inline,
+ * they sit in their parent's header instead, for a chat hosted below the titlebar.
+ */
 export function WorkspaceTitlebarControls(props: {
+  readonly inline?: boolean;
   readonly showMaximizeControl: boolean;
   readonly rightPanelOpen: boolean;
   readonly animationsActive: boolean;
@@ -184,7 +188,12 @@ export function WorkspaceTitlebarControls(props: {
 }) {
   return (
     <div
-      className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] z-50 mr-px flex h-[var(--workspace-topbar-height)] items-center gap-1 [-webkit-app-region:no-drag]"
+      className={cn(
+        "flex h-[var(--workspace-topbar-height)] items-center gap-1 [-webkit-app-region:no-drag]",
+        props.inline
+          ? "relative shrink-0"
+          : "pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] z-50 mr-px",
+      )}
       data-workspace-titlebar-controls
     >
       {props.showMaximizeControl ? (

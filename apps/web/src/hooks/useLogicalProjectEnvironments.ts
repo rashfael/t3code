@@ -16,9 +16,14 @@ import { useProjects } from "../state/entities";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useClientSettings } from "./useSettings";
 
+/**
+ * The environments a thread of this project can run on. A host that pins its conversations to one
+ * environment passes it, so draft routing, load balancing and the pickers never leave it.
+ */
 export function useLogicalProjectEnvironments(
   activeProject: EnvironmentProject | null,
   scratchDraft: boolean,
+  pinnedEnvironmentId: EnvironmentId | null = null,
 ): readonly EnvironmentOption[] {
   const { environments } = useEnvironments();
   const allProjects = useProjects();
@@ -67,6 +72,8 @@ export function useLogicalProjectEnvironments(
       pushEnvironment(p.environmentId, p.id);
     }
   }
+  if (pinnedEnvironmentId !== null)
+    return envs.filter((env) => env.environmentId === pinnedEnvironmentId);
   envs.sort((a, b) => {
     if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
     return a.label.localeCompare(b.label);

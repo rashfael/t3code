@@ -13,6 +13,7 @@ import {
   snapshotComposerSend,
   withMessageContext,
   makeThreadErrorSetter,
+  type ChatEmbedding,
 } from "../ChatView.logic";
 import { isUsageLimitsCommand } from "@t3tools/shared/usageLimits";
 import {
@@ -246,6 +247,8 @@ interface ComposerSendInput {
   /** Refuses `/side` with this reason and keeps the draft. */
   readonly sideChatDisabledReason: string | null;
   readonly handleNewThreadInActiveProject: () => void;
+  /** The embedding host's way to open the next conversation, instead of a draft route. */
+  readonly openNewThread: ChatEmbedding["openNewThread"] | null;
   readonly persistThreadSettingsForNextTurn: (input: {
     threadId: ThreadId;
     createdAt: string;
@@ -333,6 +336,7 @@ export function useComposerSend(input: ComposerSendInput) {
     onSideChat,
     sideChatDisabledReason,
     handleNewThreadInActiveProject,
+    openNewThread,
     persistThreadSettingsForNextTurn,
   } = input;
   const linkedEnvironments = useLinkedEnvironments(environmentId);
@@ -1370,16 +1374,15 @@ export function useComposerSend(input: ComposerSendInput) {
       });
       if (backgroundThreadRef) {
         try {
-          backgroundDraftOpened = Boolean(
-            await handleNewThread(
-              scopeProjectRef(activeProject.environmentId, activeProject.id),
-              resolveBackgroundDraftWorkspaceOptions({
-                envMode: sendEnvMode,
-                branch: activeThreadBranch,
-                startFromOrigin,
-              }),
-            ),
-          );
+          const nextProjectRef = scopeProjectRef(activeProject.environmentId, activeProject.id);
+          const nextWorkspace = resolveBackgroundDraftWorkspaceOptions({
+            envMode: sendEnvMode,
+            branch: activeThreadBranch,
+            startFromOrigin,
+          });
+          backgroundDraftOpened = openNewThread
+            ? await openNewThread(nextProjectRef, nextWorkspace)
+            : Boolean(await handleNewThread(nextProjectRef, nextWorkspace));
         } catch (error) {
           clearBackgroundDraftSubmissionByRef(backgroundThreadRef);
           toastManager.add(

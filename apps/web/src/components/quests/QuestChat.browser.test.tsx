@@ -16,13 +16,12 @@ const harness = vi.hoisted(() => ({
 interface HarnessState {
   /** Draft sessions by draft id. */
   readonly drafts: Readonly<Record<string, Ref>>;
-  readonly redirects: Readonly<Record<string, Ref>>;
   /** Server thread shells by `environmentId|threadId`. */
   readonly shells: Readonly<Record<string, true>>;
 }
 
 vi.mock(import("~/composerDraftStore"), () => {
-  const store = create<HarnessState>()(() => ({ drafts: {}, redirects: {}, shells: {} }));
+  const store = create<HarnessState>()(() => ({ drafts: {}, shells: {} }));
   harness.store = store;
   const api = (state: HarnessState) => ({
     getDraftIdByRef: (ref: Ref) =>
@@ -30,7 +29,7 @@ vi.mock(import("~/composerDraftStore"), () => {
         ([, draft]) => draft.environmentId === ref.environmentId && draft.threadId === ref.threadId,
       )?.[0] ?? null,
     getDraftSession: (draftId: string) => state.drafts[draftId] ?? null,
-    getPromotedDraftRedirect: (draftId: string) => state.redirects[draftId] ?? null,
+    draftThreadsByThreadKey: state.drafts,
   });
   return {
     useComposerDraftStore: ((selector: (value: ReturnType<typeof api>) => unknown) =>
@@ -44,6 +43,13 @@ vi.mock(import("~/state/entities"), async () => {
     useQuietThreadShell: ((ref: Ref) =>
       useStore(harness.store as never, (state: HarnessState) =>
         state.shells[`${ref.environmentId}|${ref.threadId}`] ? shell : null,
+      )) as never,
+    useQuietThreadShells: (() =>
+      Object.keys(useStore(harness.store as never, (state: HarnessState) => state.shells)).map(
+        (key) => {
+          const [environmentId, id] = key.split("|");
+          return { environmentId, id, deletedAt: null };
+        },
       )) as never,
   };
 });
@@ -67,15 +73,17 @@ vi.mock(import("../ChatView"), () => ({
 
 import { QuestChat } from "./QuestChat";
 
+const noop = async () => false;
+
 function setup(state: Partial<HarnessState>) {
   harness.instances = 0;
-  harness.store.setState({ drafts: {}, redirects: {}, shells: {}, ...state });
+  harness.store.setState({ drafts: {}, shells: {}, ...state });
 }
 
 it("keeps the draft's chat and the Quest route through its first send", async () => {
   setup({ drafts: { "draft-1": { environmentId: "env-a", threadId: "thread-1" } } });
   await using screen = await render(
-    <QuestChat environmentId={"env-a" as never} threadId="thread-1" />,
+    <QuestChat environmentId={"env-a" as never} threadId="thread-1" onNewConversation={noop} />,
     {
       router: "/quests",
     },
@@ -92,28 +100,31 @@ it("keeps the draft's chat and the Quest route through its first send", async ()
   expect(screen.router?.state.location.pathname).toBe("/quests");
 });
 
-it("follows a draft that was sent to another environment", async () => {
-  setup({ drafts: { "draft-1": { environmentId: "env-a", threadId: "thread-1" } } });
+it.each([
+  { name: "thread", state: { shells: { "env-b|thread-1": true as const } } },
+  {
+    name: "draft",
+    state: { drafts: { "draft-1": { environmentId: "env-b", threadId: "thread-1" } } },
+  },
+])("says when a legacy link's $name is on another environment", async ({ state }) => {
+  setup(state);
   await using screen = await render(
-    <QuestChat environmentId={"env-a" as never} threadId="thread-1" />,
-    {
-      router: "/quests",
-    },
+    <QuestChat environmentId={"env-a" as never} threadId="thread-1" onNewConversation={noop} />,
+    { router: "/quests" },
   );
-  harness.store.setState({
-    drafts: {},
-    redirects: { "draft-1": { environmentId: "env-b", threadId: "thread-1" } },
-    shells: { "env-b|thread-1": true },
-  });
   await expect
-    .element(screen.getByRole("region", { name: "Chat" }))
-    .toHaveTextContent("server env-b/thread-1 #1");
+    .element(screen.getByRole("alert"))
+    .toHaveTextContent("This conversation is on another environment than the Quest.");
+  await expect
+    .element(screen.getByRole("link", { name: "Open it outside the Quest" }))
+    .toBeVisible();
+  expect(harness.instances).toBe(0);
 });
 
 it("reports a conversation whose draft was discarded instead of waiting forever", async () => {
   setup({});
   await using screen = await render(
-    <QuestChat environmentId={"env-a" as never} threadId="gone" />,
+    <QuestChat environmentId={"env-a" as never} threadId="gone" onNewConversation={noop} />,
     {
       router: "/quests",
     },

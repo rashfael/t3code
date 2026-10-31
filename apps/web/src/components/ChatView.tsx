@@ -339,6 +339,7 @@ import {
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   startNewThreadForProject,
+  type ChatEmbedding,
   codexArtifactTemplatePromptToAppend,
   shouldRefocusComposerOnWindowFocus,
 } from "./ChatView.logic";
@@ -392,7 +393,7 @@ type ChatViewProps =
       environmentId: EnvironmentId;
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
-      reserveTitleBarControlInset?: boolean;
+      embedding?: ChatEmbedding;
       forceExpandedMobileComposer?: boolean;
       /** A side chat in its parent's right panel; the parent keeps the keyboard and workspace UI. */
       embedded?: SideChatParentPanel;
@@ -403,7 +404,7 @@ type ChatViewProps =
       environmentId: EnvironmentId;
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
-      reserveTitleBarControlInset?: boolean;
+      embedding?: ChatEmbedding;
       forceExpandedMobileComposer?: boolean;
       embedded?: never;
       routeKind: "draft";
@@ -418,7 +419,7 @@ export default function ChatView(props: ChatViewProps) {
     threadId,
     routeKind,
     onDiffPanelOpen,
-    reserveTitleBarControlInset = true,
+    embedding,
     forceExpandedMobileComposer = false,
     embedded: parentPanel,
   } = props;
@@ -1109,7 +1110,7 @@ export default function ChatView(props: ChatViewProps) {
       ? draftFallback.selection
       : activeProjectSettings.settings.defaultModelSelection;
   const handleNewThreadInActiveProject = () => {
-    startNewThreadForProject(activeProjectRef, handleNewThread);
+    startNewThreadForProject(activeProjectRef, embedding?.openNewThread ?? handleNewThread);
   };
   const handleNewThreadInActiveProjectStable = useStableCallback(handleNewThreadInActiveProject);
   const projectGroupingSettings = selectProjectGroupingSettings(settings);
@@ -1187,6 +1188,7 @@ export default function ChatView(props: ChatViewProps) {
   const logicalProjectEnvironments = useLogicalProjectEnvironments(
     activeProject,
     activeProjectIsScratch && draftId !== null,
+    embedding ? environmentId : null,
   );
   const hasMultipleEnvironments = logicalProjectEnvironments.length > 1;
   const canAutoBalanceEnvironments = hasMultipleEnvironments && !activeProjectIsScratch;
@@ -2958,6 +2960,7 @@ export default function ChatView(props: ChatViewProps) {
     onSideChat: sideChat.available ? sendSideChatStable : undefined,
     sideChatDisabledReason,
     handleNewThreadInActiveProject,
+    openNewThread: embedding?.openNewThread ?? null,
     persistThreadSettingsForNextTurn,
   });
   const onImplementPlanInNewThreadStable = useStableCallback(onImplementPlanInNewThread);
@@ -3254,15 +3257,20 @@ export default function ChatView(props: ChatViewProps) {
     onToggleThreadPanel: toggleThreadPanelStable,
     onToggleRightPanel: toggleRightPanelStable,
   } satisfies PanelLayoutControlsProps;
+  // An embedding host's header sits below the window titlebar, so the controls stay in the chat's own header.
+  const controlsInWindowTitlebar = embedding === undefined;
+  const panelControlsAtRoot = controlsInWindowTitlebar && rightPanelControlsAtRoot;
+  const threadPanelControlInHeader = controlsInWindowTitlebar && inlineRightPanelOwnsTitleBar;
   const panelToggleControls = (
     <PanelLayoutControls
       {...panelToggleControlProps}
-      showThreadPanelControl={!inlineRightPanelOwnsTitleBar}
+      showThreadPanelControl={!threadPanelControlInHeader}
     />
   );
   const threadPanelHeaderControl = <ThreadPanelHeaderControl {...panelToggleControlProps} />;
   const panelLayoutControls = (
     <WorkspaceTitlebarControls
+      inline={!controlsInWindowTitlebar}
       showMaximizeControl={!shouldUsePlanSidebarSheet}
       rightPanelOpen={rightPanelOpen}
       animationsActive={panelAnimationsActive}
@@ -3290,7 +3298,7 @@ export default function ChatView(props: ChatViewProps) {
           state={deviceState}
         />
       )}
-      {rightPanelControlsAtRoot && !embedded ? panelLayoutControls : null}
+      {panelControlsAtRoot && !embedded ? panelLayoutControls : null}
       <div
         className={cn(
           "flex min-h-0 min-w-0 flex-col overflow-x-hidden",
@@ -3306,25 +3314,27 @@ export default function ChatView(props: ChatViewProps) {
             data-chat-header
             className={cn(
               "relative bg-background [[data-panel-animations=true]_&]:motion-safe:transition-[padding-left] [[data-panel-animations=true]_&]:motion-safe:duration-(--panel-animation-duration) [[data-panel-animations=true]_&]:motion-safe:ease-out",
-              isElectron
-                ? cn(
-                    "drag-region flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center px-3 sm:px-5",
-                    reserveTitleBarControlInset &&
-                      !inlineRightPanelOwnsTitleBar &&
-                      "wco:pr-(--workspace-native-controls-inset)",
-                  )
-                : "flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center pl-(--workspace-gutter-start) pr-(--workspace-gutter-end)",
-              COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+              !controlsInWindowTitlebar
+                ? "flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center gap-2 px-3 sm:px-5"
+                : isElectron
+                  ? cn(
+                      "drag-region flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center px-3 sm:px-5",
+                      !inlineRightPanelOwnsTitleBar && "wco:pr-(--workspace-native-controls-inset)",
+                    )
+                  : "flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center pl-(--workspace-gutter-start) pr-(--workspace-gutter-end)",
+              controlsInWindowTitlebar && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
             )}
           >
-            {isElectron && rightPanelControlsAtRoot ? (
+            {isElectron && panelControlsAtRoot ? (
               <span
                 aria-hidden
                 className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-28 [-webkit-app-region:no-drag]"
               />
             ) : null}
-            {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
-            {inlineRightPanelOwnsTitleBar ? threadPanelHeaderControl : null}
+            {controlsInWindowTitlebar && !rightPanelControlsAtRoot && !rightPanelControlsInPanel
+              ? panelLayoutControls
+              : null}
+            {threadPanelControlInHeader ? threadPanelHeaderControl : null}
             <ChatHeader
               activeThreadEnvironmentId={activeThread.environmentId}
               activeThreadId={activeThread.id}
@@ -3341,6 +3351,7 @@ export default function ChatView(props: ChatViewProps) {
                 : {})}
               {...(threadFindEnabled ? { onFindInThread: openThreadFindStable } : {})}
             />
+            {!controlsInWindowTitlebar && !rightPanelControlsInPanel ? panelLayoutControls : null}
           </header>
         )}
 

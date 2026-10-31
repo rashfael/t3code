@@ -406,6 +406,18 @@ export function resolveThreadSwitchTimeline<T extends readonly unknown[]>(input:
   return input.nextEntries;
 }
 
+/**
+ * A view that hosts the chat in place of its thread route, such as a Quest. Its conversations stay
+ * on the chat's environment, and the next conversation opens in the host instead of a route.
+ */
+export interface ChatEmbedding {
+  /** Resolves whether the host now shows the new conversation. */
+  readonly openNewThread: (
+    projectRef: ScopedProjectRef,
+    options?: ReturnType<typeof resolveBackgroundDraftWorkspaceOptions>,
+  ) => Promise<boolean>;
+}
+
 export function startNewThreadForProject(
   projectRef: ScopedProjectRef | null,
   handleNewThread: (projectRef: ScopedProjectRef) => Promise<unknown>,
