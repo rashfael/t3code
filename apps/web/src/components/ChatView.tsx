@@ -2814,6 +2814,7 @@ export default function ChatView(props: ChatViewProps) {
       composerRef,
       composerDraftTarget,
       setThreadError,
+      embedding,
     });
   const onCompactContext = () => {
     if (compactDisabled) return;

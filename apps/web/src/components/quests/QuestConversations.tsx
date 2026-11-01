@@ -1,24 +1,41 @@
-import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type {
-  ProjectId,
-  QuestConversation,
-  QuestState,
-  ScopedProjectRef,
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  type EnvironmentId,
+  type QuestConversation,
+  type QuestOpenConversationInput,
+  type QuestPurposeKind,
+  type QuestState,
+  type ThreadId,
 } from "@t3tools/contracts";
-import { EllipsisIcon, PlusIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { CompassIcon, GitForkIcon, MessageSquareIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
+import { randomUUID } from "~/lib/utils";
+import { useComposerDraftStore } from "~/composerDraftStore";
+import { resolveProjectDefaultProviderModelSelection } from "~/providerInstances";
+import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useProjects, useQuietThreadShells } from "~/state/entities";
+import { useEnvironmentShellStatus } from "~/state/shell";
+import { environmentServerConfigsAtom } from "~/state/server";
+import { useEnvironmentQuery } from "~/state/query";
+import { useAtomCommand } from "~/state/use-atom-command";
+import { isThreadRouteSnapshotAuthoritative } from "~/threadRoutes";
 import type { ChatEmbedding } from "../ChatView.logic";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { toastManager } from "../ui/toast";
 import { useQuest } from "./questContext";
 import { rememberQuestConversation, useQuestDraftStore } from "./questDraftStore";
-import { QUEST_TITLE, workStateLabels } from "./questModel";
+import { questEnvironment } from "./questEnvironment";
 import { QuestChat } from "./QuestChat";
 
 export function useQuestConversationThreads(): ReadonlyMap<string, EnvironmentThreadShell> {
@@ -33,364 +50,708 @@ export function useQuestConversationThreads(): ReadonlyMap<string, EnvironmentTh
 }
 
 export function conversationStatusLabel(thread: EnvironmentThreadShell | null): string {
-  if (!thread) return "not sent yet";
+  if (!thread) return "not available";
+  if (thread.deletedAt) return "deleted";
   if (thread.archivedAt) return "archived";
   const status = thread.runtime?.status ?? "idle";
-  if (status === "idle" || status === "completed") return "idle";
+  if (status === "idle" || status === "completed")
+    return thread.settledOverride === "settled" ? "settled" : "idle";
   if (["preparing", "queued", "starting", "running", "waiting"].includes(status))
     return "agent working";
   return status.replace("_", " ");
 }
 
-type About = { workId: string | null; questionId: string | null; title: string | null };
+interface Subject {
+  readonly workId: string | null;
+  readonly questionId: string | null;
+  readonly title: string | null;
+  readonly purposeKind: QuestPurposeKind;
+}
 
-function parseAbout(state: QuestState, about: string | null): About {
+function parseSubject(state: QuestState, about: string | null): Subject | null {
   const [kind, id] = about?.split(":") ?? [];
   const work = kind === "work" ? state.work.find((item) => item.id === id) : undefined;
-  if (work) return { workId: work.id, questionId: null, title: work.title };
-  const question = kind === "question" ? state.questions.find((item) => item.id === id) : undefined;
-  if (question) return { workId: null, questionId: question.id, title: question.title };
-  return { workId: null, questionId: null, title: null };
-}
-
-function aboutValue(conversation: QuestConversation): string {
-  if (conversation.workId) return `work:${conversation.workId}`;
-  if (conversation.questionId) return `question:${conversation.questionId}`;
-  return "";
-}
-
-/** Composer text for a new conversation; the user edits or discards it before anything is sent. */
-function questConversationPrompt(state: QuestState, about: About): string {
-  const work = state.work.find((item) => item.id === about.workId);
-  const question = state.questions.find((item) => item.id === about.questionId);
-  const lines = [`Quest: ${QUEST_TITLE} (historical example; do not resume the original work).`];
   if (work)
-    lines.push(
-      `About: ${work.title} (${workStateLabels[work.state].toLowerCase()})`,
-      "",
-      "Current understanding:",
-      work.understanding,
-    );
+    return {
+      workId: work.id,
+      questionId: null,
+      title: work.title,
+      purposeKind: work.state === "attention" ? "intervene" : "discuss-work",
+    };
+  const question = kind === "question" ? state.questions.find((item) => item.id === id) : undefined;
   if (question)
-    lines.push(
-      `Decision: ${question.title}`,
-      "",
-      question.context,
-      "",
-      "Alternatives:",
-      ...question.alternatives.map((item) => `- ${item}`),
-    );
-  const sources = state.documents.filter((doc) =>
-    (work ?? state.work.find((item) => item.id === question?.workId))?.documentIds.includes(doc.id),
-  );
-  if (sources.length > 0)
-    lines.push("", `Sources in the Quest: ${sources.map((doc) => doc.title).join("; ")}`);
-  return `${lines.join("\n")}\n\n`;
+    return { workId: null, questionId: question.id, title: question.title, purposeKind: "decide" };
+  return null;
 }
 
-/**
- * The linked conversation to show: the route's, else the one last shown here, else the newest
- * about the requested item (none when nothing is about it yet), else the newest.
- */
-function selectConversation(
-  conversations: ReadonlyArray<QuestConversation>,
-  thread: string | null,
-  remembered: string | null,
-  about: string | null,
-): QuestConversation | null {
-  const byId = (id: string | null) => conversations.find((item) => item.threadId === id) ?? null;
-  if (thread) return byId(thread);
-  if (about) return conversations.findLast((item) => aboutValue(item) === about) ?? null;
-  return byId(remembered) ?? conversations.at(-1) ?? null;
+const purposeLabels: Record<QuestPurposeKind, string> = {
+  coordinate: "Coordinate",
+  "discuss-work": "Discuss",
+  decide: "Decide",
+  intervene: "Intervene",
+  digress: "Digression",
+  linked: "Linked",
+};
+
+function defaultPurpose(subject: Subject): string {
+  if (subject.purposeKind === "decide") return `Decide: ${subject.title}`;
+  if (subject.purposeKind === "intervene") return `Unblock ${subject.title}`;
+  if (subject.purposeKind === "digress") return "Explore a side question";
+  return `Discuss ${subject.title}`;
+}
+
+function subjectTitle(state: QuestState, conversation: QuestConversation): string | null {
+  return (
+    state.work.find((item) => item.id === conversation.workId)?.title ??
+    state.questions.find((item) => item.id === conversation.questionId)?.title ??
+    null
+  );
+}
+
+/** The model and modes a new thread in this project would start with, as the composer resolves them. */
+function newThreadDefaults(environmentId: EnvironmentId, project: EnvironmentProject) {
+  const config = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId);
+  const settings = config?.settings ?? DEFAULT_SERVER_SETTINGS;
+  const providers = config?.providers ?? [];
+  const projectSettings = resolveProjectSettings(settings, project.id, project).settings;
+  const { selection } = resolveNewThreadModelSelection({
+    defaultSelection:
+      projectSettings.defaultModelSelection ??
+      resolveProjectDefaultProviderModelSelection(providers, settings, project.id),
+    fallbackSelection: settings.fallbackModelSelection ?? null,
+    providers,
+    settings,
+    projectId: project.id,
+    now: Date.now(),
+  });
+  return selection
+    ? { modelSelection: selection, runtimeMode: projectSettings.defaultRuntimeMode }
+    : null;
+}
+
+function useOpenQuestConversation() {
+  const { environmentId, state, adopt, showView } = useQuest();
+  const projects = useProjects().filter((project) => project.environmentId === environmentId);
+  const open = useAtomCommand(questEnvironment.openConversation, { reportFailure: false });
+  // One operation per intent until it succeeds, so a retry resolves the same reservation.
+  const operations = useRef(new Map<string, string>());
+  const [busy, setBusy] = useState(false);
+  const preferredProjectId =
+    state.conversations.find((item) => item.role === "core")?.projectId ??
+    state.conversations.findLast((item) => item.projectId !== null)?.projectId ??
+    null;
+  const project = projects.find((item) => item.id === preferredProjectId) ?? projects[0] ?? null;
+
+  async function openConversation(
+    request: Pick<
+      QuestOpenConversationInput,
+      "role" | "purposeKind" | "purpose" | "workId" | "questionId" | "resume"
+    >,
+  ): Promise<string | null> {
+    if (busy) return null;
+    if (!project) {
+      toastManager.add({ type: "error", title: "Add a project to this environment first" });
+      return null;
+    }
+    const defaults = newThreadDefaults(environmentId, project);
+    if (!defaults) {
+      toastManager.add({ type: "error", title: "No provider is available for a new conversation" });
+      return null;
+    }
+    const intent = JSON.stringify(request);
+    const operationId = operations.current.get(intent) ?? randomUUID();
+    operations.current.set(intent, operationId);
+    setBusy(true);
+    const result = await open({
+      environmentId,
+      input: {
+        ...request,
+        operationId,
+        projectId: project.id,
+        modelSelection: defaults.modelSelection,
+        runtimeMode: defaults.runtimeMode,
+        interactionMode: "default",
+      },
+    });
+    setBusy(false);
+    if (result._tag !== "Success") {
+      const error = squashAtomCommandFailure(result);
+      toastManager.add({
+        type: "error",
+        title: "The conversation is not ready",
+        description: error instanceof Error ? error.message : undefined,
+      });
+      return null;
+    }
+    operations.current.delete(intent);
+    adopt(result.value.state);
+    const conversation = result.value.state.conversations.find(
+      (item) => item.threadId === result.value.threadId,
+    );
+    // The prepared context goes to the composer unsent; the owner edits or discards it.
+    if (result.value.created && conversation?.prepared) {
+      const ref = scopeThreadRef(environmentId, result.value.threadId as ThreadId);
+      useComposerDraftStore.getState().setPrompt(ref, conversation.prepared);
+    }
+    showView("conversation", { thread: result.value.threadId });
+    return result.value.threadId;
+  }
+  return { openConversation, busy, project };
 }
 
 export function QuestConversations({
-  about: requestedAbout,
+  about,
   thread,
 }: {
   about: string | null;
   thread: string | null;
 }) {
-  const { environmentId, state, canWrite, pending, save, openPanel, showView } = useQuest();
+  const { environmentId, state, canWrite, save, showView } = useQuest();
   const handleNewThread = useNewThreadHandler();
-  const projects = useProjects().filter((project) => project.environmentId === environmentId);
   const threads = useQuestConversationThreads();
   const remembered = useQuestDraftStore((store) => store.conversations[environmentId] ?? null);
-  const [busy, setBusy] = useState(false);
-  const selected = selectConversation(state.conversations, thread, remembered, requestedAbout);
-  const [about, setAbout] = useState(requestedAbout ?? "");
-  const [chosenProject, setProjectId] = useState("");
-  const projectId = chosenProject || projects[0]?.id || "";
-  const target = parseAbout(state, about);
-
+  const { openConversation, busy } = useOpenQuestConversation();
+  const subject = parseSubject(state, about);
+  const byId = (id: string | null) =>
+    state.conversations.find((item) => item.threadId === id) ?? null;
+  const selected = thread
+    ? byId(thread)
+    : subject
+      ? null
+      : (byId(remembered) ?? state.conversations.find((item) => item.role === "core") ?? null);
   const selectedId = selected?.threadId ?? null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- records the shown conversation in the Quest store so a later visit without one in the route reopens it
   useEffect(() => {
     if (selectedId) rememberQuestConversation(environmentId, selectedId);
   }, [environmentId, selectedId]);
 
-  function show(threadId: string) {
-    showView("conversation", { thread: threadId });
-  }
-
-  /** Prepares a draft in the Quest's environment, links it and shows it; resolves whether it shows. */
-  async function openConversation(
-    projectRef: ScopedProjectRef,
-    workspace?: Parameters<ChatEmbedding["openNewThread"]>[1],
-  ): Promise<boolean> {
-    if (projectRef.environmentId !== environmentId) return false;
-    setBusy(true);
-    const title = target.title ? `${QUEST_TITLE} · ${target.title}` : QUEST_TITLE;
-    let result: Awaited<ReturnType<typeof handleNewThread>>;
-    try {
-      result = await handleNewThread(projectRef, {
-        ...workspace,
-        prompt: questConversationPrompt(state, target),
-        navigate: false,
+  const embedding: ChatEmbedding = {
+    // A new thread from inside a Quest chat is an ordinary thread outside the Quest.
+    openNewThread: async (projectRef, workspace) =>
+      (await handleNewThread(projectRef, workspace ?? {})) !== null,
+    openFork: async (threadRef, origin) => {
+      const source = byId(origin.threadId);
+      const linked = await save({
+        type: "link",
+        threadId: threadRef.threadId,
+        projectId: source?.projectId ?? null,
+        title: `${source?.title ?? "Conversation"} · fork`,
+        workId: source?.workId ?? null,
+        questionId: source?.questionId ?? null,
+        purposeKind: "digress",
+        purpose: `Fork of “${source?.title ?? "a conversation"}”`,
+        context: "fork",
+        origin,
       });
-    } catch (error) {
-      setBusy(false);
-      throw error;
-    }
-    // An unsent draft for this project is reused, and it may already be linked here.
-    const linked =
-      result !== null &&
-      (state.conversations.some((item) => item.threadId === result.threadId) ||
-        (await save({
-          type: "link",
-          threadId: result.threadId,
-          projectId: projectRef.projectId,
-          title,
-          workId: target.workId,
-          questionId: target.questionId,
-        })));
-    setBusy(false);
-    if (result === null) return false;
-    if (!linked) {
-      toastManager.add({
-        type: "error",
-        title: "Could not link the conversation to the Quest",
-        description: "Its draft is kept with the project's threads.",
-      });
-      return false;
-    }
-    show(result.threadId);
-    return true;
-  }
+      if (!linked)
+        toastManager.add({
+          type: "error",
+          title: "The fork was created but not added to the Quest",
+          description: "It stays with the project's threads.",
+        });
+      showView("conversation", { thread: threadRef.threadId });
+    },
+  };
 
-  function start() {
-    if (busy || pending || !projectId) return;
-    void openConversation(scopeProjectRef(environmentId, projectId as ProjectId));
-  }
-
-  const selectedWork = state.work.find((item) => item.id === selected?.workId);
-  const selectedQuestion = state.questions.find((item) => item.id === selected?.questionId);
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div
-        role="toolbar"
-        aria-label="Quest conversations"
-        className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5"
-      >
-        {state.conversations.length > 0 ? (
-          <QuestSelect
-            label="Conversation"
-            value={selected?.threadId ?? ""}
-            onChange={show}
-            options={[
-              ...(selected ? [] : [{ value: "", label: "Choose a conversation" }]),
-              ...state.conversations.toReversed().map((item) => {
-                const shell = threads.get(item.threadId) ?? null;
-                return {
-                  value: item.threadId,
-                  label: `${shell?.title ?? item.title} · ${conversationStatusLabel(shell)}`,
-                };
-              }),
-            ]}
-          />
-        ) : null}
-        {selectedWork || selectedQuestion ? (
-          <button
-            type="button"
-            className="truncate text-xs text-muted-foreground underline"
-            onClick={() =>
-              openPanel(
-                selectedWork
-                  ? { type: "work", id: selectedWork.id }
-                  : { type: "question", id: selectedQuestion!.id },
-              )
+    <div className="flex min-h-0 flex-1">
+      <ConversationRail selectedId={selectedId} threads={threads} />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {subject && !thread ? (
+          <StartDiscussion
+            key={about}
+            subject={subject}
+            busy={busy}
+            canWrite={canWrite}
+            onStart={(purpose, resume) =>
+              void openConversation({
+                role: "focused",
+                purposeKind: subject.purposeKind,
+                purpose,
+                workId: subject.workId,
+                questionId: subject.questionId,
+                resume,
+              })
             }
-          >
-            About {selectedWork?.title ?? selectedQuestion?.title}
-          </button>
-        ) : null}
-        <div className="ms-auto flex items-center gap-1">
-          {canWrite ? (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy || pending || !projectId}
-              onClick={start}
-            >
-              <PlusIcon aria-hidden />
-              New conversation
-            </Button>
-          ) : null}
-          {canWrite ? (
-            <ConversationOptions
-              about={about}
-              onAbout={setAbout}
-              projectId={projectId}
-              onProject={setProjectId}
-              projects={projects}
-              selected={selected}
-              onShow={show}
-            />
-          ) : null}
-        </div>
-      </div>
-      {selected ? (
-        <div className="flex min-h-0 flex-1 flex-col">
-          <QuestChat
-            key={selected.threadId}
-            environmentId={environmentId}
-            threadId={selected.threadId}
-            onNewConversation={openConversation}
           />
-        </div>
-      ) : thread ? (
-        <div className="flex flex-col items-start gap-3 p-6 text-sm">
-          <p role="alert">This conversation is no longer linked to the Quest.</p>
-          <Button size="sm" variant="outline" onClick={() => showView("conversation")}>
-            Show linked conversations
-          </Button>
-        </div>
-      ) : (
-        <div className="p-6 text-sm text-muted-foreground">
-          <p>
-            {target.title ? `No conversation about ${target.title} yet.` : "No conversations yet."}
-          </p>
-          {canWrite ? null : <p className="mt-1">Read only</p>}
-        </div>
-      )}
+        ) : selected ? (
+          <>
+            <ConversationHeader
+              conversation={selected}
+              thread={threads.get(selected.threadId) ?? null}
+            />
+            {selected.creation?.status === "reserved" ? (
+              <div className="flex flex-col items-start gap-3 p-6 text-sm">
+                <p role="status">
+                  This conversation is reserved but not created yet. Nothing has been sent.
+                </p>
+                {canWrite ? (
+                  <Button
+                    size="sm"
+                    disabled={busy}
+                    onClick={() =>
+                      void openConversation({
+                        role: selected.role === "core" ? "core" : "focused",
+                        purposeKind: selected.purposeKind,
+                        purpose: selected.purpose,
+                        workId: selected.workId,
+                        questionId: selected.questionId,
+                        resume: true,
+                      })
+                    }
+                  >
+                    Create it now
+                  </Button>
+                ) : null}
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col">
+                <QuestChat
+                  key={selected.threadId}
+                  environmentId={environmentId}
+                  threadId={selected.threadId}
+                  embedding={embedding}
+                />
+              </div>
+            )}
+          </>
+        ) : thread ? (
+          <div className="flex flex-col items-start gap-3 p-6 text-sm">
+            <p role="alert">This conversation is no longer part of the Quest.</p>
+            <Button size="sm" variant="outline" onClick={() => showView("conversation")}>
+              Show the Quest's conversations
+            </Button>
+          </div>
+        ) : (
+          <div className="p-6 text-sm text-muted-foreground">
+            <p>
+              Start the core conversation, or discuss a work item or decision from the overview.
+            </p>
+            {canWrite ? null : <p className="mt-1">Read only</p>}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-function ConversationOptions({
-  about,
-  onAbout,
-  projectId,
-  onProject,
-  projects,
-  selected,
-  onShow,
+function StartDiscussion({
+  subject,
+  busy,
+  canWrite,
+  onStart,
 }: {
-  about: string;
-  onAbout: (value: string) => void;
-  projectId: string;
-  onProject: (value: string) => void;
-  projects: ReadonlyArray<{ id: string; title: string }>;
-  selected: QuestConversation | null;
-  onShow: (threadId: string) => void;
+  subject: Subject;
+  busy: boolean;
+  canWrite: boolean;
+  onStart: (purpose: string, resume: boolean) => void;
 }) {
-  const { environmentId, state, pending, save, showView } = useQuest();
-  const shells = useQuietThreadShells();
-  const [existing, setExisting] = useState("");
-  const linked = new Set(state.conversations.map((item) => item.threadId));
-  const linkable = shells
-    .filter(
-      (shell) =>
-        shell.environmentId === environmentId && !linked.has(shell.id) && !shell.archivedAt,
-    )
-    .toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .slice(0, 50);
-  const target = parseAbout(state, about);
-
-  async function link() {
-    const shell = linkable.find((item) => item.id === existing);
-    if (!shell) return;
-    if (
-      await save({
-        type: "link",
-        threadId: shell.id,
-        projectId: shell.projectId,
-        title: shell.title,
-        workId: target.workId,
-        questionId: target.questionId,
-      })
-    ) {
-      setExisting("");
-      onShow(shell.id);
-    }
-  }
-
-  async function unlink() {
-    if (!selected) return;
-    if (await save({ type: "unlink", threadId: selected.threadId })) showView("conversation");
-  }
-
+  const { state, showView } = useQuest();
+  const [purpose, setPurpose] = useState(defaultPurpose(subject));
+  const existing = state.conversations.filter(
+    (item) =>
+      item.role === "focused" &&
+      item.purposeKind === subject.purposeKind &&
+      item.workId === subject.workId &&
+      item.questionId === subject.questionId,
+  );
   return (
-    <Popover>
-      <PopoverTrigger
-        render={<Button size="icon-sm" variant="ghost" aria-label="Conversation options" />}
-      >
-        <EllipsisIcon aria-hidden />
-      </PopoverTrigger>
-      <PopoverPopup align="end" width="md">
-        <div className="grid gap-3 text-sm">
-          <label>
-            <span className="mb-1 block text-xs text-muted-foreground">New conversation about</span>
-            <QuestSelect
-              label="New conversation about"
-              value={about}
-              onChange={onAbout}
-              options={[
-                { value: "", label: "The whole Quest" },
-                ...state.questions.map((item) => ({
-                  value: `question:${item.id}`,
-                  label: `Decision · ${item.title}`,
-                })),
-                ...state.work.map((item) => ({ value: `work:${item.id}`, label: item.title })),
-              ]}
-            />
+    <section aria-label="Start a discussion" className="max-w-xl p-6 text-sm">
+      <p className="text-xs text-muted-foreground">{purposeLabels[subject.purposeKind]}</p>
+      <h2 className="mt-1 text-base font-semibold">{subject.title}</h2>
+      {existing.length > 0 ? (
+        <div className="mt-4">
+          <p className="mb-2 text-xs text-muted-foreground">Already discussing this</p>
+          <ul className="grid gap-1">
+            {existing.toReversed().map((item) => (
+              <li key={item.threadId}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => showView("conversation", { thread: item.threadId })}
+                >
+                  Resume “{item.purpose || item.title}”
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {canWrite ? (
+        <form
+          className="mt-5 grid gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onStart(purpose, false);
+          }}
+        >
+          <label className="text-xs text-muted-foreground" htmlFor="quest-discussion-purpose">
+            Purpose
           </label>
-          {projects.length > 1 ? (
-            <label>
-              <span className="mb-1 block text-xs text-muted-foreground">Project</span>
-              <QuestSelect
-                label="Project"
-                value={projectId}
-                onChange={onProject}
-                options={projects.map((project) => ({ value: project.id, label: project.title }))}
-              />
-            </label>
-          ) : null}
-          <div className="flex items-end gap-2 border-t pt-3">
-            <label className="min-w-0 flex-1">
-              <span className="mb-1 block text-xs text-muted-foreground">Link a thread</span>
-              <QuestSelect
-                label="Existing thread"
-                value={existing}
-                onChange={setExisting}
-                options={[
-                  { value: "", label: linkable.length ? "Choose a thread" : "No other threads" },
-                  ...linkable.map((shell) => ({ value: shell.id, label: shell.title })),
-                ]}
-              />
-            </label>
-            <Button variant="outline" disabled={!existing || pending} onClick={() => void link()}>
-              Link
+          <Input
+            id="quest-discussion-purpose"
+            value={purpose}
+            onChange={(event) => setPurpose(event.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            Creates an ordinary thread with the subject, open decisions and pinned sources prepared
+            in its composer. Nothing is sent until you send it.
+          </p>
+          <div>
+            <Button type="submit" size="sm" disabled={busy || !purpose.trim()}>
+              {existing.length > 0 ? "Start another discussion" : "Start discussion"}
             </Button>
           </div>
-          {selected ? (
-            <Button variant="ghost" disabled={pending} onClick={() => void unlink()}>
-              Remove “{selected.title}” from Quest
+        </form>
+      ) : (
+        <p className="mt-4 text-muted-foreground">Read only</p>
+      )}
+    </section>
+  );
+}
+
+function ConversationRail({
+  selectedId,
+  threads,
+}: {
+  selectedId: string | null;
+  threads: ReadonlyMap<string, EnvironmentThreadShell>;
+}) {
+  const { environmentId, state, canWrite, showView } = useQuest();
+  const { openConversation, busy } = useOpenQuestConversation();
+  const bootstrapped = isThreadRouteSnapshotAuthoritative(useEnvironmentShellStatus(environmentId));
+  const core = state.conversations.find((item) => item.role === "core") ?? null;
+  const coreThread = core ? (threads.get(core.threadId) ?? null) : null;
+  const coreMissing =
+    core !== null &&
+    core.creation?.status !== "reserved" &&
+    bootstrapped &&
+    (coreThread === null || coreThread.deletedAt != null);
+  const others = state.conversations.filter((item) => item.role !== "core").toReversed();
+  const isSettled = (item: QuestConversation) =>
+    threads.get(item.threadId)?.settledOverride === "settled";
+  const active = others.filter((item) => !isSettled(item));
+  const settled = others.filter(isSettled);
+  const row = (item: QuestConversation) => {
+    const shell = threads.get(item.threadId) ?? null;
+    const about = subjectTitle(state, item);
+    return (
+      <li key={item.threadId}>
+        <button
+          type="button"
+          aria-current={selectedId === item.threadId ? "page" : undefined}
+          onClick={() => showView("conversation", { thread: item.threadId })}
+          className={`flex w-full items-start gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent ${selectedId === item.threadId ? "bg-accent" : ""}`}
+        >
+          {item.context === "fork" ? (
+            <GitForkIcon aria-hidden className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+          ) : (
+            <MessageSquareIcon
+              aria-hidden
+              className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+            />
+          )}
+          <span className="min-w-0 flex-1">
+            <span className="block truncate">{item.purpose || shell?.title || item.title}</span>
+            <span className="block truncate text-xs text-muted-foreground">
+              {purposeLabels[item.purposeKind]}
+              {about ? ` · ${about}` : ""} ·{" "}
+              {item.creation?.status === "reserved"
+                ? "not created yet"
+                : conversationStatusLabel(shell)}
+            </span>
+          </span>
+        </button>
+      </li>
+    );
+  };
+  return (
+    <nav
+      aria-label="Quest conversations"
+      className="flex w-64 shrink-0 flex-col gap-4 overflow-y-auto border-r p-3"
+    >
+      <section aria-label="Core conversation">
+        <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Core
+        </h3>
+        {core && !coreMissing ? (
+          <button
+            type="button"
+            aria-current={selectedId === core.threadId ? "page" : undefined}
+            onClick={() => showView("conversation", { thread: core.threadId })}
+            className={`flex w-full items-start gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent ${selectedId === core.threadId ? "bg-accent" : ""}`}
+          >
+            <CompassIcon aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate font-medium">Coordinate the Quest</span>
+              <span className="block truncate text-xs text-muted-foreground">
+                {core.creation?.status === "reserved"
+                  ? "not created yet"
+                  : conversationStatusLabel(coreThread)}
+              </span>
+            </span>
+          </button>
+        ) : coreMissing ? (
+          <div className="rounded border border-warning/40 p-2 text-xs">
+            <p role="alert">The core conversation was deleted. Its identity stays in the Quest.</p>
+            {canWrite ? <ReplaceCore /> : null}
+          </div>
+        ) : canWrite ? (
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full"
+            disabled={busy}
+            onClick={() =>
+              void openConversation({
+                role: "core",
+                purposeKind: "coordinate",
+                purpose: "",
+                workId: null,
+                questionId: null,
+                resume: true,
+              })
+            }
+          >
+            Start the core conversation
+          </Button>
+        ) : (
+          <p className="text-xs text-muted-foreground">No core conversation yet · Read only</p>
+        )}
+        {state.corePredecessors.length > 0 ? (
+          <p className="mt-1 px-2 text-xs text-muted-foreground">
+            {state.corePredecessors.length} earlier core
+            {state.corePredecessors.length > 1 ? "s" : ""} retained
+          </p>
+        ) : null}
+      </section>
+      <section aria-label="Discussions">
+        <div className="mb-1 flex items-center justify-between">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Discussions
+          </h3>
+          {canWrite && core && !coreMissing ? (
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={busy}
+              title="A new discussion with prepared context; not a fork of the core"
+              onClick={() =>
+                void openConversation({
+                  role: "focused",
+                  purposeKind: "digress",
+                  purpose: "Explore a side question",
+                  workId: null,
+                  questionId: null,
+                  resume: false,
+                })
+              }
+            >
+              New digression
             </Button>
           ) : null}
         </div>
-      </PopoverPopup>
-    </Popover>
+        {active.length > 0 ? (
+          <ul>{active.map(row)}</ul>
+        ) : (
+          <p className="px-2 text-xs text-muted-foreground">
+            Use Discuss on a work item or decision.
+          </p>
+        )}
+      </section>
+      {settled.length > 0 ? (
+        <section aria-label="Settled discussions">
+          <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Settled · {settled.length}
+          </h3>
+          <ul>{settled.map(row)}</ul>
+        </section>
+      ) : null}
+    </nav>
+  );
+}
+
+function ReplaceCore() {
+  const { save } = useQuest();
+  const [reason, setReason] = useState("");
+  return (
+    <form
+      className="mt-2 grid gap-1.5"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (reason.trim()) void save({ type: "core-replace", reason });
+      }}
+    >
+      <Input
+        aria-label="Why replace the core"
+        placeholder="Why replace it?"
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+      />
+      <Button type="submit" size="xs" variant="outline" disabled={!reason.trim()}>
+        Retire and replace the core
+      </Button>
+    </form>
+  );
+}
+
+function ConversationHeader({
+  conversation,
+  thread,
+}: {
+  conversation: QuestConversation;
+  thread: EnvironmentThreadShell | null;
+}) {
+  const { state, canWrite, pending, save, openPanel, showView } = useQuest();
+  const [details, setDetails] = useState(false);
+  const [replacing, setReplacing] = useState(false);
+  const work = state.work.find((item) => item.id === conversation.workId);
+  const question = state.questions.find((item) => item.id === conversation.questionId);
+  const origin = conversation.origin
+    ? state.conversations.find((item) => item.threadId === conversation.origin?.threadId)
+    : undefined;
+  return (
+    <div className="shrink-0 border-b px-4 py-1.5 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline">
+          {conversation.role === "core" ? "Core" : purposeLabels[conversation.purposeKind]}
+        </Badge>
+        {conversation.context === "fork" ? (
+          <Badge variant="info">Provider fork</Badge>
+        ) : conversation.context === "packet" && conversation.role === "focused" ? (
+          <Badge variant="outline">Prepared context · not a fork</Badge>
+        ) : null}
+        {work || question ? (
+          <button
+            type="button"
+            className="truncate text-muted-foreground underline"
+            onClick={() =>
+              openPanel(
+                work ? { type: "work", id: work.id } : { type: "question", id: question!.id },
+              )
+            }
+          >
+            About {work?.title ?? question?.title}
+          </button>
+        ) : null}
+        {conversation.sourceRevision !== null && conversation.sourceRevision !== state.revision ? (
+          <span className="text-muted-foreground">
+            Context from revision {conversation.sourceRevision}; the Quest is now at{" "}
+            {state.revision}
+          </span>
+        ) : null}
+        <span className="ms-auto flex items-center gap-1">
+          <Button size="xs" variant="ghost" onClick={() => setDetails((value) => !value)}>
+            {details ? "Hide details" : "Details"}
+          </Button>
+          {canWrite && conversation.role !== "core" ? (
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={pending}
+              title="The thread returns to its ordinary place in the sidebar"
+              onClick={() =>
+                void save({ type: "unlink", threadId: conversation.threadId }).then(
+                  (ok) => ok && showView("conversation"),
+                )
+              }
+            >
+              Detach
+            </Button>
+          ) : null}
+          {canWrite && conversation.role === "core" ? (
+            <Button size="xs" variant="ghost" onClick={() => setReplacing((value) => !value)}>
+              Replace core
+            </Button>
+          ) : null}
+        </span>
+      </div>
+      {replacing ? <ReplaceCore /> : null}
+      {details ? (
+        <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+          <dt className="text-muted-foreground">Purpose</dt>
+          <dd>{conversation.purpose || "Not recorded"}</dd>
+          {origin || conversation.origin ? (
+            <>
+              <dt className="text-muted-foreground">Forked from</dt>
+              <dd>
+                {origin ? (
+                  <button
+                    type="button"
+                    className="underline"
+                    onClick={() => showView("conversation", { thread: origin.threadId })}
+                  >
+                    {origin.purpose || origin.title}
+                  </button>
+                ) : (
+                  conversation.origin?.threadId
+                )}
+              </dd>
+            </>
+          ) : null}
+          {conversation.creation ? (
+            <>
+              <dt className="text-muted-foreground">Requested model</dt>
+              <dd>
+                {conversation.creation.requested.modelSelection.model} (this client's default)
+              </dd>
+              <dt className="text-muted-foreground">Thread model</dt>
+              <dd>
+                {thread?.modelSelection.model ??
+                  conversation.creation.effectiveModelSelection?.model ??
+                  "Not created"}
+              </dd>
+            </>
+          ) : null}
+          <dt className="text-muted-foreground">Sources</dt>
+          <dd>
+            {conversation.sources.length === 0 ? (
+              "None pinned"
+            ) : (
+              <ul>
+                {conversation.sources.map((pin) => (
+                  <PinRow key={pin.documentId} pin={pin} />
+                ))}
+              </ul>
+            )}
+          </dd>
+        </dl>
+      ) : null}
+    </div>
+  );
+}
+
+function PinRow({ pin }: { pin: QuestConversation["sources"][number] }) {
+  const { environmentId, state, openPanel } = useQuest();
+  const isFile = state.files.some((file) => file.id === pin.documentId);
+  const current = useEnvironmentQuery(
+    isFile
+      ? questEnvironment.document({ environmentId, input: { documentId: pin.documentId } })
+      : null,
+  ).data;
+  const title =
+    state.files.find((file) => file.id === pin.documentId)?.path ??
+    state.documents.find((doc) => doc.id === pin.documentId)?.title ??
+    pin.documentId;
+  const changed = isFile && current?.sha256 && pin.sha256 && current.sha256 !== pin.sha256;
+  return (
+    <li>
+      <button
+        type="button"
+        className="underline"
+        onClick={() => openPanel({ type: "document", id: pin.documentId }, "push")}
+      >
+        {title}
+      </button>{" "}
+      {pin.sha256 ? (
+        <span className="text-muted-foreground">
+          pinned {pin.sha256.slice(0, 10)}
+          {changed ? ` · file now ${current.sha256!.slice(0, 10)}` : ""}
+        </span>
+      ) : (
+        <span className="text-warning-foreground">not retained: {pin.unavailable}</span>
+      )}
+    </li>
   );
 }
 

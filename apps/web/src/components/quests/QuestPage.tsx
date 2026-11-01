@@ -1,14 +1,20 @@
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, QuestState } from "@t3tools/contracts";
+import type { EnvironmentId, QuestState, QuestUpdateInput } from "@t3tools/contracts";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { CompassIcon, HistoryIcon, ListChecksIcon, RotateCcwIcon } from "lucide-react";
+import {
+  CompassIcon,
+  FileTextIcon,
+  HistoryIcon,
+  ListChecksIcon,
+  RotateCcwIcon,
+} from "lucide-react";
 import { useRef, useState } from "react";
 
 import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { cn } from "~/lib/utils";
+import { cn, randomUUID } from "~/lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -149,14 +155,23 @@ function QuestWorkspaceView({
     rememberQuestPanel(environmentId, next);
   }
 
-  async function save(change: QuestChange) {
+  function adopt(next: QuestState) {
+    setState((current) => (next.revision >= current.revision ? next : current));
+  }
+
+  async function save(change: QuestChange, source?: QuestUpdateInput["source"]) {
     if (pendingRef.current) return false;
     pendingRef.current = true;
     setPending(true);
     setNotice("");
     const result = await update({
       environmentId,
-      input: { expectedRevision: state.revision, change },
+      input: {
+        expectedRevision: state.revision,
+        operationId: randomUUID(),
+        change,
+        ...(source ? { source } : {}),
+      },
     });
     pendingRef.current = false;
     setPending(false);
@@ -201,7 +216,9 @@ function QuestWorkspaceView({
   const waitingDecisions = decisions.open.length + decisions.recorded.length;
   const current = panel.at(-1) ?? null;
   return (
-    <QuestWorkspace value={{ environmentId, state, canWrite, pending, save, openPanel, showView }}>
+    <QuestWorkspace
+      value={{ environmentId, state, canWrite, pending, save, adopt, openPanel, showView }}
+    >
       <header className="border-b px-4 pt-3">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <div className="md:hidden">
@@ -221,6 +238,19 @@ function QuestWorkspaceView({
               {waitingDecisions > 0 ? (
                 <Badge variant="warning" size="sm">
                   {waitingDecisions}
+                </Badge>
+              ) : null}
+            </Button>
+            <Button
+              size="sm"
+              variant={current?.type === "documents" ? "secondary" : "ghost"}
+              onClick={() => openPanel({ type: "documents" })}
+            >
+              <FileTextIcon aria-hidden />
+              Documents
+              {state.pendingWrites.length > 0 ? (
+                <Badge variant="warning" size="sm">
+                  {state.pendingWrites.length}
                 </Badge>
               ) : null}
             </Button>
@@ -288,11 +318,7 @@ function QuestWorkspaceView({
               initialFocus={search.work ?? null}
             />
           ) : view === "conversation" ? (
-            <QuestConversations
-              key={search.about ?? ""}
-              about={search.about ?? null}
-              thread={search.thread ?? null}
-            />
+            <QuestConversations about={search.about ?? null} thread={search.thread ?? null} />
           ) : (
             <QuestOverview />
           )}

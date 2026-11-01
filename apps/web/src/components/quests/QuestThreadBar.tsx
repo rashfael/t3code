@@ -30,8 +30,12 @@ export function QuestThreadBar({
         <CompassIcon aria-hidden className="size-3.5 shrink-0" />
         Quest · {QUEST_TITLE}
       </span>
-      {link.about ? (
-        <span className="min-w-0 truncate text-muted-foreground">About: {link.about}</span>
+      {link.role === "core" ? (
+        <span className="min-w-0 truncate text-muted-foreground">Core conversation</span>
+      ) : link.purpose || link.about ? (
+        <span className="min-w-0 truncate text-muted-foreground">
+          {link.purpose || `About: ${link.about}`}
+        </span>
       ) : null}
       <span className="ms-auto flex items-center gap-1">
         <Link to="/quests" search={{ env: environmentId, view: "overview" }} className={tab}>

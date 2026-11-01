@@ -21,7 +21,6 @@ import { readLocalApi } from "../../localApi";
 import { findRevertCheckpoint } from "../../session-logic";
 import { type ChatMessage } from "../../types";
 import { newThreadId } from "~/lib/utils";
-import { buildThreadRouteParams } from "../../threadRoutes";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { threadEnvironment } from "../../state/threads";
 import { waitForThreadShell } from "../../state/entities";
@@ -32,7 +31,8 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { rewindToMessage } from "./chatViewSend";
-import { makeThreadErrorSetter } from "../ChatView.logic";
+import { makeThreadErrorSetter, type ChatEmbedding } from "../ChatView.logic";
+import { threadNavigationTarget } from "../quests/questMembership";
 interface TimelineRewindInput {
   readonly environmentId: EnvironmentId;
   readonly routeThreadRef: ScopedThreadRef;
@@ -51,6 +51,7 @@ interface TimelineRewindInput {
   readonly composerRef: ComposerHandleRef;
   readonly composerDraftTarget: ComposerThreadTarget;
   readonly setThreadError: ReturnType<typeof makeThreadErrorSetter>;
+  readonly embedding: ChatEmbedding | undefined;
 }
 
 /**
@@ -76,6 +77,7 @@ export function useTimelineRewind(input: TimelineRewindInput) {
     composerRef,
     composerDraftTarget,
     setThreadError,
+    embedding,
   } = input;
   const navigate = useNavigate();
   const createAttachmentAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
@@ -205,10 +207,14 @@ export function useTimelineRewind(input: TimelineRewindInput) {
       );
       return;
     }
-    await navigate({
-      to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(targetThreadRef),
-    });
+    if (embedding) {
+      await embedding.openFork(targetThreadRef, {
+        threadId: input.sourceThreadId,
+        runId: input.runId,
+      });
+      return;
+    }
+    await navigate(threadNavigationTarget(targetThreadRef));
   };
   const onForkFromRunStable = useStableCallback(onForkFromRun);
   const onRevertTimelineTurn = (targetTurnCount: number, messageId: MessageId) => {

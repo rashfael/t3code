@@ -35,6 +35,8 @@ const makeHarness = Effect.fn("TestQuests.makeHarness")(function* () {
       workId: "work-1",
       questionId: null,
       about: "Work 1",
+      role: "linked",
+      purpose: "",
     } as QuestThreadLink | null,
     lookups: 0,
   };

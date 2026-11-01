@@ -43,6 +43,7 @@ export type PanelEntry =
   | { readonly type: "document"; readonly id: string }
   | { readonly type: "question"; readonly id: string }
   | { readonly type: "decisions" }
+  | { readonly type: "documents" }
   | { readonly type: "history" };
 
 export type QuestChange = QuestUpdateInput["change"];
@@ -52,7 +53,9 @@ export interface QuestWorkspaceContext {
   readonly state: QuestState;
   readonly canWrite: boolean;
   readonly pending: boolean;
-  readonly save: (change: QuestChange) => Promise<boolean>;
+  readonly save: (change: QuestChange, source?: QuestUpdateInput["source"]) => Promise<boolean>;
+  /** Takes a newer saved state returned by another Quest command. */
+  readonly adopt: (state: QuestState) => void;
   /** `push` keeps the current panel one Back step away; `replace` starts a new panel trail. */
   readonly openPanel: (entry: PanelEntry, mode?: "push" | "replace") => void;
   readonly showView: (view: QuestView, extra?: Omit<QuestSearch, "view" | "env">) => void;

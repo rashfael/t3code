@@ -1,14 +1,23 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import {
+  ProviderInstanceId,
+  type QuestOpenConversationInput,
+  type QuestUpdateInput,
+} from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 
 import * as ServerConfig from "../config.ts";
 import { migrateQuestV1 } from "./questMigration.ts";
 import { questSeedV1 } from "./questSeed.ts";
 import * as QuestStore from "./QuestStore.ts";
+
+const actor = { kind: "client", id: null } as const;
 
 const harness = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -31,27 +40,36 @@ describe("QuestStore", () => {
           const question = initial.questions[0]!;
           const work = initial.work.find((item) => item.id === question.workId)!;
           const doc = initial.documents.find((item) => item.kind === "living")!;
-          const editedDoc = yield* store.update({
-            expectedRevision: initial.revision,
-            change: { type: "document", document: { ...doc, body: "Saved owner understanding" } },
-          });
-          const editedWork = yield* store.update({
-            expectedRevision: editedDoc.revision,
-            change: {
-              type: "work",
-              work: { ...work, title: "Bounded saved work", documentIds: [doc.id] },
+          const editedDoc = yield* store.update(
+            {
+              expectedRevision: initial.revision,
+              change: { type: "document", document: { ...doc, body: "Saved owner understanding" } },
             },
-          });
-          const answered = yield* store.update({
-            expectedRevision: editedWork.revision,
-            change: {
-              type: "answer",
-              questionId: question.id,
-              answer: "Keep the retained response and investigate local adaptation first",
-              rationale: null,
-              deferred: false,
+            actor,
+          );
+          const editedWork = yield* store.update(
+            {
+              expectedRevision: editedDoc.revision,
+              change: {
+                type: "work",
+                work: { ...work, title: "Bounded saved work", documentIds: [doc.id] },
+              },
             },
-          });
+            actor,
+          );
+          const answered = yield* store.update(
+            {
+              expectedRevision: editedWork.revision,
+              change: {
+                type: "answer",
+                questionId: question.id,
+                answer: "Keep the retained response and investigate local adaptation first",
+                rationale: null,
+                deferred: false,
+              },
+            },
+            actor,
+          );
           expect(answered.work.find((item) => item.id === work.id)?.understanding).toBe(
             work.understanding,
           );
@@ -69,10 +87,13 @@ describe("QuestStore", () => {
           expect(recovered.work.find((item) => item.id === saved.work.id)?.documentIds).toEqual([
             saved.doc.id,
           ]);
-          const applied = yield* reopened.update({
-            expectedRevision: recovered.revision,
-            change: { type: "apply", questionId: saved.question.id },
-          });
+          const applied = yield* reopened.update(
+            {
+              expectedRevision: recovered.revision,
+              change: { type: "apply", questionId: saved.question.id },
+            },
+            actor,
+          );
           expect(applied.questions[0]?.applied).toBe(true);
           expect(applied.work.find((item) => item.id === saved.work.id)?.understanding).toContain(
             "Keep the retained response",
@@ -81,33 +102,45 @@ describe("QuestStore", () => {
             recovered.documents.filter((item) => item.kind === "evidence"),
           );
           const duplicate = yield* reopened
-            .update({
-              expectedRevision: applied.revision,
-              change: { type: "apply", questionId: saved.question.id },
-            })
+            .update(
+              {
+                expectedRevision: applied.revision,
+                change: { type: "apply", questionId: saved.question.id },
+              },
+              actor,
+            )
             .pipe(Effect.flip);
           expect(duplicate.reason).toBe("invalid");
-          const revised = yield* reopened.update({
-            expectedRevision: applied.revision,
-            change: { type: "reopen", questionId: saved.question.id },
-          });
+          const revised = yield* reopened.update(
+            {
+              expectedRevision: applied.revision,
+              change: { type: "reopen", questionId: saved.question.id },
+            },
+            actor,
+          );
           expect(revised.questions[0]?.applied).toBe(false);
           expect(revised.questions[0]?.answer).toBe(applied.questions[0]?.answer);
           expect(revised.work).toEqual(applied.work);
-          const answeredAgain = yield* reopened.update({
-            expectedRevision: revised.revision,
-            change: {
-              type: "answer",
-              questionId: saved.question.id,
-              answer: "Revised decision",
-              rationale: "Owner reviewed the retained response",
-              deferred: false,
+          const answeredAgain = yield* reopened.update(
+            {
+              expectedRevision: revised.revision,
+              change: {
+                type: "answer",
+                questionId: saved.question.id,
+                answer: "Revised decision",
+                rationale: "Owner reviewed the retained response",
+                deferred: false,
+              },
             },
-          });
-          const reapplied = yield* reopened.update({
-            expectedRevision: answeredAgain.revision,
-            change: { type: "apply", questionId: saved.question.id },
-          });
+            actor,
+          );
+          const reapplied = yield* reopened.update(
+            {
+              expectedRevision: answeredAgain.revision,
+              change: { type: "apply", questionId: saved.question.id },
+            },
+            actor,
+          );
           expect(reapplied.work.find((item) => item.id === saved.work.id)?.understanding).toContain(
             "Keep the retained response",
           );
@@ -141,13 +174,16 @@ describe("QuestStore", () => {
             },
             { label: "Rationale", before: null, after: "Owner reviewed the retained response" },
           ]);
-          const unchanged = yield* reopened.update({
-            expectedRevision: reapplied.revision,
-            change: {
-              type: "work",
-              work: reapplied.work.find((item) => item.id === saved.work.id)!,
+          const unchanged = yield* reopened.update(
+            {
+              expectedRevision: reapplied.revision,
+              change: {
+                type: "work",
+                work: reapplied.work.find((item) => item.id === saved.work.id)!,
+              },
             },
-          });
+            actor,
+          );
           expect(unchanged).toEqual(reapplied);
         }).pipe(Effect.provide(layer));
       }).pipe(Effect.provide(NodeServices.layer)),
@@ -165,28 +201,34 @@ describe("QuestStore", () => {
           const results = yield* Effect.all(
             [
               store
-                .update({
-                  expectedRevision: initial.revision,
-                  change: {
-                    type: "answer",
-                    questionId: question.id,
-                    answer: null,
-                    rationale: null,
-                    deferred: true,
+                .update(
+                  {
+                    expectedRevision: initial.revision,
+                    change: {
+                      type: "answer",
+                      questionId: question.id,
+                      answer: null,
+                      rationale: null,
+                      deferred: true,
+                    },
                   },
-                })
+                  actor,
+                )
                 .pipe(Effect.result),
               store
-                .update({
-                  expectedRevision: initial.revision,
-                  change: {
-                    type: "answer",
-                    questionId: question.id,
-                    answer: "Alternative",
-                    rationale: null,
-                    deferred: false,
+                .update(
+                  {
+                    expectedRevision: initial.revision,
+                    change: {
+                      type: "answer",
+                      questionId: question.id,
+                      answer: "Alternative",
+                      rationale: null,
+                      deferred: false,
+                    },
                   },
-                })
+                  actor,
+                )
                 .pipe(Effect.result),
             ],
             { concurrency: "unbounded" },
@@ -195,37 +237,49 @@ describe("QuestStore", () => {
           expect(results.filter((result) => result._tag === "Failure")).toHaveLength(1);
           let current = yield* store.get;
           if (!current.questions[0]!.deferred)
-            current = yield* store.update({
-              expectedRevision: current.revision,
-              change: {
-                type: "answer",
-                questionId: question.id,
-                answer: null,
-                rationale: null,
-                deferred: true,
+            current = yield* store.update(
+              {
+                expectedRevision: current.revision,
+                change: {
+                  type: "answer",
+                  questionId: question.id,
+                  answer: null,
+                  rationale: null,
+                  deferred: true,
+                },
               },
-            });
+              actor,
+            );
           const deferred = yield* store
-            .update({
-              expectedRevision: current.revision,
-              change: { type: "apply", questionId: question.id },
-            })
+            .update(
+              {
+                expectedRevision: current.revision,
+                change: { type: "apply", questionId: question.id },
+              },
+              actor,
+            )
             .pipe(Effect.flip);
           expect(deferred.reason).toBe("invalid");
           const evidence = current.documents.find((item) => item.kind === "evidence")!;
           const immutable = yield* store
-            .update({
-              expectedRevision: current.revision,
-              change: { type: "document", document: { ...evidence, body: "Overwrite" } },
-            })
+            .update(
+              {
+                expectedRevision: current.revision,
+                change: { type: "document", document: { ...evidence, body: "Overwrite" } },
+              },
+              actor,
+            )
             .pipe(Effect.flip);
           expect(immutable.reason).toBe("invalid");
           const first = current.work[0]!;
           const cycle = yield* store
-            .update({
-              expectedRevision: current.revision,
-              change: { type: "work", work: { ...first, parentId: first.id } },
-            })
+            .update(
+              {
+                expectedRevision: current.revision,
+                change: { type: "work", work: { ...first, parentId: first.id } },
+              },
+              actor,
+            )
             .pipe(Effect.flip);
           expect(cycle.reason).toBe("invalid");
           expect(yield* store.get).toEqual(current);
@@ -233,24 +287,29 @@ describe("QuestStore", () => {
       }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("reports corrupt persisted state without replacing it with the seed", () =>
-    Effect.gen(function* () {
-      const { layer, config } = yield* harness;
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const stateDir = yield* ServerConfig.ServerConfig.pipe(
-        Effect.map((value) => value.stateDir),
-        Effect.provide(config),
-      );
-      yield* Effect.gen(function* () {
-        const store = yield* QuestStore.QuestStore;
-        yield* store.get;
-        const statePath = path.join(stateDir, "quest-prototype", "state.json");
-        yield* fs.writeFileString(statePath, "broken");
-        expect((yield* store.get.pipe(Effect.flip)).reason).toBe("storage");
-        expect(yield* fs.readFileString(statePath)).toBe("broken");
-      }).pipe(Effect.provide(layer));
-    }).pipe(Effect.provide(NodeServices.layer)),
+  it.effect(
+    "creates nothing on read and reports corrupt persisted state without replacing it",
+    () =>
+      Effect.gen(function* () {
+        const { layer, config } = yield* harness;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const stateDir = yield* ServerConfig.ServerConfig.pipe(
+          Effect.map((value) => value.stateDir),
+          Effect.provide(config),
+        );
+        yield* Effect.gen(function* () {
+          const store = yield* QuestStore.QuestStore;
+          yield* store.get;
+          // Loading a missing Quest shows the example without creating any file.
+          expect(yield* fs.exists(path.join(stateDir, "quest-prototype"))).toBe(false);
+          const statePath = path.join(stateDir, "quest-prototype", "state.json");
+          yield* fs.makeDirectory(path.dirname(statePath), { recursive: true });
+          yield* fs.writeFileString(statePath, "broken");
+          expect((yield* store.get.pipe(Effect.flip)).reason).toBe("storage");
+          expect(yield* fs.readFileString(statePath)).toBe("broken");
+        }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect(
@@ -283,7 +342,7 @@ describe("QuestStore", () => {
         yield* Effect.gen(function* () {
           const store = yield* QuestStore.QuestStore;
           const upgraded = yield* store.get;
-          expect(upgraded.schemaVersion).toBe(2);
+          expect(upgraded.schemaVersion).toBe(3);
           expect(upgraded.revision).toBe(5);
           expect(upgraded.work.find((item) => item.id === "milestone-a")?.title).toBe(
             "Owner-edited milestone",
@@ -311,20 +370,35 @@ describe("QuestStore", () => {
           expect(upgraded.history).toHaveLength(1);
           expect(upgraded.history[0]).toMatchObject({ kind: "baseline", revision: 5 });
           expect(upgraded.history[0]?.summary).toContain("not recorded as history");
-          expect(yield* fs.readFileString(path.join(directory, "state.v1.json"))).toBe(encoded);
+          // Reading upgrades only in memory; the saved file is replaced by the first accepted write.
+          expect(yield* fs.readFileString(statePath)).toBe(encoded);
+          expect(yield* fs.exists(path.join(directory, "state.v1.backup.json"))).toBe(false);
           const stale = yield* store
-            .update({
-              expectedRevision: 4,
-              change: { type: "current", workId: "review-deliveries" },
-            })
+            .update(
+              {
+                expectedRevision: 4,
+                change: { type: "current", workId: "review-deliveries" },
+              },
+              actor,
+            )
             .pipe(Effect.flip);
           expect(stale.reason).toBe("conflict");
-        }).pipe(Effect.provide(layer));
-        yield* Effect.gen(function* () {
-          const store = yield* QuestStore.QuestStore;
-          const again = yield* store.get;
-          expect(again.revision).toBe(5);
-          expect(again.history).toHaveLength(1);
+          const saved = yield* store.update(
+            { expectedRevision: 5, change: { type: "current", workId: "review-deliveries" } },
+            actor,
+          );
+          expect(saved.revision).toBe(6);
+          expect(yield* fs.readFileString(path.join(directory, "state.v1.backup.json"))).toBe(
+            encoded,
+          );
+          const {
+            history: _history,
+            schemaVersion: _version,
+            revision: _revision,
+            ...domain
+          } = upgraded;
+          expect((yield* store.reconstruct(5)).domain).toEqual(domain);
+          expect((yield* store.reconstruct(4).pipe(Effect.flip)).reason).toBe("unavailable");
         }).pipe(Effect.provide(layer));
       }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -363,7 +437,10 @@ describe("QuestStore", () => {
             workId: "a4-demonstration",
             questionId: null,
           };
-          const linked = yield* store.update({ expectedRevision: initial.revision, change: link });
+          const linked = yield* store.update(
+            { expectedRevision: initial.revision, change: link },
+            actor,
+          );
           expect(linked.conversations).toEqual([
             expect.objectContaining({ threadId: "thread-1", workId: "a4-demonstration" }),
           ]);
@@ -373,17 +450,22 @@ describe("QuestStore", () => {
             workId: "a4-demonstration",
             questionId: null,
             about: "A4 · small live demonstration",
+            role: "linked",
+            purpose: "",
           });
           for (const change of [link, { ...link, threadId: "thread-2", workId: "missing" }]) {
             const rejected = yield* store
-              .update({ expectedRevision: linked.revision, change })
+              .update({ expectedRevision: linked.revision, change }, actor)
               .pipe(Effect.flip);
             expect(rejected.reason).toBe("invalid");
           }
-          const unlinked = yield* store.update({
-            expectedRevision: linked.revision,
-            change: { type: "unlink", threadId: "thread-1" },
-          });
+          const unlinked = yield* store.update(
+            {
+              expectedRevision: linked.revision,
+              change: { type: "unlink", threadId: "thread-1" },
+            },
+            actor,
+          );
           expect(unlinked.conversations).toEqual([]);
           expect(yield* store.threadLink("thread-1")).toBeNull();
           expect(unlinked.history.map((entry) => entry.kind)).toEqual([
@@ -393,5 +475,583 @@ describe("QuestStore", () => {
           ]);
         }).pipe(Effect.provide(layer));
       }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "upgrades the saved second prototype on its first write, keeping exact bytes, links and a reconstructable baseline",
+    () =>
+      Effect.gen(function* () {
+        const { layer, directory: stateRoot } = yield* harness;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = path.join(stateRoot, "userdata", "quest-prototype");
+        const v2 = migrateQuestV1(questSeedV1, { at: "2026-10-31T00:00:00.000Z", fresh: false });
+        const saved = {
+          ...v2,
+          revision: 9,
+          conversations: [
+            {
+              threadId: "verification-thread",
+              projectId: "project-1",
+              title: "Market tracking",
+              workId: null,
+              questionId: null,
+              linkedAt: "2026-10-31T21:46:45.814Z",
+            },
+          ],
+        };
+        const encoded = JSON.stringify(saved, null, 2);
+        yield* fs.makeDirectory(directory, { recursive: true });
+        yield* fs.writeFileString(path.join(directory, "state.json"), encoded);
+        yield* Effect.gen(function* () {
+          const store = yield* QuestStore.QuestStore;
+          const read = yield* store.get;
+          expect(yield* store.membership).toMatchObject({
+            revision: 9,
+            members: [{ threadId: "verification-thread", role: "linked" }],
+          });
+          expect(yield* fs.readFileString(path.join(directory, "state.json"))).toBe(encoded);
+          // An earlier link is never promoted to the core or given a purpose it did not have.
+          expect(read.conversations[0]).toMatchObject({
+            role: "linked",
+            purpose: "",
+            creation: null,
+          });
+          const next = yield* store.update(
+            { expectedRevision: 9, change: { type: "current", workId: "review-deliveries" } },
+            actor,
+          );
+          expect(next.revision).toBe(10);
+          expect(next.conversations).toEqual(read.conversations);
+          expect(yield* fs.readFileString(path.join(directory, "state.v2.backup.json"))).toBe(
+            encoded,
+          );
+          const baseline = yield* store.reconstruct(9);
+          expect(baseline.limit).toContain("cannot be reconstructed");
+          expect(baseline.domain.conversations).toEqual(read.conversations);
+          expect(baseline.records).toEqual([]);
+        }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "reconstructs every saved revision, including associations and work before an answer was applied",
+    () =>
+      Effect.gen(function* () {
+        const { layer } = yield* harness;
+        yield* Effect.gen(function* () {
+          const store = yield* QuestStore.QuestStore;
+          const states = [yield* store.get];
+          const save = (
+            change: QuestUpdateInput["change"],
+            extra: Partial<QuestUpdateInput> = {},
+          ) =>
+            store
+              .update({ expectedRevision: states.at(-1)!.revision, change, ...extra }, actor)
+              .pipe(Effect.tap((state) => Effect.sync(() => states.push(state))));
+          const work = states[0]!.work.find((item) => item.id === "a4-demonstration")!;
+          const asked = yield* save({
+            type: "question-create",
+            question: {
+              workId: work.id,
+              title: "Should A4 be split?",
+              context: "Prepared by the owner",
+              alternatives: ["Split", " ", "Keep"],
+            },
+          });
+          const question = asked.questions.at(-1)!;
+          expect(question).toMatchObject({ alternatives: ["Split", "Keep"], applied: false });
+          yield* save({
+            type: "question-edit",
+            questionId: question.id,
+            question: { ...question, context: "Prepared and refined" },
+          });
+          yield* save({
+            type: "link",
+            threadId: "discussion",
+            projectId: "project-1",
+            title: "Discuss A4",
+            workId: work.id,
+            questionId: null,
+            purposeKind: "discuss-work",
+            purpose: "Explore the split",
+          });
+          const operationId = "answer-op";
+          yield* save(
+            {
+              type: "answer",
+              questionId: question.id,
+              answer: "Split it",
+              rationale: null,
+              deferred: false,
+            },
+            { operationId, source: { threadId: "discussion", runId: null } },
+          );
+          // A retried operation returns the saved state instead of a conflict or a second answer.
+          const retried = yield* store.update(
+            {
+              expectedRevision: states.at(-2)!.revision,
+              operationId,
+              change: {
+                type: "answer",
+                questionId: question.id,
+                answer: "Split it",
+                rationale: null,
+                deferred: false,
+              },
+            },
+            actor,
+          );
+          expect(retried).toEqual(states.at(-1));
+          const beforeApply = states.at(-1)!;
+          const applied = yield* save({ type: "apply", questionId: question.id });
+          expect(applied.questions.at(-1)).toMatchObject({
+            appliedRevision: applied.revision,
+            answerSource: { threadId: "discussion", runId: null },
+          });
+          yield* save({ type: "unlink", threadId: "discussion" });
+          yield* save({
+            type: "link",
+            threadId: "discussion",
+            projectId: "project-1",
+            title: "Discuss A4",
+            workId: null,
+            questionId: question.id,
+          });
+          for (const state of states.slice(1)) {
+            const { history: _h, schemaVersion: _v, revision: _r, ...domain } = state;
+            expect((yield* store.reconstruct(state.revision)).domain).toEqual(domain);
+          }
+          const before = yield* store.reconstruct(beforeApply.revision);
+          expect(before.domain.conversations).toEqual([
+            expect.objectContaining({
+              threadId: "discussion",
+              workId: work.id,
+              purpose: "Explore the split",
+            }),
+          ]);
+          expect(before.domain.work.find((item) => item.id === work.id)?.understanding).toBe(
+            work.understanding,
+          );
+          const all = yield* store.reconstruct(states.at(-1)!.revision);
+          const applyRecord = all.records.find((record) => record.operation === "apply")!;
+          expect(applyRecord.changes.map((change) => change.collection).toSorted()).toEqual([
+            "questions",
+            "work",
+          ]);
+          const unlinkRecord = all.records.find((record) => record.operation === "unlink")!;
+          expect(unlinkRecord.changes).toEqual([
+            expect.objectContaining({
+              collection: "conversations",
+              before: expect.objectContaining({ workId: work.id }),
+              after: null,
+            }),
+          ]);
+          expect(all.records.find((record) => record.operation === "answer")).toMatchObject({
+            operationId,
+            actor,
+            source: { threadId: "discussion", runId: null },
+          });
+          // Snapshots of the domain never copy the prose log or earlier snapshots.
+          expect(JSON.stringify(all.records)).not.toContain('"history"');
+        }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "reserves one core across concurrent and retried requests and keeps a replaced core as predecessor",
+    () =>
+      Effect.gen(function* () {
+        const { layer } = yield* harness;
+        yield* Effect.gen(function* () {
+          const store = yield* QuestStore.QuestStore;
+          const open = (operationId: string, extra: Partial<QuestOpenConversationInput> = {}) =>
+            store.reserveConversation(
+              {
+                operationId,
+                role: "core",
+                purposeKind: "coordinate",
+                purpose: "",
+                workId: null,
+                questionId: null,
+                resume: true,
+                projectId: "project-1",
+                modelSelection: { instanceId: ProviderInstanceId.make("replay"), model: "replay" },
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                ...extra,
+              },
+              actor,
+            );
+          const [first, second] = yield* Effect.all([open("client-a"), open("client-b")], {
+            concurrency: "unbounded",
+          });
+          expect(first.conversation.threadId).toBe(second.conversation.threadId);
+          expect([first.created, second.created].toSorted()).toEqual([false, true]);
+          const core = (yield* store.get).conversations.filter((item) => item.role === "core");
+          expect(core).toHaveLength(1);
+          expect(core[0]?.creation).toMatchObject({
+            status: "reserved",
+            effectiveModelSelection: null,
+          });
+          expect(core[0]?.prepared).toContain("core coordination conversation");
+          expect((yield* open("client-a")).conversation.threadId).toBe(core[0]!.threadId);
+          const ready = yield* store.finalizeConversation(
+            core[0]!.threadId,
+            { instanceId: ProviderInstanceId.make("replay"), model: "replay-effective" },
+            actor,
+          );
+          expect(ready.conversations[0]?.creation).toMatchObject({
+            status: "ready",
+            requested: { provenance: "client-default" },
+            effectiveModelSelection: { model: "replay-effective" },
+          });
+          const focused = (operationId: string, resume: boolean) =>
+            open(operationId, {
+              role: "focused",
+              purposeKind: "decide",
+              purpose: "Decide the summary gap",
+              questionId: "summary-question",
+              resume,
+            });
+          const discussion = yield* focused("focused-1", true);
+          expect(discussion.created).toBe(true);
+          expect(discussion.conversation.sourceRevision).toBe(ready.revision);
+          expect((yield* focused("focused-2", true)).conversation.threadId).toBe(
+            discussion.conversation.threadId,
+          );
+          expect((yield* focused("focused-3", false)).conversation.threadId).not.toBe(
+            discussion.conversation.threadId,
+          );
+          const current = yield* store.get;
+          const detachCore = yield* store
+            .update(
+              {
+                expectedRevision: current.revision,
+                change: { type: "unlink", threadId: core[0]!.threadId },
+              },
+              actor,
+            )
+            .pipe(Effect.flip);
+          expect(detachCore.reason).toBe("invalid");
+          const replaced = yield* store.update(
+            {
+              expectedRevision: current.revision,
+              change: { type: "core-replace", reason: "Context grew too long" },
+            },
+            actor,
+          );
+          expect(replaced.corePredecessors).toEqual([
+            expect.objectContaining({
+              reason: "Context grew too long",
+              conversation: expect.objectContaining({ threadId: core[0]!.threadId }),
+            }),
+          ]);
+          const successor = yield* open("client-c");
+          expect(successor.created).toBe(true);
+          expect(successor.conversation.threadId).not.toBe(core[0]!.threadId);
+        }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+const failingRename = (fail: (from: string, to: string) => boolean) =>
+  Layer.effect(
+    FileSystem.FileSystem,
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      return {
+        ...fs,
+        rename: (from: string, to: string) =>
+          fail(from, to)
+            ? Effect.fail(
+                PlatformError.systemError({
+                  _tag: "PermissionDenied",
+                  module: "FileSystem",
+                  method: "rename",
+                }),
+              )
+            : fs.rename(from, to),
+      };
+    }),
+  );
+
+const workspaceHarness = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const { directory, config } = yield* harness;
+  const workspace = yield* fs.makeTempDirectoryScoped({ prefix: "t3-quest-docs-" });
+  const outside = yield* fs.makeTempDirectoryScoped({ prefix: "t3-quest-outside-" });
+  yield* fs.makeDirectory(path.join(workspace, "notes"));
+  yield* fs.writeFileString(path.join(workspace, "notes", "plan.md"), "# Plan\n\nFirst version\n");
+  yield* fs.writeFileString(path.join(outside, "secret.md"), "outside");
+  yield* fs.symlink(path.join(outside, "secret.md"), path.join(workspace, "escape.md"));
+  const plan = path.join(workspace, "notes", "plan.md");
+  const statePath = path.join(directory, "userdata", "quest-prototype", "state.json");
+  return { workspace, plan, statePath, config };
+});
+
+const setupFile = Effect.gen(function* () {
+  const store = yield* QuestStore.QuestStore;
+  const path = yield* Path.Path;
+  const initial = yield* store.get;
+  const root = path.dirname(path.dirname((yield* Effect.service(WorkspaceRoot)).plan));
+  const registered = yield* store.update(
+    { expectedRevision: initial.revision, change: { type: "workspace-register", root } },
+    actor,
+  );
+  const withFile = yield* store.update(
+    {
+      expectedRevision: registered.revision,
+      change: { type: "file-register", path: "./notes//plan.md", title: "Plan" },
+    },
+    actor,
+  );
+  const file = withFile.files[0]!;
+  const read = yield* store.readDocument(file.id);
+  expect(read).toMatchObject({ path: "notes/plan.md", content: "# Plan\n\nFirst version\n" });
+  return { store, file, read };
+});
+
+class WorkspaceRoot extends Context.Service<WorkspaceRoot, { readonly plan: string }>()(
+  "t3/quest/QuestStore.test/WorkspaceRoot",
+) {}
+
+describe("QuestStore documents", () => {
+  it.effect(
+    "registers only Markdown inside the workspace and pins the exact bytes a discussion used",
+    () =>
+      Effect.gen(function* () {
+        const { config, plan } = yield* workspaceHarness;
+        const fs = yield* FileSystem.FileSystem;
+        yield* Effect.gen(function* () {
+          const { store, file, read } = yield* setupFile;
+          const state = yield* store.get;
+          for (const escape of ["../outside.md", "/etc/passwd.md", "escape.md", "notes/plan.txt"]) {
+            const rejected = yield* store
+              .update(
+                {
+                  expectedRevision: state.revision,
+                  change: { type: "file-register", path: escape, title: "x" },
+                },
+                actor,
+              )
+              .pipe(Effect.flip);
+            expect(["invalid", "unavailable"]).toContain(rejected.reason);
+          }
+          const work = state.work.find((item) => item.id === "a4-demonstration")!;
+          const linked = yield* store.update(
+            {
+              expectedRevision: state.revision,
+              change: { type: "work", work: { ...work, documentIds: [file.id] } },
+            },
+            actor,
+          );
+          // Uncommitted working-tree edits are what the discussion reads, so they are what is pinned.
+          yield* fs.writeFileString(plan, "# Plan\n\nUncommitted edit\n");
+          const discussion = yield* store.reserveConversation(
+            {
+              operationId: "pin",
+              role: "focused",
+              purposeKind: "discuss-work",
+              purpose: "Review the plan",
+              workId: work.id,
+              questionId: null,
+              resume: false,
+              projectId: "project-1",
+              modelSelection: { instanceId: ProviderInstanceId.make("replay"), model: "replay" },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+            },
+            actor,
+          );
+          const pin = discussion.conversation.sources[0]!;
+          expect(pin).toMatchObject({
+            documentId: file.id,
+            path: "notes/plan.md",
+            unavailable: null,
+          });
+          expect(pin.sha256).not.toBe(read.sha256);
+          expect(discussion.conversation.sourceRevision).toBe(linked.revision);
+          yield* fs.writeFileString(plan, "# Plan\n\nLater edit\n");
+          expect((yield* store.retained(pin.sha256!)).content).toBe("# Plan\n\nUncommitted edit\n");
+          const current = yield* store.readDocument(file.id);
+          expect(current.content).toBe("# Plan\n\nLater edit\n");
+          expect(current.sha256).not.toBe(pin.sha256);
+        }).pipe(
+          Effect.provide(QuestStore.layer.pipe(Layer.provide(config))),
+          Effect.provideService(WorkspaceRoot, { plan }),
+        );
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "saves against the observed version and rejects a stale save without touching the file",
+    () =>
+      Effect.gen(function* () {
+        const { config, plan } = yield* workspaceHarness;
+        const fs = yield* FileSystem.FileSystem;
+        yield* Effect.gen(function* () {
+          const { store, file, read } = yield* setupFile;
+          const saved = yield* store.writeDocument(
+            {
+              operationId: "w1",
+              documentId: file.id,
+              expectedSha256: read.sha256!,
+              content: "# Plan\n\nSecond\n",
+            },
+            actor,
+          );
+          expect(saved.outcome).toBe("saved");
+          expect(saved.state.pendingWrites).toEqual([]);
+          expect(yield* fs.readFileString(plan)).toBe("# Plan\n\nSecond\n");
+          expect(saved.state.history.at(-1)?.summary).toBe("Saved notes/plan.md");
+          const replay = yield* store.writeDocument(
+            {
+              operationId: "w1",
+              documentId: file.id,
+              expectedSha256: read.sha256!,
+              content: "# Plan\n\nSecond\n",
+            },
+            actor,
+          );
+          expect(replay.outcome).toBe("saved");
+          expect(replay.state.revision).toBe(saved.state.revision);
+          yield* fs.writeFileString(plan, "# Plan\n\nEdited in an editor\n");
+          const stale = yield* store.writeDocument(
+            {
+              operationId: "w2",
+              documentId: file.id,
+              expectedSha256: saved.file.sha256!,
+              content: "# Plan\n\nMine\n",
+            },
+            actor,
+          );
+          expect(stale.outcome).toBe("conflict");
+          expect(yield* fs.readFileString(plan)).toBe("# Plan\n\nEdited in an editor\n");
+          const conflict = stale.state.pendingWrites[0]!;
+          expect(conflict.status).toBe("conflict");
+          expect((yield* store.retained(conflict.desiredSha256)).content).toBe("# Plan\n\nMine\n");
+          const blocked = yield* store
+            .writeDocument(
+              {
+                operationId: "w3",
+                documentId: file.id,
+                expectedSha256: stale.file.sha256!,
+                content: "x",
+              },
+              actor,
+            )
+            .pipe(Effect.flip);
+          expect(blocked.reason).toBe("invalid");
+          const discarded = yield* store.update(
+            {
+              expectedRevision: stale.state.revision,
+              change: { type: "write-discard", writeId: conflict.id },
+            },
+            actor,
+          );
+          expect(discarded.pendingWrites).toEqual([]);
+        }).pipe(
+          Effect.provide(QuestStore.layer.pipe(Layer.provide(config))),
+          Effect.provideService(WorkspaceRoot, { plan }),
+        );
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("keeps an interrupted save pending and recovers it from the file's actual bytes", () =>
+    Effect.gen(function* () {
+      const { config, plan, statePath } = yield* workspaceHarness;
+      const fs = yield* FileSystem.FileSystem;
+      let failFileReplace = false;
+      let failStateCommits = 0;
+      let stateCommits = 0;
+      const flaky = QuestStore.layer.pipe(
+        Layer.provide(config),
+        Layer.provide(
+          failingRename((from, to) => {
+            if (to === plan && failFileReplace) return true;
+            if (to !== statePath) return false;
+            stateCommits += 1;
+            return failStateCommits > 0 && stateCommits === failStateCommits;
+          }),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const { store, file, read } = yield* setupFile;
+        // Write boundary: the intent is durable, the file is unchanged, and nothing claims success.
+        failFileReplace = true;
+        const interrupted = yield* store.writeDocument(
+          {
+            operationId: "a",
+            documentId: file.id,
+            expectedSha256: read.sha256!,
+            content: "Desired\n",
+          },
+          actor,
+        );
+        failFileReplace = false;
+        expect(interrupted.outcome).toBe("pending");
+        expect(interrupted.state.pendingWrites[0]).toMatchObject({ status: "pending" });
+        expect(yield* fs.readFileString(plan)).toBe(read.content!);
+        const unchanged = yield* store.get;
+        yield* store.readDocument(file.id);
+        expect(yield* store.get).toEqual(unchanged);
+        const retried = yield* store.recoverWrite(
+          { operationId: "a-recover", writeId: interrupted.state.pendingWrites[0]!.id },
+          actor,
+        );
+        expect(retried.outcome).toBe("saved");
+        expect(yield* fs.readFileString(plan)).toBe("Desired\n");
+
+        // Finalization boundary: the file holds the new bytes, but the Quest still reports pending.
+        failStateCommits = stateCommits + 2;
+        const unfinalized = yield* store
+          .writeDocument(
+            {
+              operationId: "b",
+              documentId: file.id,
+              expectedSha256: retried.file.sha256!,
+              content: "Second desired\n",
+            },
+            actor,
+          )
+          .pipe(Effect.flip);
+        expect(unfinalized.reason).toBe("storage");
+        expect(yield* fs.readFileString(plan)).toBe("Second desired\n");
+        const pending = (yield* store.get).pendingWrites[0]!;
+        expect(pending.status).toBe("pending");
+        const finalized = yield* store.recoverWrite(
+          { operationId: "b-recover", writeId: pending.id },
+          actor,
+        );
+        expect(finalized.outcome).toBe("saved");
+        expect(finalized.state.pendingWrites).toEqual([]);
+
+        // A third version found during recovery is a conflict; it is never overwritten or rolled back.
+        failFileReplace = true;
+        const third = yield* store.writeDocument(
+          {
+            operationId: "c",
+            documentId: file.id,
+            expectedSha256: finalized.file.sha256!,
+            content: "Third desired\n",
+          },
+          actor,
+        );
+        failFileReplace = false;
+        yield* fs.writeFileString(plan, "Someone else\n");
+        const conflict = yield* store.recoverWrite(
+          { operationId: "c-recover", writeId: third.state.pendingWrites[0]!.id },
+          actor,
+        );
+        expect(conflict.outcome).toBe("conflict");
+        expect(conflict.state.pendingWrites[0]).toMatchObject({ status: "conflict" });
+        expect(yield* fs.readFileString(plan)).toBe("Someone else\n");
+        expect(
+          (yield* store.retained(conflict.state.pendingWrites[0]!.actualSha256!)).content,
+        ).toBe("Someone else\n");
+      }).pipe(Effect.provide(flaky), Effect.provideService(WorkspaceRoot, { plan }));
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

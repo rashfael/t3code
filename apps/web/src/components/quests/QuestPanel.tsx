@@ -6,23 +6,29 @@ import {
   type QuestWork,
 } from "@t3tools/contracts";
 import { ArrowLeftIcon, ChevronRightIcon, XIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Radio, RadioGroup } from "../ui/radio-group";
 import { Textarea } from "../ui/textarea";
 import { useQuest, type PanelEntry } from "./questContext";
-import { conversationStatusLabel, useQuestConversationThreads } from "./QuestConversations";
+import {
+  conversationStatusLabel,
+  QuestSelect,
+  useQuestConversationThreads,
+} from "./QuestConversations";
 import {
   DocumentAssociations,
   DocumentEditor,
   Field,
   HandoffEditor,
+  QuestionEditor,
   useEditorDraft,
   WorkEditor,
 } from "./QuestEditors";
 import { draftText, useQuestDraft } from "./questDraftStore";
+import { DocumentsList, FileDocumentView, ReconstructRevision } from "./QuestDocuments";
 import { QuestMarkdown } from "./QuestMarkdown";
 import {
   childrenOf,
@@ -46,6 +52,8 @@ function panelTitle(entry: PanelEntry): string {
       return "Decision";
     case "decisions":
       return "Decisions";
+    case "documents":
+      return "Documents";
     case "history":
       return "History";
   }
@@ -86,6 +94,8 @@ export function QuestPanel({
           <QuestionView id={entry.id} />
         ) : entry.type === "decisions" ? (
           <DecisionList />
+        ) : entry.type === "documents" ? (
+          <DocumentsList />
         ) : (
           <HistoryList />
         )}
@@ -245,7 +255,18 @@ function WorkInspector({ id }: { id: string }) {
   const relations = state.relations.filter((r) => r.from === work.id || r.to === work.id);
   const questions = state.questions.filter((question) => question.workId === work.id);
   const conversations = state.conversations.filter((item) => item.workId === work.id);
-  const documents = state.documents.filter((doc) => work.documentIds.includes(doc.id));
+  const documents = [
+    ...state.documents
+      .filter((doc) => work.documentIds.includes(doc.id))
+      .map((doc) => ({
+        id: doc.id,
+        title: doc.title,
+        detail: doc.kind === "evidence" ? "Evidence · read only" : "Quest note",
+      })),
+    ...state.files
+      .filter((file) => work.documentIds.includes(file.id))
+      .map((file) => ({ id: file.id, title: file.title, detail: file.path })),
+  ];
   const questionIds = new Set(questions.map((question) => question.id));
   const history = state.history
     .filter(
@@ -294,7 +315,7 @@ function WorkInspector({ id }: { id: string }) {
           variant="ghost"
           onClick={() => showView("conversation", { about: `work:${work.id}` })}
         >
-          Discuss
+          {work.state === "attention" ? "Discuss the intervention" : "Discuss"}
         </Button>
         <Button size="sm" variant="ghost" onClick={() => showView("map", { work: work.id })}>
           Show in map
@@ -338,7 +359,8 @@ function WorkInspector({ id }: { id: string }) {
                       className="block text-start underline"
                       onClick={() => showView("conversation", { thread: item.threadId })}
                     >
-                      {thread?.title ?? item.title} ({conversationStatusLabel(thread)})
+                      {item.purpose || thread?.title || item.title} (
+                      {conversationStatusLabel(thread)})
                     </button>
                   );
                 })}
@@ -483,7 +505,7 @@ function WorkInspector({ id }: { id: string }) {
             {documents.map((doc) => (
               <LinkRow
                 key={doc.id}
-                detail={doc.kind === "evidence" ? "Evidence · read only" : "Living document"}
+                detail={doc.detail}
                 onClick={() => openPanel({ type: "document", id: doc.id }, "push")}
               >
                 {doc.title}
@@ -516,6 +538,8 @@ function DocumentView({ id }: { id: string }) {
   const { state, canWrite, pending, openPanel } = useQuest();
   const editor = useEditorDraft("document", id);
   const document = state.documents.find((item) => item.id === id);
+  const file = state.files.find((item) => item.id === id);
+  if (file) return <FileDocumentView file={file} />;
   if (!document) return <Missing what="document" />;
   if (editor.draft) return <DocumentEditor document={document} />;
   const users = state.work.filter((item) => item.documentIds.includes(document.id));
@@ -525,7 +549,7 @@ function DocumentView({ id }: { id: string }) {
         {document.kind === "evidence" ? (
           <Badge variant="outline">Evidence · read only</Badge>
         ) : (
-          <Badge variant="info">Living document</Badge>
+          <Badge variant="info">Quest note</Badge>
         )}
         {document.kind === "living" && canWrite ? (
           <span className="ms-auto">
@@ -574,24 +598,47 @@ function QuestionView({ id }: { id: string }) {
   const { environmentId, state, canWrite, pending, save, openPanel, showView } = useQuest();
   const question = state.questions.find((item) => item.id === id);
   const draft = useQuestDraft(environmentId, `question:${id}`);
+  const [editing, setEditing] = useState(false);
   if (!question) return <Missing what="decision" />;
+  if (editing) return <QuestionEditor question={question} onDone={() => setEditing(false)} />;
+  const discussions = state.conversations.filter(
+    (item) =>
+      item.questionId === question.id || (item.workId !== null && item.workId === question.workId),
+  );
   const answer = draftText(draft.draft, "answer", question.answer ?? "");
   const rationale = draftText(draft.draft, "rationale", question.rationale ?? "");
+  const source = draftText(
+    draft.draft,
+    "source",
+    discussions.findLast((item) => item.questionId === question.id)?.threadId ?? "",
+  );
   const setAnswer = (value: string) => draft.update({ answer: value });
   const setRationale = (value: string) => draft.update({ rationale: value });
   async function saveAnswer(deferred: boolean) {
-    const saved = await save({
-      type: "answer",
-      questionId: id,
-      answer: deferred ? answer || null : answer,
-      rationale: rationale || null,
-      deferred,
-    });
+    const saved = await save(
+      {
+        type: "answer",
+        questionId: id,
+        answer: deferred ? answer || null : answer,
+        rationale: rationale || null,
+        deferred,
+      },
+      source ? { threadId: source, runId: null } : undefined,
+    );
     if (saved) draft.clear();
   }
   const status = questQuestionStatus(question);
   const work = state.work.find((item) => item.id === question.workId);
-  const sources = state.documents.filter((doc) => work?.documentIds.includes(doc.id));
+  const answerSource = question.answerSource
+    ? (state.conversations.find((item) => item.threadId === question.answerSource?.threadId) ??
+      null)
+    : null;
+  const sources = [
+    ...state.documents.filter((doc) => work?.documentIds.includes(doc.id)),
+    ...state.files
+      .filter((file) => work?.documentIds.includes(file.id))
+      .map((file) => ({ id: file.id, title: file.title, kind: "file" as const })),
+  ];
   const record = state.history.filter((entry) => entry.targetId === question.id);
   const lastApply = record.findLast((entry) => entry.kind === "apply");
   const preview = work && status === "recorded" ? questAppliedUnderstanding(work, question) : null;
@@ -627,7 +674,13 @@ function QuestionView({ id }: { id: string }) {
             {sources.map((doc) => (
               <LinkRow
                 key={doc.id}
-                detail={doc.kind === "evidence" ? "Evidence" : "Living document"}
+                detail={
+                  doc.kind === "evidence"
+                    ? "Evidence"
+                    : doc.kind === "file"
+                      ? "Markdown file"
+                      : "Quest note"
+                }
                 onClick={() => openPanel({ type: "document", id: doc.id }, "push")}
               >
                 {doc.title}
@@ -644,7 +697,33 @@ function QuestionView({ id }: { id: string }) {
         >
           Discuss in a conversation
         </Button>
+        {canWrite && status !== "applied" ? (
+          <Button size="sm" variant="ghost" disabled={pending} onClick={() => setEditing(true)}>
+            Edit question
+          </Button>
+        ) : null}
       </div>
+      {question.answer && question.answerSource ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Answer recorded from{" "}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => showView("conversation", { thread: question.answerSource!.threadId })}
+          >
+            {answerSource?.purpose ||
+              answerSource?.title ||
+              "a conversation no longer in the Quest"}
+          </button>
+          {question.appliedRevision !== null
+            ? ` · applied in revision ${question.appliedRevision}`
+            : ""}
+        </p>
+      ) : question.appliedRevision !== null ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Applied in revision {question.appliedRevision}
+        </p>
+      ) : null}
 
       {status === "applied" ? (
         <Block title="Applied">
@@ -709,6 +788,22 @@ function QuestionView({ id }: { id: string }) {
                 rows={2}
               />
             </Field>
+            {discussions.length > 0 ? (
+              <Field label="From conversation">
+                <QuestSelect
+                  label="Answer from conversation"
+                  value={source}
+                  onChange={(value) => draft.update({ source: value })}
+                  options={[
+                    { value: "", label: "Not from a conversation" },
+                    ...discussions.map((item) => ({
+                      value: item.threadId,
+                      label: item.purpose || item.title,
+                    })),
+                  ]}
+                />
+              </Field>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               <Button size="sm" disabled={!answer.trim()} onClick={() => void saveAnswer(false)}>
                 Record answer
@@ -760,11 +855,24 @@ function QuestionView({ id }: { id: string }) {
 }
 
 function DecisionList() {
-  const { state, openPanel } = useQuest();
+  const { state, canWrite, openPanel } = useQuest();
+  const [preparing, setPreparing] = useState(false);
   const groups = questionsByStatus(state.questions);
   return (
     <div>
-      <h2 className="text-lg font-semibold">Decisions</h2>
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold">Decisions</h2>
+        {canWrite && !preparing ? (
+          <Button size="sm" variant="outline" onClick={() => setPreparing(true)}>
+            Prepare a question
+          </Button>
+        ) : null}
+      </div>
+      {preparing ? (
+        <div className="mt-4">
+          <QuestionEditor onDone={() => setPreparing(false)} />
+        </div>
+      ) : null}
       {questionStatusOrder.map((status) => (
         <Block key={status} title={`${questionStatusLabels[status]} · ${groups[status].length}`}>
           {groups[status].length > 0 ? (
@@ -793,6 +901,7 @@ function HistoryList() {
   return (
     <div>
       <h2 className="text-lg font-semibold">History</h2>
+      <ReconstructRevision />
       <ul className="mt-3">
         {state.history.toReversed().map((entry) => (
           <HistoryEntryRow key={entry.id} entry={entry} inPanel />

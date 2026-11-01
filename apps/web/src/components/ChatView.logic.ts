@@ -416,6 +416,11 @@ export interface ChatEmbedding {
     projectRef: ScopedProjectRef,
     options?: ReturnType<typeof resolveBackgroundDraftWorkspaceOptions>,
   ) => Promise<boolean>;
+  /** Shows a fork made from this chat in the host, keeping where it came from. */
+  readonly openFork: (
+    threadRef: ScopedThreadRef,
+    origin: { readonly threadId: ThreadId; readonly runId: RunId },
+  ) => Promise<void>;
 }
 
 export function startNewThreadForProject(

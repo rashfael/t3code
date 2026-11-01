@@ -64,7 +64,7 @@ import { recordPromptSent } from "../GitHubStarPrompt";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { newMessageId, newThreadId } from "~/lib/utils";
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
-import { buildThreadRouteParams } from "../../threadRoutes";
+import { threadNavigationTarget } from "../quests/questMembership";
 import {
   beginBackgroundDraftSubmissionByRef,
   clearBackgroundDraftSubmissionByRef,
@@ -1423,10 +1423,7 @@ export function useComposerSend(input: ComposerSendInput) {
                 actionProps: {
                   children: "Open",
                   onClick: () => {
-                    void navigate({
-                      to: "/$environmentId/$threadId",
-                      params: buildThreadRouteParams(backgroundThreadRef),
-                    });
+                    void navigate(threadNavigationTarget(backgroundThreadRef));
                   },
                 },
               }),

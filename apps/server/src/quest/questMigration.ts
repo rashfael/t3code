@@ -1,4 +1,10 @@
-import type { QuestHistoryEntry, QuestState, QuestWork } from "@t3tools/contracts";
+import {
+  QuestDocument,
+  QuestHistoryEntry,
+  QuestRelation,
+  QuestWork,
+  type QuestState,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import { questExampleRelations, questExampleWork } from "./questSeed.ts";
@@ -47,6 +53,78 @@ export const QuestStateV1 = Schema.Struct({
 });
 export type QuestStateV1 = typeof QuestStateV1.Type;
 
+/** The second prototype's saved shape: conversations had no role and questions no provenance. */
+export const QuestStateV2 = Schema.Struct({
+  schemaVersion: Schema.Literal(2),
+  revision: Schema.Number,
+  currentWorkId: Schema.NullOr(Schema.String),
+  work: Schema.Array(QuestWork),
+  relations: Schema.Array(QuestRelation),
+  documents: Schema.Array(QuestDocument),
+  questions: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      workId: Schema.String,
+      title: Schema.String,
+      context: Schema.String,
+      alternatives: Schema.Array(Schema.String),
+      answer: Schema.NullOr(Schema.String),
+      rationale: Schema.NullOr(Schema.String),
+      deferred: Schema.Boolean,
+      applied: Schema.Boolean,
+      proposal: Schema.Boolean,
+    }),
+  ),
+  conversations: Schema.Array(
+    Schema.Struct({
+      threadId: Schema.String,
+      projectId: Schema.NullOr(Schema.String),
+      title: Schema.String,
+      workId: Schema.NullOr(Schema.String),
+      questionId: Schema.NullOr(Schema.String),
+      linkedAt: Schema.String,
+    }),
+  ),
+  history: Schema.Array(QuestHistoryEntry),
+});
+export type QuestStateV2 = typeof QuestStateV2.Type;
+
+/**
+ * Adds the third shape's fields without changing saved meaning: earlier links stay plain links
+ * (never a core or a purpose they did not have) and the revision is unchanged.
+ */
+export function migrateQuestV2(saved: QuestStateV2): QuestState {
+  return {
+    ...saved,
+    schemaVersion: 3,
+    questions: saved.questions.map((question) => ({
+      ...question,
+      answerSource: null,
+      appliedRevision: question.applied
+        ? (saved.history.findLast(
+            (entry) => entry.kind === "apply" && entry.targetId === question.id,
+          )?.revision ?? null)
+        : null,
+    })),
+    conversations: saved.conversations.map((conversation) => ({
+      ...conversation,
+      role: "linked",
+      purposeKind: "linked",
+      purpose: "",
+      sourceRevision: null,
+      sources: [],
+      context: "none",
+      prepared: null,
+      origin: null,
+      creation: null,
+    })),
+    corePredecessors: [],
+    workspace: null,
+    files: [],
+    pendingWrites: [],
+  };
+}
+
 const RECOVERY_ID = "retained-attempt";
 
 /**
@@ -57,7 +135,7 @@ const RECOVERY_ID = "retained-attempt";
 export function migrateQuestV1(
   saved: QuestStateV1,
   options: { readonly at: string; readonly fresh: boolean },
-): QuestState {
+): QuestStateV2 {
   const savedIds = new Set(saved.work.map((item) => item.id));
   const documentIds = new Set(saved.documents.map((doc) => doc.id));
   const recovery = saved.work.find((item) => item.id === RECOVERY_ID);

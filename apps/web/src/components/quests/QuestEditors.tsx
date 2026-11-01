@@ -1,4 +1,4 @@
-import type { QuestDocument, QuestWork } from "@t3tools/contracts";
+import type { QuestDocument, QuestQuestion, QuestWork } from "@t3tools/contracts";
 import type { FormEvent, ReactNode } from "react";
 
 import { Button } from "../ui/button";
@@ -194,7 +194,13 @@ export function DocumentAssociations({ work }: { work: QuestWork }) {
       }}
     >
       <fieldset disabled={pending || !canWrite}>
-        {state.documents.map((item) => (
+        {[
+          ...state.documents.map((item) => ({
+            id: item.id,
+            label: `${item.title} · ${item.kind === "evidence" ? "evidence" : "Quest note"}`,
+          })),
+          ...state.files.map((item) => ({ id: item.id, label: `${item.title} · ${item.path}` })),
+        ].map((item) => (
           <label key={item.id} className="mb-2 flex items-start gap-2 text-sm">
             <Checkbox
               name="documentIds"
@@ -208,9 +214,7 @@ export function DocumentAssociations({ work }: { work: QuestWork }) {
                 })
               }
             />
-            <span>
-              {item.title} · {item.kind === "evidence" ? "evidence" : "living document"}
-            </span>
+            <span>{item.label}</span>
           </label>
         ))}
         <EditorActions onCancel={clear} submit="Save associations" />
@@ -243,6 +247,90 @@ export function DocumentEditor({ document }: { document: QuestDocument }) {
           <Textarea name="body" defaultValue={draftText(draft, "body", document.body)} rows={14} />
         </Field>
         <EditorActions onCancel={clear} submit="Save document" />
+      </fieldset>
+    </form>
+  );
+}
+
+/** Prepares a new question or edits one not yet applied; drafts survive panel changes. */
+export function QuestionEditor({
+  question,
+  workId,
+  onDone,
+}: {
+  question?: QuestQuestion;
+  workId?: string;
+  onDone: () => void;
+}) {
+  const { environmentId, state, save, pending, canWrite } = useQuest();
+  const { draft, update, clear } = useQuestDraft(
+    environmentId,
+    `question-editor:${question?.id ?? "new"}`,
+  );
+  const chosenWork = draftText(
+    draft,
+    "workId",
+    question?.workId ?? workId ?? state.currentWorkId ?? "",
+  );
+  return (
+    <form
+      onInput={captureText(update)}
+      onSubmit={async (event) => {
+        event.preventDefault();
+        const data = new FormData(event.currentTarget);
+        const prepared = {
+          workId: chosenWork,
+          title: formText(data, "title"),
+          context: formText(data, "context"),
+          alternatives: formText(data, "alternatives").split("\n"),
+        };
+        const saved = await save(
+          question
+            ? { type: "question-edit", questionId: question.id, question: prepared }
+            : { type: "question-create", question: prepared },
+        );
+        if (!saved) return;
+        clear();
+        onDone();
+      }}
+    >
+      <fieldset disabled={pending || !canWrite}>
+        <Field label="Affects">
+          <QuestSelect
+            label="Affected work"
+            value={chosenWork}
+            onChange={(value) => update({ workId: value })}
+            options={state.work.map((item) => ({ value: item.id, label: item.title }))}
+          />
+        </Field>
+        <Field label="Question">
+          <Input
+            name="title"
+            defaultValue={draftText(draft, "title", question?.title ?? "")}
+            required
+          />
+        </Field>
+        <Field label="Context">
+          <Textarea
+            name="context"
+            defaultValue={draftText(draft, "context", question?.context ?? "")}
+            rows={4}
+          />
+        </Field>
+        <Field label="Alternatives, one per line">
+          <Textarea
+            name="alternatives"
+            defaultValue={draftText(draft, "alternatives", question?.alternatives.join("\n") ?? "")}
+            rows={3}
+          />
+        </Field>
+        <EditorActions
+          onCancel={() => {
+            clear();
+            onDone();
+          }}
+          submit={question ? "Save question" : "Prepare question"}
+        />
       </fieldset>
     </form>
   );

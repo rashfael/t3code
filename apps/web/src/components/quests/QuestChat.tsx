@@ -19,11 +19,11 @@ import type { ChatEmbedding } from "../ChatView.logic";
 export function QuestChat({
   environmentId,
   threadId,
-  onNewConversation,
+  embedding,
 }: {
   environmentId: EnvironmentId;
   threadId: string;
-  onNewConversation: ChatEmbedding["openNewThread"];
+  embedding: ChatEmbedding;
 }) {
   const ref = scopeThreadRef(environmentId, threadId as ThreadId);
   const draftId = useComposerDraftStore((store) => store.getDraftIdByRef(ref));
@@ -62,7 +62,6 @@ export function QuestChat({
     draftThreadExists: draftSession !== null,
   });
   const key = scopedThreadKey(ref);
-  const embedding = { openNewThread: onNewConversation };
   if (draftId && draftSession)
     return (
       <ChatView

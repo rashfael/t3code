@@ -264,6 +264,7 @@ import {
 } from "./sidebar/SidebarThreadRow";
 import { SidebarDraftBlock } from "./sidebar/SidebarDraftBlock";
 import { SidebarQuests } from "./sidebar/SidebarQuests";
+import { threadNavigationTarget, useQuestMembership } from "./quests/questMembership";
 import {
   SidebarProjectFolderHeader,
   sidebarFolderRowId,
@@ -924,7 +925,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     projectGroupByScopeKey,
     projectScopeItems: lookupProjectScopeItems,
   } = useSidebarLookups();
-  const delegatedUnderParent = useDelegatedUnderParent();
+  const delegatedThreads = useDelegatedUnderParent();
+  const questMembership = useQuestMembership();
+  // A thread its Quest owns has one canonical row, under the Quest.
+  const delegatedUnderParent =
+    questMembership.hiddenKeys.size === 0
+      ? delegatedThreads
+      : new Set([...delegatedThreads, ...questMembership.hiddenKeys]);
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -1460,10 +1467,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     if (isMobile) {
       setOpenMobile(false);
     }
-    return router.navigate({
-      to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(threadRef),
-    });
+    return router.navigate(threadNavigationTarget(threadRef));
   };
 
   const handleThreadFileDrop = async (threadRef: ScopedThreadRef, files: File[]) => {
@@ -3307,6 +3311,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         section: SidebarSection,
                         // The tree row of the project folder this row sits in.
                         folderRow?: string,
+                        // A Quest's rows keep the full row but sit under the Quest's tree row.
+                        questRow?: { readonly parent: string; readonly isActive: boolean },
                       ) => {
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
@@ -3335,6 +3341,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             variant={rowVariant}
                             navigationParent={
                               folderRow ??
+                              questRow?.parent ??
                               (section === "working" ||
                               section === "snoozed" ||
                               section === "settled"
@@ -3371,7 +3378,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 : null
                             }
                             wokeAt={threadWokeAt(thread, { now: snoozeNow })}
-                            isActive={routeRowThreadKey === threadKey}
+                            isActive={questRow?.isActive ?? routeRowThreadKey === threadKey}
                             revealRef={
                               routeRowThreadKey === threadKey ? revealActiveRow : undefined
                             }
@@ -3436,7 +3443,19 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       ];
                       const quests = (
                         <li key="quests-shelf" className="mt-auto list-none pt-2" role="none">
-                          <SidebarQuests treeNavigation />
+                          <SidebarQuests
+                            treeNavigation
+                            threads={threads}
+                            environmentLabelById={environmentLabelById}
+                            renderThreadRow={(thread, questRow) =>
+                              renderThreadRow(
+                                thread,
+                                thread.settledOverride === "settled" ? "settled" : "active",
+                                undefined,
+                                questRow,
+                              )
+                            }
+                          />
                         </li>
                       );
                       let questsInserted = false;

@@ -1,9 +1,22 @@
 import {
+  QuestDocumentInput,
+  QuestError,
+  QuestFileContent,
+  QuestMembership,
+  QuestOpenConversationInput,
+  QuestOpenConversationResult,
+  QuestReconstruction,
+  QuestReconstructionInput,
+  QuestRecoverWriteInput,
+  QuestRetained,
+  QuestRetainedInput,
   QuestState,
   QuestThreadLink,
   QuestThreadLinkInput,
   QuestUpdateInput,
-  QuestError,
+  QuestWorkspaceFiles,
+  QuestWriteDocumentInput,
+  QuestWriteResult,
 } from "./quest.ts";
 import {
   OrchestrationV2SearchThreadError,
@@ -424,6 +437,14 @@ export const WS_METHODS = {
   questGet: "quest.get",
   questUpdate: "quest.update",
   questThreadLink: "quest.threadLink",
+  questMembership: "quest.membership",
+  questReconstruct: "quest.reconstruct",
+  questOpenConversation: "quest.openConversation",
+  questReadDocument: "quest.readDocument",
+  questRetained: "quest.retained",
+  questWorkspaceFiles: "quest.workspaceFiles",
+  questWriteDocument: "quest.writeDocument",
+  questRecoverWrite: "quest.recoverWrite",
   projectsCreateNew: "projects.createNew",
   projectsCreateFromThread: "projects.createFromThread",
 
@@ -1361,6 +1382,47 @@ const WsQuestUpdateRpc = Rpc.make(WS_METHODS.questUpdate, {
   success: QuestState,
   error: Schema.Union([QuestError, EnvironmentAuthorizationError]),
 });
+const QuestRpcError = Schema.Union([QuestError, EnvironmentAuthorizationError]);
+const WsQuestMembershipRpc = Rpc.make(WS_METHODS.questMembership, {
+  payload: Schema.Struct({}),
+  success: QuestMembership,
+  error: QuestRpcError,
+});
+const WsQuestReconstructRpc = Rpc.make(WS_METHODS.questReconstruct, {
+  payload: QuestReconstructionInput,
+  success: QuestReconstruction,
+  error: QuestRpcError,
+});
+const WsQuestOpenConversationRpc = Rpc.make(WS_METHODS.questOpenConversation, {
+  payload: QuestOpenConversationInput,
+  success: QuestOpenConversationResult,
+  error: QuestRpcError,
+});
+const WsQuestReadDocumentRpc = Rpc.make(WS_METHODS.questReadDocument, {
+  payload: QuestDocumentInput,
+  success: QuestFileContent,
+  error: QuestRpcError,
+});
+const WsQuestRetainedRpc = Rpc.make(WS_METHODS.questRetained, {
+  payload: QuestRetainedInput,
+  success: QuestRetained,
+  error: QuestRpcError,
+});
+const WsQuestWorkspaceFilesRpc = Rpc.make(WS_METHODS.questWorkspaceFiles, {
+  payload: Schema.Struct({}),
+  success: QuestWorkspaceFiles,
+  error: QuestRpcError,
+});
+const WsQuestWriteDocumentRpc = Rpc.make(WS_METHODS.questWriteDocument, {
+  payload: QuestWriteDocumentInput,
+  success: QuestWriteResult,
+  error: QuestRpcError,
+});
+const WsQuestRecoverWriteRpc = Rpc.make(WS_METHODS.questRecoverWrite, {
+  payload: QuestRecoverWriteInput,
+  success: QuestWriteResult,
+  error: QuestRpcError,
+});
 
 const WsProjectsCreateNewRpc = Rpc.make(WS_METHODS.projectsCreateNew, {
   payload: ProjectCreateNewInput,
@@ -2129,6 +2191,14 @@ export const WsRpcGroup = RpcGroup.make(
   WsQuestGetRpc,
   WsQuestThreadLinkRpc,
   WsQuestUpdateRpc,
+  WsQuestMembershipRpc,
+  WsQuestReconstructRpc,
+  WsQuestOpenConversationRpc,
+  WsQuestReadDocumentRpc,
+  WsQuestRetainedRpc,
+  WsQuestWorkspaceFilesRpc,
+  WsQuestWriteDocumentRpc,
+  WsQuestRecoverWriteRpc,
   WsProjectsCreateNewRpc,
   WsProjectsCreateFromThreadRpc,
   WsProjectsWriteFileRpc,

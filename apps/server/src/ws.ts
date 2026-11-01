@@ -214,6 +214,7 @@ import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import { refreshPushedPullRequests } from "./git/refreshPushedPullRequests.ts";
 import { linkCreatedPullRequest } from "./git/linkCreatedPullRequest.ts";
 import * as ReviewService from "./review/ReviewService.ts";
+import * as QuestConversations from "./quest/QuestConversations.ts";
 import * as QuestStore from "./quest/QuestStore.ts";
 import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts";
 import * as ProjectService from "./project/ProjectService.ts";
@@ -706,6 +707,9 @@ function shouldUseBoundedThreadSnapshot(input: {
 }
 
 // Keep telemetry per socket; several client types can connect simultaneously.
+/** WS saves come from an authorized client; the Quest does not yet record which person. */
+const QUEST_CLIENT_ACTOR = { kind: "client", id: null } as const;
+
 function readClientAnalyticsProps(request: HttpServerRequest.HttpServerRequest) {
   const url = HttpServerRequest.toURL(request);
   if (Option.isNone(url)) {
@@ -1301,6 +1305,7 @@ export const layerWsRpc = (
       const projectStore = yield* ProjectStore.ProjectStoreV2;
       const projectService = yield* ProjectService.ProjectService;
       const questStore = yield* QuestStore.QuestStore;
+      const questConversations = yield* QuestConversations.QuestConversations;
       const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
       const scratchThreadPromotion = yield* ScratchThreadPromotion.ScratchThreadPromotion;
       const eventLoopMonitor = yield* EventLoopMonitor.EventLoopMonitor;
@@ -2795,8 +2800,19 @@ export const layerWsRpc = (
             ),
           ),
         [WS_METHODS.questGet]: () => questStore.get,
-        [WS_METHODS.questUpdate]: (input) => questStore.update(input),
+        [WS_METHODS.questUpdate]: (input) => questStore.update(input, QUEST_CLIENT_ACTOR),
         [WS_METHODS.questThreadLink]: (input) => questStore.threadLink(input.threadId),
+        [WS_METHODS.questMembership]: () => questStore.membership,
+        [WS_METHODS.questReconstruct]: (input) => questStore.reconstruct(input.revision),
+        [WS_METHODS.questOpenConversation]: (input) =>
+          questConversations.open(input, QUEST_CLIENT_ACTOR),
+        [WS_METHODS.questReadDocument]: (input) => questStore.readDocument(input.documentId),
+        [WS_METHODS.questRetained]: (input) => questStore.retained(input.sha256),
+        [WS_METHODS.questWorkspaceFiles]: () => questStore.workspaceFiles,
+        [WS_METHODS.questWriteDocument]: (input) =>
+          questStore.writeDocument(input, QUEST_CLIENT_ACTOR),
+        [WS_METHODS.questRecoverWrite]: (input) =>
+          questStore.recoverWrite(input, QUEST_CLIENT_ACTOR),
         [WS_METHODS.projectsCreateNew]: (input) =>
           managedFolders
             .createNamedProject(input)

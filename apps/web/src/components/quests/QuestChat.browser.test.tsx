@@ -83,7 +83,11 @@ function setup(state: Partial<HarnessState>) {
 it("keeps the draft's chat and the Quest route through its first send", async () => {
   setup({ drafts: { "draft-1": { environmentId: "env-a", threadId: "thread-1" } } });
   await using screen = await render(
-    <QuestChat environmentId={"env-a" as never} threadId="thread-1" onNewConversation={noop} />,
+    <QuestChat
+      environmentId={"env-a" as never}
+      threadId="thread-1"
+      embedding={{ openNewThread: noop, openFork: async () => {} }}
+    />,
     {
       router: "/quests",
     },
@@ -109,7 +113,11 @@ it.each([
 ])("says when a legacy link's $name is on another environment", async ({ state }) => {
   setup(state);
   await using screen = await render(
-    <QuestChat environmentId={"env-a" as never} threadId="thread-1" onNewConversation={noop} />,
+    <QuestChat
+      environmentId={"env-a" as never}
+      threadId="thread-1"
+      embedding={{ openNewThread: noop, openFork: async () => {} }}
+    />,
     { router: "/quests" },
   );
   await expect
@@ -124,7 +132,11 @@ it.each([
 it("reports a conversation whose draft was discarded instead of waiting forever", async () => {
   setup({});
   await using screen = await render(
-    <QuestChat environmentId={"env-a" as never} threadId="gone" onNewConversation={noop} />,
+    <QuestChat
+      environmentId={"env-a" as never}
+      threadId="gone"
+      embedding={{ openNewThread: noop, openFork: async () => {} }}
+    />,
     {
       router: "/quests",
     },
