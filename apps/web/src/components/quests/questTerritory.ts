@@ -537,19 +537,26 @@ function grow(
     });
     for (const group of members) {
       if (result.has(group.key)) continue;
-      // Start on the prerequisites' edge, as far from the origin as that edge reaches.
+      // Start on the prerequisites' outward edge (beyond their middle ring), as close in as that
+      // allows, so a chain wraps around the landmass instead of growing a spoke.
+      const earlierCells = (after.get(group.key) ?? []).flatMap(
+        (earlier) => result.get(earlier)?.cells ?? [],
+      );
+      const ring =
+        earlierCells.reduce((sum, cell) => sum + distance(sites[cell]!, origin), 0) /
+        Math.max(1, earlierCells.length);
       let best = -1;
-      let bestScore = -Infinity;
-      for (const earlier of after.get(group.key) ?? [])
-        for (const cell of result.get(earlier)?.cells ?? [])
-          for (const next of neighbours[cell]!) {
-            if (!free(next)) continue;
-            const score = distance(sites[next]!, origin);
-            if (score > bestScore + 1e-9) {
-              best = next;
-              bestScore = score;
-            }
+      let bestScore = Infinity;
+      for (const cell of earlierCells)
+        for (const next of neighbours[cell]!) {
+          if (!free(next)) continue;
+          const reach = distance(sites[next]!, origin);
+          const score = reach >= ring ? reach : reach + 1e6;
+          if (score < bestScore - 1e-9) {
+            best = next;
+            bestScore = score;
           }
+        }
       if (best < 0) best = nearestFree(origin);
       if (best >= 0) claim(group.key, best);
     }
@@ -706,10 +713,28 @@ export function insetCellPath(cell: number, inset = 2.5): string {
   return `M ${polygon.map((p) => `${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" L ")} Z`;
 }
 
+/** The two cells, one per region, closest to each other; for neighbours they share a border. */
+function closestCells(earlier: Region, later: Region): { from: Point; to: Point } {
+  const inLater = new Set(later.cells);
+  let best = { from: earlier.anchor, to: later.anchor };
+  let bestDistance = Infinity;
+  for (const a of earlier.cells) {
+    if (inLater.has(a)) continue;
+    for (const b of later.cells) {
+      const d = distance(sitePoint(a), sitePoint(b));
+      if (d < bestDistance) {
+        bestDistance = d;
+        best = { from: sitePoint(a), to: sitePoint(b) };
+      }
+    }
+  }
+  return best;
+}
+
 export interface TerritoryLink {
   readonly id: string;
   readonly type: "follows" | "retries";
-  /** Anchors of the shown regions holding the earlier and the later work. */
+  /** The nearest cells of the shown regions holding the earlier and the later work. */
   readonly from: Point;
   readonly to: Point;
   readonly viaAncestor: boolean;
@@ -763,8 +788,7 @@ export function territoryLinks(
       {
         id: relation.id,
         type: relation.type,
-        from: earlier.anchor,
-        to: later.anchor,
+        ...closestCells(earlier, later),
         viaAncestor: earlier.work.id !== relation.to || later.work.id !== relation.from,
       },
     ];

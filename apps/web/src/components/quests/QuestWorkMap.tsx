@@ -18,7 +18,10 @@ import {
   type PlacedUnit,
   type Region,
   type Territory,
+  type TerritoryLink,
 } from "./questTerritory";
+import { LABEL_SIZE, MAP_SCALE, placeLabels } from "./questMapLabels";
+import { mapTones, NEUTRAL_TONE } from "./questMapPalette";
 import {
   childrenOf,
   deliveryLeaves,
@@ -41,15 +44,17 @@ const stateDot: Record<QuestWork["state"], string> = {
   done: "bg-success",
 };
 
-/** Ground tint of a scope. Planned and deferred scope is hatched, since its extent is a guess. */
-const regionFill: Record<QuestWork["state"], string> = {
-  planned: "text-muted-foreground/50",
-  active: "fill-info/10",
-  attention: "fill-warning/12",
-  review: "fill-secondary-foreground/8",
-  deferred: "text-muted-foreground/35",
-  done: "fill-success/10",
-};
+/** Neighbours get a short arrow across their shared border; distant regions a gentle arc. */
+function linkPath(link: TerritoryLink) {
+  const dx = link.to.x - link.from.x;
+  const dy = link.to.y - link.from.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 40) return `M ${link.from.x} ${link.from.y} L ${link.to.x} ${link.to.y}`;
+  const bow = Math.min(40, length * 0.18);
+  const mx = (link.from.x + link.to.x) / 2 - (dy / length) * bow;
+  const my = (link.from.y + link.to.y) / 2 + (dx / length) * bow;
+  return `M ${link.from.x} ${link.from.y} Q ${mx} ${my} ${link.to.x} ${link.to.y}`;
+}
 
 const isUncertain = (work: QuestWork) => work.state === "planned" || work.state === "deferred";
 
@@ -253,6 +258,8 @@ function TerritoryView({
   const leaves = territory.regions.filter((region) => !region.expanded);
   const parents = territory.regions.filter((region) => region.expanded);
   const regionOf = new Map(territory.regions.map((region) => [region.work.id, region]));
+  const labels = placeLabels(territory.regions);
+  const { toneOf, legend } = mapTones(state);
   const missing = territory.undrawn.length + territory.unreachable.length;
   const shown = hovered ?? pinned;
   const { bounds } = territory;
@@ -367,13 +374,14 @@ function TerritoryView({
       <div
         role="group"
         aria-label="Work map"
-        className="scrollbar-gutter-both min-h-0 flex-1 overflow-auto p-3"
+        className="scrollbar-gutter-both flex min-h-0 flex-1 overflow-auto p-3"
       >
         <svg
           viewBox={`${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}`}
-          className="mx-auto block size-full"
-          // Few cells must not blow up into a poster; beyond this the map keeps its scale.
-          style={{ maxWidth: bounds.width * 2.4, maxHeight: bounds.height * 2.4 }}
+          // A fixed scale keeps names readable; a large map scrolls instead of shrinking.
+          width={bounds.width * MAP_SCALE}
+          height={bounds.height * MAP_SCALE}
+          className="m-auto block shrink-0"
         >
           <defs>
             <pattern
@@ -383,15 +391,15 @@ function TerritoryView({
               patternUnits="userSpaceOnUse"
               patternTransform="rotate(45)"
             >
-              <line x1="0" y1="0" x2="0" y2="7" stroke="currentColor" strokeWidth="1.2" />
+              <line x1="0" y1="0" x2="0" y2="7" stroke="currentColor" strokeWidth="0.8" />
             </pattern>
             <marker
               id="quest-territory-arrow"
               viewBox="0 0 10 10"
-              refX="8"
+              refX="7"
               refY="5"
-              markerWidth="6"
-              markerHeight="6"
+              markerWidth="5"
+              markerHeight="5"
               orient="auto"
             >
               <path d="M 0 0 L 10 5 L 0 10 z" className="fill-foreground" />
@@ -404,16 +412,19 @@ function TerritoryView({
               <g key={region.work.id} {...interact(region)}>
                 <path
                   d={cellsPath(region.cells)}
-                  className={cn(regionFill[region.work.state], "stroke-foreground/8")}
+                  className={cn(
+                    uncertain ? toneOf(region.work).hatch : toneOf(region.work).ground,
+                    "stroke-foreground/8",
+                  )}
                   fill={uncertain ? "url(#quest-territory-hatch)" : undefined}
                   strokeWidth={0.6}
                 />
                 <path
                   d={boundaryPath(region.cells)}
                   fill="none"
-                  strokeWidth={isActive ? 2.5 : 1.2}
+                  strokeWidth={isActive ? 1.4 : 0.7}
                   strokeDasharray={uncertain || region.work.kind === "attempt" ? "5 3" : undefined}
-                  className={isActive ? "stroke-foreground" : "stroke-foreground/45"}
+                  className={isActive ? "stroke-foreground/80" : "stroke-foreground/30"}
                 />
               </g>
             );
@@ -423,6 +434,8 @@ function TerritoryView({
             const isPinned = pinned?.key === unit.key;
             const site = sitePoint(unit.cell);
             const filled = unit.kind !== "reference" && !unit.planned;
+            const region = regionOf.get(unit.workId);
+            const tone = region ? toneOf(region.work) : NEUTRAL_TONE;
             return (
               <g key={unit.key} {...cellHandlers(unit)}>
                 <path
@@ -430,12 +443,12 @@ function TerritoryView({
                   className={cn(
                     filled
                       ? unit.kind === "aggregate"
-                        ? "fill-info/60"
-                        : "fill-info/40"
+                        ? tone.grouped
+                        : tone.effect
                       : "fill-background/70",
-                    isShown || isPinned ? "stroke-foreground" : "stroke-foreground/50",
+                    isShown || isPinned ? "stroke-foreground" : "stroke-foreground/45",
                   )}
-                  strokeWidth={isPinned ? 2.4 : isShown ? 1.8 : filled ? 0.6 : 1}
+                  strokeWidth={isPinned ? 1.6 : isShown ? 1.2 : filled ? 0.4 : 0.7}
                   strokeDasharray={
                     unit.kind === "reference" ? "1.5 2.5" : unit.planned ? "4 2.5" : undefined
                   }
@@ -447,7 +460,7 @@ function TerritoryView({
                     textAnchor="middle"
                     dominantBaseline="central"
                     pointerEvents="none"
-                    style={{ fontSize: 9 }}
+                    style={{ fontSize: LABEL_SIZE }}
                     className="fill-foreground font-semibold"
                   >
                     {unit.effects.length}
@@ -462,14 +475,14 @@ function TerritoryView({
               d={boundaryPath(region.cells)}
               fill="none"
               pointerEvents="none"
-              strokeWidth={Math.max(1.5, 3.5 - region.depth)}
+              strokeWidth={
+                state.currentWorkId === region.work.id ? 1.6 : active === region.work.id ? 1.4 : 1.1
+              }
               strokeDasharray={isUncertain(region.work) ? "6 3" : undefined}
               className={
-                state.currentWorkId === region.work.id
-                  ? "stroke-info"
-                  : active === region.work.id
-                    ? "stroke-foreground"
-                    : "stroke-foreground/60"
+                state.currentWorkId === region.work.id || active === region.work.id
+                  ? "stroke-foreground/85"
+                  : "stroke-foreground/45"
               }
             />
           ))}
@@ -481,54 +494,79 @@ function TerritoryView({
                 d={boundaryPath(region.cells)}
                 fill="none"
                 pointerEvents="none"
-                strokeWidth={3}
-                className="stroke-info"
+                strokeWidth={1.6}
+                className="stroke-foreground/85"
               />
             ))}
           {links.map((link) => {
-            const mx = (link.from.x + link.to.x) / 2;
-            const my =
-              (link.from.y + link.to.y) / 2 - Math.abs(link.to.x - link.from.x) * 0.15 - 12;
+            const d = linkPath(link);
             return (
-              <path
-                key={link.id}
-                data-link={link.type}
-                d={`M ${link.from.x} ${link.from.y} Q ${mx} ${my} ${link.to.x} ${link.to.y}`}
-                fill="none"
-                pointerEvents="none"
-                strokeWidth={1.6}
-                strokeDasharray={
-                  link.type === "retries" ? "6 4" : link.viaAncestor ? "2 3" : undefined
-                }
-                markerEnd="url(#quest-territory-arrow)"
-                className="stroke-foreground"
-              />
+              <g key={link.id} data-link={link.type} pointerEvents="none">
+                <path d={d} fill="none" strokeWidth={3} className="stroke-background" />
+                <path
+                  d={d}
+                  fill="none"
+                  strokeWidth={1}
+                  strokeDasharray={
+                    link.type === "retries" ? "5 3" : link.viaAncestor ? "2 2.5" : undefined
+                  }
+                  markerEnd="url(#quest-territory-arrow)"
+                  className="stroke-foreground"
+                />
+              </g>
             );
           })}
-          {leaves.map((region) => (
-            <RegionLabel key={region.work.id} region={region} {...signals(region.work)} />
-          ))}
-          {parents.map((region) => {
-            // Expanded regions name themselves at their top edge, clear of their parts' names.
-            const title =
-              region.work.title.length > 34
-                ? `${region.work.title.slice(0, 33)}…`
-                : region.work.title;
-            return (
-              <g key={region.work.id} {...interact(region)}>
+          {labels.map((label) => {
+            const region = regionOf.get(label.id)!;
+            const { needsYou, working } = signals(region.work);
+            const plate = (
+              <>
+                <rect
+                  x={label.at.x - label.width / 2}
+                  y={label.at.y - label.height / 2}
+                  width={label.width}
+                  height={label.height}
+                  rx={2}
+                  className="fill-background/90 stroke-foreground/15"
+                  strokeWidth={0.4}
+                />
                 <text
-                  x={region.crest.x}
-                  y={region.crest.y - 14}
+                  x={label.at.x}
+                  y={label.at.y}
                   textAnchor="middle"
-                  strokeWidth={3}
-                  style={{ fontSize: 8 }}
+                  dominantBaseline="central"
+                  style={{ fontSize: LABEL_SIZE }}
                   className={cn(
-                    "font-semibold tracking-wide uppercase [paint-order:stroke] stroke-background",
-                    state.currentWorkId === region.work.id ? "fill-info" : "fill-foreground/80",
+                    label.parent || state.currentWorkId === label.id
+                      ? "font-semibold"
+                      : "font-medium",
+                    isUncertain(region.work) ? "fill-muted-foreground" : "fill-foreground",
                   )}
                 >
-                  {title}
+                  {label.lines.map((line, index) => (
+                    <tspan
+                      key={line}
+                      x={label.at.x}
+                      dy={index === 0 ? `${-(label.lines.length - 1) * 0.65}em` : "1.3em"}
+                    >
+                      {index === 0 && needsYou ? (
+                        <tspan className="fill-warning font-bold">! </tspan>
+                      ) : null}
+                      {index === 0 && working ? <tspan className="fill-info">● </tspan> : null}
+                      {line}
+                    </tspan>
+                  ))}
                 </text>
+              </>
+            );
+            // A subdivided scope has no ground of its own; its name is where it is inspected.
+            return label.parent ? (
+              <g key={label.id} {...interact(region)}>
+                {plate}
+              </g>
+            ) : (
+              <g key={label.id} pointerEvents="none">
+                {plate}
               </g>
             );
           })}
@@ -557,8 +595,16 @@ function TerritoryView({
         </div>
       ) : null}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t px-4 py-1.5 text-2xs text-muted-foreground">
-        <span>Filled cell: one result effect · dashed: planned · dotted: recorded elsewhere</span>
-        <span>Hatched ground: rough planned scope · cell size is a drawing unit, not effort</span>
+        {legend.map((stream) => (
+          <span key={stream.id} className="flex items-center gap-1">
+            <span aria-hidden className={cn("size-2.5 rounded-sm", stream.tone.swatch)} />
+            {stream.title}
+          </span>
+        ))}
+        <span>
+          Filled cell: one result · dotted: recorded elsewhere · hatched: rough planned scope ·
+          heavy outline: current milestone · cell size is not effort
+        </span>
         {territory.unplaced.length > 0 ? (
           <span>{territory.unplaced.length} results name no work in this view</span>
         ) : null}
@@ -583,43 +629,6 @@ function unitLabel(unit: PlacedUnit) {
         ? "Planned effect"
         : "Result";
   return `${prefix}: ${first.contribution.title}`;
-}
-
-function RegionLabel({
-  region,
-  needsYou,
-  working,
-}: {
-  region: Region;
-  needsYou: boolean;
-  working: boolean;
-}) {
-  const marks = `${needsYou ? "! " : ""}${working ? "● " : ""}`;
-  const fits = Math.floor(region.span / 4.4) - marks.length;
-  if (fits < 4) return null;
-  const title =
-    region.work.title.length > fits
-      ? `${region.work.title.slice(0, fits - 1)}…`
-      : region.work.title;
-  return (
-    <text
-      x={region.anchor.x}
-      y={region.anchor.y}
-      textAnchor="middle"
-      dominantBaseline="middle"
-      pointerEvents="none"
-      strokeWidth={3}
-      style={{ fontSize: 9 }}
-      className={cn(
-        "[paint-order:stroke] stroke-background",
-        isUncertain(region.work) ? "fill-muted-foreground" : "fill-foreground font-medium",
-      )}
-    >
-      {needsYou ? <tspan className="fill-warning font-bold">! </tspan> : null}
-      {working ? <tspan className="fill-info">● </tspan> : null}
-      {title}
-    </text>
-  );
 }
 
 function MapNode({
