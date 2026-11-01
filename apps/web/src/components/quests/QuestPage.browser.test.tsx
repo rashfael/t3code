@@ -26,6 +26,7 @@ import { SidebarQuests } from "../sidebar/SidebarQuests";
 type QueryTarget =
   | { readonly kind: "quest"; readonly environmentId: string }
   | { readonly kind: "retained"; readonly sha256: string }
+  | { readonly kind: "document"; readonly documentId: string }
   | { readonly kind: "link"; readonly environmentId: string; readonly threadId: string };
 
 const harness = vi.hoisted(() => ({
@@ -33,6 +34,9 @@ const harness = vi.hoisted(() => ({
   quests: {} as Record<string, QuestState>,
   /** Retained bytes by SHA-256, as `quest.retained` would answer. */
   retained: {} as Record<string, string>,
+  /** Current file bytes by document id, and when they were last read. */
+  files: {} as Record<string, { content: string; sha256: string; readAt: number }>,
+  canReadFiles: false,
   /** Server answers to `quest.threadLink`, by `environmentId|threadId`. */
   links: {} as Record<string, QuestThreadLink>,
   environments: [] as Array<{ environmentId: string; label: string }>,
@@ -62,9 +66,12 @@ vi.mock(import("./questEnvironment"), () => ({
     read: {},
     update: { permissionAtom: () => Atom.make(harness.canWrite) },
     openConversation: {},
-    writeDocument: {},
+    writeDocument: { permissionAtom: () => Atom.make(harness.canWrite) },
     recoverWrite: {},
-    document: () => null,
+    document: ({ input }: { input: { documentId: string } }) => ({
+      kind: "document",
+      documentId: input.documentId,
+    }),
     retained: ({ input }: { input: { sha256: string } }) => ({
       kind: "retained",
       sha256: input.sha256,
@@ -108,17 +115,31 @@ vi.mock(import("~/state/environments"), () => ({
   usePrimaryEnvironmentId: () => "example-environment" as never,
   useEnvironments: (() => ({ environments: harness.environments })) as never,
 }));
+vi.mock(import("~/state/session"), async (original) => ({
+  ...(await original()),
+  useEnvironmentScope: (() => harness.canReadFiles) as never,
+}));
 vi.mock(import("~/state/query"), () => ({
-  useEnvironmentQuery: ((target: QueryTarget | null) => ({
-    data:
-      target === null
-        ? null
-        : target.kind === "quest"
-          ? (harness.quests[target.environmentId] ?? null)
-          : target.kind === "retained"
-            ? { content: harness.retained[target.sha256] ?? null }
-            : (harness.links[`${target.environmentId}|${target.threadId}`] ?? null),
-  })) as never,
+  useEnvironmentQuery: ((target: QueryTarget | null) =>
+    target?.kind === "document"
+      ? {
+          data: harness.files[target.documentId] ?? null,
+          dataUpdatedAt: harness.files[target.documentId]?.readAt ?? 0,
+          refresh: () => {
+            const file = harness.files[target.documentId];
+            if (file) file.readAt = Date.now();
+          },
+        }
+      : {
+          data:
+            target === null
+              ? null
+              : target.kind === "quest"
+                ? (harness.quests[target.environmentId] ?? null)
+                : target.kind === "retained"
+                  ? { content: harness.retained[target.sha256] ?? null }
+                  : (harness.links[`${target.environmentId}|${target.threadId}`] ?? null),
+        }) as never,
 }));
 vi.mock(import("~/state/use-atom-command"), () => ({
   useAtomCommand: (() => harness.run) as never,
@@ -232,6 +253,8 @@ function setup() {
     comparisons: {},
   });
   harness.retained = {};
+  harness.files = {};
+  harness.canReadFiles = false;
   const initial: QuestState = {
     schemaVersion: 3,
     revision: 0,
@@ -1209,12 +1232,24 @@ it("reads documents from one tree, keeps reading state, compares a pin and share
         purposeKind: "coordinate",
         sources: [
           { documentId: "note", path: null, sha256: "pin-note", capturedAt: at, unavailable: null },
+          {
+            documentId: "plan-file",
+            path: "plan.md",
+            sha256: "pin-plan",
+            capturedAt: at,
+            unavailable: null,
+          },
         ],
       }),
       conversation("talk-1", "Second talk"),
     ],
+    workspace: { root: "/quest", registeredAt: at },
+    files: [{ id: "plan-file", path: "plan.md", title: "Plan", registeredAt: at }],
   };
-  harness.retained = { "pin-note": "Earlier note" };
+  harness.retained = { "pin-note": "Earlier note", "pin-plan": "Pinned plan line" };
+  // The file was read before the comparison was asked for; only a fresh read may complete it.
+  harness.files = { "plan-file": { content: "Current plan line", sha256: "now-plan", readAt: 1 } };
+  harness.canReadFiles = true;
   harness.shells = [shell("core-1"), shell("talk-1")];
   await page.viewport(1500, 900);
   await using _viewport = { [Symbol.asyncDispose]: () => page.viewport(414, 896) };
@@ -1245,6 +1280,17 @@ it("reads documents from one tree, keeps reading state, compares a pin and share
   await expect.element(changes).toMatchTextContent("→ Current note");
   await changes.getByRole("button", { name: "Back to document" }).click();
   await expect.element(open.getByRole("article", { name: "Working note" })).toBeVisible();
+
+  // A file comparison reads the current file again instead of waiting on an older read.
+  await tree.getByRole("button", { name: "Plan" }).click();
+  await open.getByRole("button", { name: "Show changes since a pinned version" }).click();
+  const fileChanges = open.getByRole("article", { name: "Plan changes" });
+  await expect.element(fileChanges).toMatchTextContent(/read \d/);
+  await expect
+    .element(fileChanges.getByRole("status", { name: "Loading file" }))
+    .not.toBeInTheDocument();
+  await fileChanges.getByRole("button", { name: "Back to document" }).click();
+  await open.getByRole("button", { name: "Working note", exact: true }).click();
 
   await open.getByRole("button", { name: "Open beside the conversation" }).click();
   expect(router.state.location.search).toMatchObject({ view: "conversation" });

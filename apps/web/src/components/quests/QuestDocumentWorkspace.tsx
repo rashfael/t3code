@@ -855,7 +855,16 @@ function RenderedToggle({ entry, version }: { entry: QuestEntry; version: string
   );
 }
 
-function ShowChanges({ entry, pins }: { entry: QuestEntry; pins: ReadonlyArray<Pin> }) {
+function ShowChanges({
+  entry,
+  pins,
+  readCurrent,
+}: {
+  entry: QuestEntry;
+  pins: ReadonlyArray<Pin>;
+  /** A file comparison waits for a read newer than its request, so it asks for one. */
+  readCurrent?: () => void;
+}) {
   const { environmentId } = useQuest();
   const { set } = useQuestComparison(environmentId, entry.id);
   const latest = pins[0];
@@ -863,7 +872,7 @@ function ShowChanges({ entry, pins }: { entry: QuestEntry; pins: ReadonlyArray<P
   return (
     <FileSurfaceAction
       label="Show changes since a pinned version"
-      onPress={() =>
+      onPress={() => {
         set({
           pinSha256: latest.sha256,
           label: latest.label,
@@ -872,8 +881,9 @@ function ShowChanges({ entry, pins }: { entry: QuestEntry; pins: ReadonlyArray<P
           afterSha256: null,
           readAt: null,
           requestedAt: Date.now(),
-        })
-      }
+        });
+        readCurrent?.();
+      }}
     >
       <DiffIcon className="size-3.5" />
     </FileSurfaceAction>
@@ -1036,6 +1046,7 @@ function FileSurface({
         actions={
           editor.draft ? (
             <>
+              <ShowChanges entry={entry} pins={pins} readCurrent={query.refresh} />
               <Button
                 size="xs"
                 disabled={busy || !canWrite || pendingWrite !== null}
@@ -1049,7 +1060,7 @@ function FileSurface({
             </>
           ) : (
             <>
-              <ShowChanges entry={entry} pins={pins} />
+              <ShowChanges entry={entry} pins={pins} readCurrent={query.refresh} />
               <RenderedToggle entry={entry} version={null} />
               {canWrite && current?.content != null && !pendingWrite ? (
                 <FileSurfaceAction
@@ -1161,6 +1172,7 @@ function RecordSurface({
         actions={
           editor.draft ? (
             <>
+              <ShowChanges entry={entry} pins={pins} />
               <Button size="xs" disabled={pending} onClick={() => void saveRecord({ body })}>
                 Save
               </Button>
