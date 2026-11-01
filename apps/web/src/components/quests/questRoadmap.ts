@@ -2,7 +2,9 @@ import { questQuestionStatus, type QuestState, type QuestWork } from "@t3tools/c
 
 import { deliveryLeaves } from "./questModel";
 
-const ROADMAP_COLUMN = 240;
+/** Column spacing narrows to fit the available width, down to where angled labels stay apart. */
+const ROADMAP_COLUMN = 200;
+const ROADMAP_COLUMN_MIN = 110;
 /** Room after the last column for its angled labels. */
 const ROADMAP_LABEL = 200;
 const PADDING_X = 24;
@@ -48,6 +50,8 @@ export interface RoadmapPath {
 }
 
 export interface Roadmap {
+  /** Distance between columns. */
+  readonly column: number;
   readonly stops: ReadonlyArray<RoadmapStop>;
   readonly paths: ReadonlyArray<RoadmapPath>;
   /** Where the missing later milestone is shown when no recorded work follows this one. */
@@ -63,11 +67,21 @@ type PlacedLink = Omit<RoadmapPath, "width" | "sourceY" | "targetY">;
  * With explicit milestones, the whole plan's milestone network; otherwise the current work and
  * its parts, so Quests recorded before milestones were explicit keep their view.
  */
-export function layoutRoadmap(state: QuestState): Roadmap | null {
-  return state.work.some((item) => item.kind === "work" && item.role === "milestone")
+export function layoutRoadmap(state: QuestState, available: number | null = null): Roadmap | null {
+  const roadmap = state.work.some((item) => item.kind === "work" && item.role === "milestone")
     ? layoutMilestones(state)
     : layoutCurrentWork(state);
+  return roadmap && arrange(...roadmap, available);
 }
+
+type Gap = { readonly column: number; readonly row: number };
+/** Stops and paths in columns and rows, before they get pixel positions. */
+type Placement = readonly [
+  placed: ReadonlyArray<PlacedStop>,
+  links: ReadonlyArray<PlacedLink>,
+  columns: number,
+  gap: Gap | null,
+];
 
 /**
  * Every milestone at any depth, past, current and planned. Order comes only from `follows`
@@ -75,7 +89,7 @@ export function layoutRoadmap(state: QuestState): Roadmap | null {
  * the larger milestone that contains it. Milestones nothing relates to stand alone; workstream
  * membership groups rows but never adds a path.
  */
-function layoutMilestones(state: QuestState): Roadmap {
+function layoutMilestones(state: QuestState): Placement {
   const byId = new Map(state.work.map((item) => [item.id, item]));
   const milestones = state.work.filter((item) => item.kind === "work" && item.role === "milestone");
   const milestoneIds = new Set(milestones.map((item) => item.id));
@@ -177,7 +191,7 @@ function layoutMilestones(state: QuestState): Roadmap {
     current === null || hasNext
       ? null
       : { column: (ranks.get(current) ?? 0) + 1, row: rows.get(current) ?? 0 };
-  return arrange(placed, [...links.values()], Math.max(maxRank, gap?.column ?? 0) + 1, gap);
+  return [placed, [...links.values()], Math.max(maxRank, gap?.column ?? 0) + 1, gap];
 }
 
 /** Column of each id: one past its latest prerequisite. A cycle is cut where it is found. */
@@ -274,7 +288,7 @@ function describeStop(
  * relations order parts; parts without one run side by side from the current work. Relations
  * between deeper work are lifted to the parts that contain it.
  */
-function layoutCurrentWork(state: QuestState): Roadmap | null {
+function layoutCurrentWork(state: QuestState): Placement | null {
   const milestone = state.work.find((item) => item.id === state.currentWorkId);
   if (!milestone) return null;
   const byId = new Map(state.work.map((item) => [item.id, item]));
@@ -378,12 +392,12 @@ function layoutCurrentWork(state: QuestState): Roadmap | null {
       })),
     ),
   ];
-  return arrange(
+  return [
     placed,
     links,
     2 + nextColumn,
     successors.size === 0 ? { column: 1 + nextColumn, row: milestoneRow } : null,
-  );
+  ];
 }
 
 /** Pixels per planned-focus step. */
@@ -392,6 +406,8 @@ export const FOCUS_UNIT = 4;
 export const NEUTRAL_FOCUS = 3;
 export const ROADMAP_BAR = 6;
 const LABEL_ROOM = 44;
+/** Above the top row and below the bottom one: an angled label rises or falls this far. */
+const LABEL_EDGE = 76;
 
 function focusWeight(work: QuestWork): number {
   return work.focus ?? NEUTRAL_FOCUS;
@@ -408,8 +424,20 @@ function arrange(
   links: ReadonlyArray<PlacedLink>,
   columns: number,
   /** Where the missing later milestone is shown, if it is. */
-  gap: { readonly column: number; readonly row: number } | null,
+  gap: Gap | null,
+  /** Width to fit into; null keeps the widest spacing. */
+  available: number | null,
 ): Roadmap {
+  const column =
+    available === null || columns < 2
+      ? ROADMAP_COLUMN
+      : Math.min(
+          ROADMAP_COLUMN,
+          Math.max(
+            ROADMAP_COLUMN_MIN,
+            Math.floor((available - PADDING_X * 2 - ROADMAP_LABEL) / (columns - 1)),
+          ),
+        );
   const byId = new Map(placed.map((stop) => [stop.work.id, stop]));
   const incomingCount = new Map<string, number>();
   for (const link of links)
@@ -433,9 +461,9 @@ function arrange(
   const allRows = placed.map((stop) => stop.row);
   const minRow = Math.min(...allRows, gap?.row ?? Infinity);
   const maxRow = Math.max(...allRows, gap?.row ?? -Infinity);
-  const top = LABEL_ROOM + pitch / 2;
+  const top = LABEL_EDGE + pitch / 2;
   const yOf = (row: number) => top + (row - minRow) * pitch;
-  const xOf = (column: number) => PADDING_X + column * ROADMAP_COLUMN;
+  const xOf = (index: number) => PADDING_X + index * column;
 
   const stops: Array<RoadmapStop> = placed.map((stop) => {
     const own = focusWeight(stop.work) * FOCUS_UNIT;
@@ -478,11 +506,12 @@ function arrange(
   const paths: Array<RoadmapPath> = links.map((link) => ({ ...link, ...offsets.get(link.id)! }));
   const lowest = Math.max(...stops.map((stop) => stop.y + barHeight(stop.work.id) / 2));
   return {
+    column,
     stops,
     paths,
     gap: gap ? { x: xOf(gap.column), y: yOf(gap.row) } : null,
-    width: PADDING_X * 2 + (columns - 1) * ROADMAP_COLUMN + ROADMAP_LABEL,
-    height: Math.max(lowest, yOf(maxRow)) + LABEL_ROOM + PADDING_Y,
+    width: PADDING_X * 2 + (columns - 1) * column + ROADMAP_LABEL,
+    height: Math.max(lowest, yOf(maxRow)) + LABEL_EDGE + PADDING_Y,
   };
 }
 

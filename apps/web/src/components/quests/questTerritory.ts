@@ -131,8 +131,8 @@ export interface Region {
 
 /**
  * What one cell shows. `effect`: one result effect. `aggregate`: several effects of one coarse
- * result, shown together while their scope is folded. `reference`: an effect whose filled cell is
- * elsewhere (or is carried by finer effects) but which also touches this scope.
+ * result, shown together while their scope is folded. `reference`: effects that also touch this
+ * scope but whose filled cells are in one other scope (or are carried by finer effects).
  */
 export interface PlacedUnit {
   /** Derived from semantic ids and scope, so a pin or hover survives relayout. */
@@ -273,7 +273,13 @@ export function layoutTerritory(
     if (folded) {
       const groups = new Map<string, Array<MapEffect>>();
       for (const effect of own) {
-        const key = `${effect.planned ? "planned:" : ""}${rootEffect(effect).id}`;
+        // A finer effect groups under its coarse result; otherwise under the folded part holding it.
+        const group = effect.parentId
+          ? rootEffect(effect).id
+          : effect.homeWorkId !== work.id
+            ? `scope:${effect.homeWorkId}`
+            : effect.id;
+        const key = `${effect.planned ? "planned:" : ""}${group}`;
         groups.set(key, [...(groups.get(key) ?? []), effect]);
       }
       for (const [key, members] of groups)
@@ -299,18 +305,22 @@ export function layoutTerritory(
     // Delivered results first, so they fill the region's core and planned scope its outer edge.
     drafts.sort((a, b) => Number(a.planned) - Number(b.planned));
     const ownIds = new Set(own.map((effect) => effect.id));
-    const references = new Map<string, MapEffect>();
+    // One reference per scope the results are recorded in, so membership never inflates an area.
+    const references = new Map<string, Array<MapEffect>>();
     for (const id of ids)
       for (const effect of referenced.get(id) ?? []) {
         if (ownIds.has(effect.id) || effect.childIds.some((child) => ownIds.has(child))) continue;
-        references.set(effect.id, effect);
+        const home = effect.homeWorkId!;
+        const list = references.get(home) ?? [];
+        if (!list.includes(effect)) list.push(effect);
+        references.set(home, list);
       }
-    for (const effect of references.values())
+    for (const [home, members] of references)
       drafts.push({
-        key: `ref:${work.id}:${effect.id}`,
+        key: `ref:${work.id}:${home}`,
         kind: "reference",
-        effects: [effect],
-        planned: effect.planned,
+        effects: members,
+        planned: members.every((member) => member.planned),
       });
     return drafts;
   };

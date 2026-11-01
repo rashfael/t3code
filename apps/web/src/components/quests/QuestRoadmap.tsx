@@ -1,12 +1,20 @@
 import type { QuestWork } from "@t3tools/contracts";
 import { BotIcon, CircleAlertIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
+import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
 
 import { Badge } from "../ui/badge";
 import { useQuest, useWorkInspection } from "./questContext";
 import { conversationStatusLabel, useQuestConversationThreads } from "./QuestConversations";
-import { deliveryLeaves, describeCounts, phaseLabels, workStateLabels } from "./questModel";
+import {
+  deliveryLeaves,
+  describeCounts,
+  phaseLabels,
+  workStateLabels,
+  workstreamHues,
+} from "./questModel";
 import { layoutRoadmap, ribbonD, ROADMAP_BAR, type RoadmapStop } from "./questRoadmap";
 
 const ribbonClass: Record<QuestWork["state"], string> = {
@@ -18,6 +26,13 @@ const ribbonClass: Record<QuestWork["state"], string> = {
   done: "fill-success stroke-success",
 };
 
+/** The workstream a ribbon continues: one both ends share, else where it leads, else where it starts. */
+function ribbonStream(source: QuestWork, target: QuestWork): string | null {
+  const from = source.workstreamIds ?? [];
+  const to = target.workstreamIds ?? [];
+  return to.find((id) => from.includes(id)) ?? to[0] ?? from[0] ?? null;
+}
+
 /**
  * Milestone overview as a Sankey: explicit milestones and the dependencies between them, or for
  * older Quests the current work fanning out to its parts. Ribbon width is the explicit planned
@@ -27,8 +42,29 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
   const { state, openPanel, previewWorkId } = useQuest();
   const inspect = useWorkInspection();
   const threads = useQuestConversationThreads();
-  const roadmap = layoutRoadmap(state);
+  const [available, setAvailable] = useState<number | null>(null);
+  const roadmap = layoutRoadmap(state, available);
+  const scroller = useRef<HTMLDivElement | null>(null);
+  const measure = (element: HTMLDivElement | null) => {
+    scroller.current = element;
+    if (!element) return;
+    const update = () => setAvailable(element.clientWidth);
+    update();
+    return observeResize(element, update);
+  };
+  // Past work keeps the left edge; scroll only as far as the current milestone and its next step need.
+  const reach = roadmap
+    ? Math.max(0, ...roadmap.stops.filter((stop) => stop.isCurrent).map((stop) => stop.x)) +
+      roadmap.column * 1.5
+    : 0;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the current milestone in the scrolled viewport of a plan too deep to fit
+  useEffect(() => {
+    const element = scroller.current;
+    if (!element) return;
+    element.scrollLeft = Math.max(0, reach - element.clientWidth);
+  }, [reach]);
   if (!roadmap) return null;
+  const hues = workstreamHues(state);
   const byId = new Map(roadmap.stops.map((stop) => [stop.work.id, stop]));
   const working = (stop: RoadmapStop) =>
     stop.threadIds.filter(
@@ -46,7 +82,7 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
 
   return (
     <section aria-label="Milestone roadmap" className="border-b">
-      <div className="overflow-x-auto">
+      <div ref={measure} className="overflow-x-auto">
         <div className="relative mx-auto" style={{ width: roadmap.width, height: roadmap.height }}>
           <svg
             aria-hidden
@@ -60,6 +96,8 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
               if (!source || !target) return null;
               const unset = target.work.focus === undefined;
               const lit = highlighted === source.work.id || highlighted === target.work.id;
+              const stream = ribbonStream(source.work, target.work);
+              const ahead = target.work.state === "planned" || target.work.state === "deferred";
               return (
                 <path
                   key={path.id}
@@ -70,8 +108,8 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
                     path.targetY,
                     path.width,
                   )}
-                  className={ribbonClass[target.work.state]}
-                  fillOpacity={(unset ? 0.22 : 0.45) + (lit ? 0.2 : 0)}
+                  className={(stream ? hues.get(stream) : null) ?? ribbonClass[target.work.state]}
+                  fillOpacity={(unset ? 0.22 : 0.45) * (ahead ? 0.5 : 1) + (lit ? 0.2 : 0)}
                   strokeOpacity={unset ? 0.7 : 0}
                   strokeWidth={1}
                   strokeDasharray={unset ? "3 3" : undefined}
