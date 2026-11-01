@@ -56,7 +56,11 @@ export interface QuestWorkspaceContext {
   readonly state: QuestState;
   readonly canWrite: boolean;
   readonly pending: boolean;
-  readonly save: (change: QuestChange, source?: QuestUpdateInput["source"]) => Promise<boolean>;
+  /** Resolves to the saved state, or null when nothing was saved. */
+  readonly save: (
+    change: QuestChange,
+    source?: QuestUpdateInput["source"],
+  ) => Promise<QuestState | null>;
   /** Takes a newer saved state returned by another Quest command. */
   readonly adopt: (state: QuestState) => void;
   /** `push` keeps the current panel one Back step away; `replace` starts a new panel trail. */

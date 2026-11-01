@@ -151,6 +151,7 @@ import { readLocalApi } from "../localApi";
 import { cn } from "../lib/utils";
 import { resolveRemoteOpenState, useRemoteOpenResolution } from "../remoteOpen";
 import { useRightPanelStore } from "../rightPanelStore";
+import { HostFileOpenerContext } from "./chat/hostFileOpener";
 import { readThreadShell, useProjects } from "../state/entities";
 import { serverEnvironment } from "../state/server";
 import { shellEnvironment } from "../state/shell";
@@ -553,6 +554,7 @@ function useChatMarkdownState({
   const openPreview = useAtomCommand(previewEnvironment.open, {
     reportFailure: false,
   });
+  const openInHost = use(HostFileOpenerContext);
   const pullRequestLinking = usePullRequestLinking(threadRef?.environmentId);
   const environmentId = threadRef?.environmentId ?? explicitEnvironmentId ?? null;
   const canOperateHost = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
@@ -799,8 +801,10 @@ function useChatMarkdownState({
     if (!threadRef) return;
     // Every open supersedes pending lookups, including synchronous opens.
     const isLatestLookup = claimWorkspaceBasenameLookup();
-    const openAt = (path: string) =>
+    const openAt = (path: string) => {
+      if (openInHost?.(cwd ? resolveWorkspaceFilePath(path, cwd) : path)) return;
       useRightPanelStore.getState().openFile(threadRef, path, fileLinkMeta.line);
+    };
     if (
       fileLinkMeta.workspaceLookupPath === null ||
       !cwd ||

@@ -1,4 +1,4 @@
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
@@ -16,11 +16,20 @@ import {
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
-import { CompassIcon, GitForkIcon, MessageSquareIcon, PlusIcon } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  ArrowLeftIcon,
+  CompassIcon,
+  FileTextIcon,
+  GitForkIcon,
+  MessageSquareIcon,
+  PlusIcon,
+} from "lucide-react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
+import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn, randomUUID } from "~/lib/utils";
 import { useComposerDraftStore } from "~/composerDraftStore";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { resolveProjectDefaultProviderModelSelection } from "~/providerInstances";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useProjects, useQuietThreadShells } from "~/state/entities";
@@ -30,6 +39,7 @@ import { useEnvironmentScope } from "~/state/session";
 import { useEnvironmentThread } from "~/state/threads";
 import { useAtomCommand } from "~/state/use-atom-command";
 import type { ChatEmbedding } from "../ChatView.logic";
+import { HostFileOpenerContext } from "../chat/hostFileOpener";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -37,7 +47,13 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useQuest } from "./questContext";
-import { rememberQuestConversation, useQuestDraftStore } from "./questDraftStore";
+import {
+  openQuestDocumentTab,
+  rememberQuestConversation,
+  showQuestConversationTools,
+  useQuestDocumentTabs,
+  useQuestDraftStore,
+} from "./questDraftStore";
 import { questEnvironment } from "./questEnvironment";
 import { QuestChat } from "./QuestChat";
 import { pinnedTabId } from "./QuestDocuments";
@@ -255,15 +271,43 @@ function useOpenQuestConversation() {
   return { openConversation, busy, project };
 }
 
+/**
+ * Follows the chat's own tools panel while documents are beside it: an explicit open (a user
+ * action) gives the pane to the tools; closing the tools gives it back. Automatic opens never take it.
+ */
+function useToolsPaneOwner(threadId: string | null) {
+  const { environmentId } = useQuest();
+  const tabs = useQuestDocumentTabs(environmentId);
+  const threadKey = threadId
+    ? scopedThreadKey(scopeThreadRef(environmentId, threadId as ThreadId))
+    : "";
+  const userActions = useRightPanelStore(
+    (store) => store.userActionRevisionByThreadKey[threadKey] ?? 0,
+  );
+  const toolsOpen = useRightPanelStore((store) => store.byThreadKey[threadKey]?.isOpen === true);
+  const seen = useRef({ threadKey, userActions });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- mirrors explicit opens and closes of the thread's own panel, which live in the right-panel store
+  useEffect(() => {
+    const previous = seen.current;
+    seen.current = { threadKey, userActions };
+    if (!tabs.beside) return;
+    const explicit = previous.threadKey === threadKey && previous.userActions !== userActions;
+    if (explicit && toolsOpen) showQuestConversationTools(environmentId, true);
+    else if (!toolsOpen && tabs.tools) showQuestConversationTools(environmentId, false);
+  }, [environmentId, threadKey, userActions, toolsOpen, tabs.beside, tabs.tools]);
+}
+
+// The document pane loads with the first split, as the Documents view loads its workspace.
+const QuestDocumentsBeside = lazy(() =>
+  import("./QuestDocumentWorkspace").then((module) => ({ default: module.QuestDocumentsBeside })),
+);
+
 export function QuestConversations({
   about,
   thread,
-  beside,
 }: {
   about: string | null;
   thread: string | null;
-  /** Shown next to the chat column, so a resizable panel there measures only the chat. */
-  beside?: ReactNode;
 }) {
   const { environmentId, state, canWrite, save, showView } = useQuest();
   const threads = useQuestConversationThreads();
@@ -283,8 +327,26 @@ export function QuestConversations({
     if (selectedId) rememberQuestConversation(environmentId, selectedId);
   }, [environmentId, selectedId]);
 
+  const tabs = useQuestDocumentTabs(environmentId);
+  const narrow = useMediaQuery("max-xl");
+  const documentsShown = tabs.beside && !tabs.tools && tabs.open.length > 0;
+  const chatHidden = documentsShown && (narrow || tabs.full);
+  useToolsPaneOwner(selectedId);
+  // A registered Quest file linked from the chat opens beside it; any other file keeps its panel.
+  const openInHost = (hostPath: string) => {
+    const root = state.workspace?.root.replace(/\/+$/, "");
+    const file = state.files.find(
+      (item) =>
+        (item.path.startsWith("/") ? item.path : root ? `${root}/${item.path}` : null) === hostPath,
+    );
+    if (!file) return false;
+    openQuestDocumentTab(environmentId, file.id, true);
+    return true;
+  };
+
   const navigate = useNavigate();
   const embedding: ChatEmbedding = {
+    toolsPanelHidden: documentsShown,
     // The next conversation from a Quest chat is a purpose-bound discussion, started in the Quest.
     openNewThread: async () => {
       showView("conversation", {
@@ -328,9 +390,10 @@ export function QuestConversations({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
-      <ConversationRail selectedId={selectedId} threads={threads} compact={Boolean(beside)} />
+      {tabs.beside ? null : <ConversationRail selectedId={selectedId} threads={threads} />}
       <div className="flex min-h-0 min-w-0 flex-1">
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col", chatHidden && "hidden")}>
+          {tabs.beside ? <ConversationSelector selectedId={selectedId} threads={threads} /> : null}
           {subject && !thread ? (
             <StartDiscussion
               key={about}
@@ -381,12 +444,14 @@ export function QuestConversations({
                 </div>
               ) : (
                 <div className="flex min-h-0 flex-1 flex-col">
-                  <QuestChat
-                    key={selected.threadId}
-                    environmentId={environmentId}
-                    threadId={selected.threadId}
-                    embedding={embedding}
-                  />
+                  <HostFileOpenerContext value={openInHost}>
+                    <QuestChat
+                      key={selected.threadId}
+                      environmentId={environmentId}
+                      threadId={selected.threadId}
+                      embedding={embedding}
+                    />
+                  </HostFileOpenerContext>
                 </div>
               )}
             </>
@@ -406,8 +471,72 @@ export function QuestConversations({
             </div>
           )}
         </div>
-        {beside}
+        {/* Beside the chat column, so its resize measures only the chat. */}
+        {documentsShown ? (
+          <Suspense fallback={null}>
+            <QuestDocumentsBeside narrow={narrow} />
+          </Suspense>
+        ) : null}
       </div>
+    </div>
+  );
+}
+
+/** While documents share the row, the discussion list folds into this selector above the chat. */
+function ConversationSelector({
+  selectedId,
+  threads,
+}: {
+  selectedId: string | null;
+  threads: ReadonlyMap<string, EnvironmentThreadShell>;
+}) {
+  const { environmentId, state, showView } = useQuest();
+  const tabs = useQuestDocumentTabs(environmentId);
+  const ordered = [
+    ...state.conversations.filter((item) => item.role === "core"),
+    ...state.conversations.filter((item) => item.role !== "core").toReversed(),
+  ];
+  const options = ordered.map((item) => ({
+    value: item.threadId,
+    label:
+      item.role === "core"
+        ? "Coordinate the Quest"
+        : item.purpose || threads.get(item.threadId)?.title || item.title,
+  }));
+  return (
+    <div className="flex h-9 shrink-0 items-center gap-2 border-b px-3">
+      <MessageSquareIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+      {options.length > 0 ? (
+        <Select
+          value={selectedId ?? ""}
+          items={options}
+          onValueChange={(next) => {
+            if (next) showView("conversation", { thread: next });
+          }}
+        >
+          <SelectTrigger size="sm" aria-label="Discussion" className="max-w-80 min-w-0">
+            <SelectValue placeholder="Choose a discussion" />
+          </SelectTrigger>
+          <SelectPopup>
+            {options.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      ) : null}
+      {tabs.tools ? (
+        <Button
+          size="xs"
+          variant="ghost"
+          className="ms-auto"
+          onClick={() => showQuestConversationTools(environmentId, false)}
+        >
+          <FileTextIcon aria-hidden />
+          Back to documents
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -423,7 +552,7 @@ function StartDiscussion({
   canWrite: boolean;
   onStart: (purpose: string, resume: boolean) => void;
 }) {
-  const { state, showView } = useQuest();
+  const { state, showView, openPanel } = useQuest();
   const [purpose, setPurpose] = useState(defaultPurpose(subject));
   const existing = state.conversations.filter(
     (item) =>
@@ -434,6 +563,17 @@ function StartDiscussion({
   );
   return (
     <section aria-label="Start a discussion" className="max-w-xl p-6 text-sm">
+      {subject.questionId ? (
+        <Button
+          size="xs"
+          variant="outline"
+          className="mb-3"
+          onClick={() => openPanel({ type: "question", id: subject.questionId! })}
+        >
+          <ArrowLeftIcon aria-hidden />
+          Back to decision
+        </Button>
+      ) : null}
       <p className="text-xs text-muted-foreground">{purposeLabels[subject.purposeKind]}</p>
       <h2 className="mt-1 text-base font-semibold">{subject.title}</h2>
       {existing.length > 0 ? (
@@ -490,12 +630,9 @@ function StartDiscussion({
 function ConversationRail({
   selectedId,
   threads,
-  compact,
 }: {
   selectedId: string | null;
   threads: ReadonlyMap<string, EnvironmentThreadShell>;
-  /** Documents share the row; below xl the rail yields its width to the chat. */
-  compact: boolean;
 }) {
   const { environmentId, state, canWrite, showView } = useQuest();
   const { openConversation, busy } = useOpenQuestConversation();
@@ -525,10 +662,7 @@ function ConversationRail({
   return (
     <nav
       aria-label="Quest conversations"
-      className={cn(
-        "flex w-64 shrink-0 flex-col gap-4 overflow-y-auto border-r p-3",
-        compact && "max-xl:hidden",
-      )}
+      className="flex w-64 shrink-0 flex-col gap-4 overflow-y-auto border-r p-3"
     >
       <section aria-label="Core conversation">
         <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -749,17 +883,22 @@ function ConversationHeader({
         ) : conversation.context === "packet" && conversation.role === "focused" ? (
           <Badge variant="outline">Prepared context · not a fork</Badge>
         ) : null}
-        {work || question ? (
+        {question ? (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => openPanel({ type: "question", id: question.id })}
+          >
+            <ArrowLeftIcon aria-hidden />
+            Back to decision
+          </Button>
+        ) : work ? (
           <button
             type="button"
             className="truncate text-muted-foreground underline"
-            onClick={() =>
-              openPanel(
-                work ? { type: "work", id: work.id } : { type: "question", id: question!.id },
-              )
-            }
+            onClick={() => openPanel({ type: "work", id: work.id })}
           >
-            About {work?.title ?? question?.title}
+            About {work.title}
           </button>
         ) : null}
         {conversation.sourceRevision !== null && conversation.sourceRevision !== state.revision ? (

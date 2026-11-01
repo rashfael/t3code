@@ -25,11 +25,14 @@ import { SidebarQuests } from "../sidebar/SidebarQuests";
 
 type QueryTarget =
   | { readonly kind: "quest"; readonly environmentId: string }
+  | { readonly kind: "retained"; readonly sha256: string }
   | { readonly kind: "link"; readonly environmentId: string; readonly threadId: string };
 
 const harness = vi.hoisted(() => ({
   /** Saved Quest per environment, as the server would answer `quest.get`. */
   quests: {} as Record<string, QuestState>,
+  /** Retained bytes by SHA-256, as `quest.retained` would answer. */
+  retained: {} as Record<string, string>,
   /** Server answers to `quest.threadLink`, by `environmentId|threadId`. */
   links: {} as Record<string, QuestThreadLink>,
   environments: [] as Array<{ environmentId: string; label: string }>,
@@ -62,10 +65,19 @@ vi.mock(import("./questEnvironment"), () => ({
     writeDocument: {},
     recoverWrite: {},
     document: () => null,
-    retained: () => null,
+    retained: ({ input }: { input: { sha256: string } }) => ({
+      kind: "retained",
+      sha256: input.sha256,
+    }),
     workspaceFiles: () => null,
     reconstruct: () => null,
   } as never,
+}));
+// The highlighted source view needs a live environment; a plain stand-in shows which view is chosen.
+vi.mock(import("../files/ReadOnlySourcePreview"), () => ({
+  default: (({ text }: { text: string }) => (
+    <pre aria-label="Markdown source">{text}</pre>
+  )) as never,
 }));
 vi.mock(import("./questMembership"), () => ({
   useQuestMembership: (() => harness.membership) as never,
@@ -103,7 +115,9 @@ vi.mock(import("~/state/query"), () => ({
         ? null
         : target.kind === "quest"
           ? (harness.quests[target.environmentId] ?? null)
-          : (harness.links[`${target.environmentId}|${target.threadId}`] ?? null),
+          : target.kind === "retained"
+            ? { content: harness.retained[target.sha256] ?? null }
+            : (harness.links[`${target.environmentId}|${target.threadId}`] ?? null),
   })) as never,
 }));
 vi.mock(import("~/state/use-atom-command"), () => ({
@@ -170,6 +184,7 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { ThreadId } from "@t3tools/contracts";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { QuestPage } from "./QuestPage";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { useQuestDraftStore } from "./questDraftStore";
 import { QuestThreadBar } from "./QuestThreadBar";
 
@@ -212,7 +227,11 @@ function setup() {
     conversations: {},
     views: {},
     documents: {},
+    decisions: {},
+    readerModes: {},
+    comparisons: {},
   });
+  harness.retained = {};
   const initial: QuestState = {
     schemaVersion: 3,
     revision: 0,
@@ -360,7 +379,7 @@ it("records, previews, applies and reopens a decision without losing its earlier
   const applied: QuestState = {
     ...answered,
     revision: 2,
-    questions: [{ ...answered.questions[0]!, applied: true }],
+    questions: [{ ...answered.questions[0]!, applied: true, appliedRevision: 2 }],
     work: answered.work.map((item) =>
       item.id === "part-a" ? { ...item, understanding: after } : item,
     ),
@@ -388,14 +407,19 @@ it("records, previews, applies and reopens a decision without losing its earlier
     .mockResolvedValueOnce({ _tag: "Success", value: reopened });
   await using screen = await renderQuest();
   await screen.getByRole("button", { name: /^Decisions/ }).click();
-  const details = screen.getByRole("complementary", { name: "Quest details" });
-  await screen.getByRole("button", { name: /Which summary\?/ }).click();
-  await expect.element(details.getByText("Proposed", { exact: true })).toBeVisible();
+  const decision = screen.getByRole("article", { name: "Which summary?" });
+  await screen
+    .getByRole("navigation", { name: "Decisions" })
+    .getByRole("button", { name: /Which summary\?/ })
+    .click();
   await expect
-    .element(screen.getByRole("button", { name: "Apply recorded answer to work" }))
+    .element(screen.getByRole("button", { name: "Apply to work" }))
     .not.toBeInTheDocument();
-  await screen.getByText("Use newer summary", { exact: true }).click();
-  await screen.getByRole("textbox", { name: "Rationale (optional)" }).fill("Newer index");
+  await decision.getByRole("button", { name: "Use newer summary" }).click();
+  // One answer input: the chosen alternative is the answer until its wording is edited.
+  await expect.element(decision.getByRole("textbox", { name: "Answer" })).not.toBeInTheDocument();
+  await decision.getByRole("button", { name: "Add why" }).click();
+  await decision.getByRole("textbox", { name: "Why (optional)" }).fill("Newer index");
   await screen.getByRole("button", { name: "Record answer", exact: true }).click();
   expect(harness.run.mock.calls[0]?.[0].input.change).toEqual({
     type: "answer",
@@ -404,22 +428,27 @@ it("records, previews, applies and reopens a decision without losing its earlier
     rationale: "Newer index",
     deferred: false,
   });
-  await expect.element(screen.getByText("Applying would change “Part A”")).toBeVisible();
+  await expect.element(decision.getByText("Change to Part A")).toBeVisible();
   await expect
-    .element(screen.getByText(/\+ Applied answer \(question\): Use newer summary/))
+    .element(decision.getByText(/\+ Applied answer \(question\): Use newer summary/))
     .toBeVisible();
-  await screen.getByRole("button", { name: "Apply recorded answer to work" }).click();
+  // An unsaved revision never sits beside Apply as if it were what would be applied.
+  await screen.getByRole("button", { name: "Revise answer" }).click();
   await expect
-    .element(screen.getByText("Resulting change to Part A · current understanding:"))
-    .toBeVisible();
+    .element(screen.getByRole("button", { name: "Apply to work" }))
+    .not.toBeInTheDocument();
+  await screen.getByRole("button", { name: "Cancel", exact: true }).click();
+  await screen.getByRole("button", { name: "Apply to work" }).click();
+  await expect.element(decision.getByText("Applied", { exact: true })).toBeVisible();
   await expect
     .element(screen.getByRole("button", { name: "Record answer", exact: true }))
     .not.toBeInTheDocument();
-  await screen.getByRole("button", { name: "Reopen for revision" }).click();
+  await screen.getByRole("button", { name: "Reopen" }).click();
+  await expect.element(decision.getByText("Earlier application")).toBeVisible();
+  await screen.getByRole("button", { name: "Revise answer" }).click();
   await expect
-    .element(screen.getByRole("button", { name: "Record answer", exact: true }))
+    .element(screen.getByRole("button", { name: "Record changes", exact: true }))
     .toBeVisible();
-  await expect.element(details.getByText(/Recorded an answer to/)).toBeVisible();
   expect(harness.run.mock.calls.map((call) => call[0].input.change.type)).toEqual([
     "answer",
     "apply",
@@ -743,14 +772,20 @@ it.each([
     });
     await using screen = await renderQuest();
     await screen.getByRole("button", { name: /^Decisions/ }).click();
-    await screen.getByRole("button", { name: /Which summary\?/ }).click();
-    await screen.getByRole("textbox", { name: "Rationale (optional)" }).fill("Second reason");
+    const list = screen.getByRole("navigation", { name: "Decisions" });
+    if (answer === null) await list.getByRole("button", { name: /^Deferred/ }).click();
+    await list.getByRole("button", { name: /Which summary\?/ }).click();
+    // Saved answers and deferrals read as content until explicitly revised.
+    await screen
+      .getByRole("button", { name: answer === null ? "Answer now" : "Revise answer" })
+      .click();
+    await screen.getByRole("textbox", { name: "Why (optional)" }).fill("Second reason");
     if (pick) {
       await screen.getByRole("combobox", { name: "Answer from conversation" }).click();
       await page.getByRole("option", { name: "Newer discussion" }).click();
     }
     await screen
-      .getByRole("button", { name: answer === null ? "Defer" : "Record answer", exact: true })
+      .getByRole("button", { name: answer === null ? "Defer" : "Record changes", exact: true })
       .click();
     expect(harness.run.mock.calls[0]?.[0].input).toMatchObject({
       change: { type: "answer", rationale: "Second reason", answer, deferred: answer === null },
@@ -994,18 +1029,24 @@ it("keeps unsaved answers and edits while evidence, other panels or a thread are
     .toHaveAttribute("aria-current", "true");
   await details.getByRole("button", { name: "Close details" }).click();
   await roadmap.getByRole("button", { name: "Needs you: Which summary?" }).click();
-  await details.getByRole("textbox", { name: "Answer" }).fill("A drafted answer");
-  await details.getByRole("textbox", { name: "Rationale (optional)" }).fill("Drafted reason");
-  await details.getByRole("button", { name: /^Retained source/ }).click();
+  const decision = screen.getByRole("article", { name: "Which summary?" });
+  await decision.getByRole("button", { name: "Write another answer" }).click();
+  await decision.getByRole("textbox", { name: "Answer" }).fill("A drafted answer");
+  await decision.getByRole("button", { name: "Add why" }).click();
+  await decision.getByRole("textbox", { name: "Why (optional)" }).fill("Drafted reason");
+  await decision.getByRole("button", { name: "Retained source", exact: true }).click();
   await expect.element(screen.getByText("A captured source account")).toBeVisible();
+  // Leaving Decisions takes the question out of the layout; returning restores it and its draft.
+  await expect.element(decision).not.toBeInTheDocument();
+  await screen.getByRole("button", { name: /^Decisions/ }).click();
   await expect
-    .element(details.getByRole("textbox", { name: "Answer" }))
+    .element(decision.getByRole("textbox", { name: "Answer" }))
     .toHaveValue("A drafted answer");
   await expect
-    .element(details.getByRole("textbox", { name: "Rationale (optional)" }))
+    .element(decision.getByRole("textbox", { name: "Why (optional)" }))
     .toHaveValue("Drafted reason");
 
-  await details.getByRole("button", { name: "Part A", exact: true }).click();
+  await decision.getByRole("button", { name: "Part A", exact: true }).click();
   await details.getByRole("button", { name: "Edit", exact: true }).click();
   await details.getByRole("textbox", { name: "Work title" }).fill("A drafted title");
   await screen.getByRole("button", { name: "History", exact: true }).click();
@@ -1158,34 +1199,72 @@ it("lists each environment's Quest as one row with its attention and reopens its
     .toHaveAttribute("aria-current", "page");
 });
 
-it("opens documents as tabs, beside the conversation, and keeps them across views", async () => {
+it("reads documents from one tree, keeps reading state, compares a pin and shares the pane with the chat's tools", async () => {
   const initial = setup();
   harness.quests["example-environment"] = {
     ...initial,
-    conversations: [conversation("core-1", "Core", { role: "core", purposeKind: "coordinate" })],
+    conversations: [
+      conversation("core-1", "Core", {
+        role: "core",
+        purposeKind: "coordinate",
+        sources: [
+          { documentId: "note", path: null, sha256: "pin-note", capturedAt: at, unavailable: null },
+        ],
+      }),
+      conversation("talk-1", "Second talk"),
+    ],
   };
-  harness.shells = [shell("core-1")];
-  // Wide enough for the inline split; narrow layouts use a sheet.
-  await page.viewport(1400, 900);
+  harness.retained = { "pin-note": "Earlier note" };
+  harness.shells = [shell("core-1"), shell("talk-1")];
+  await page.viewport(1500, 900);
   await using _viewport = { [Symbol.asyncDispose]: () => page.viewport(414, 896) };
   const { screen, router } = await renderRoutes("/quests?view=documents");
   await using _screen = screen;
-  const browser = screen.getByRole("navigation", { name: "Quest documents" });
-  await browser.getByRole("button", { name: "Retained source" }).click();
-  await browser.getByRole("button", { name: "Working note" }).click();
+  const tree = screen.getByRole("navigation", { name: "Quest documents" });
+  await tree.getByRole("button", { name: /^Retained source/ }).click();
+  await tree.getByRole("button", { name: "Working note" }).click();
+  await expect
+    .element(tree.getByRole("button", { name: "Working note" }))
+    .toHaveAttribute("aria-current", "page");
   const open = screen.getByRole("region", { name: "Open documents" });
   await expect.element(open.getByRole("article", { name: "Working note" })).toBeVisible();
+  await open.getByRole("button", { name: "Show markdown source" }).click();
   await open.getByRole("button", { name: "Retained source", exact: true }).click();
   await expect
     .element(open.getByRole("article", { name: "Retained source" }))
     .toMatchTextContent("Evidence · read only");
   await expect.element(open.getByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+  await open.getByRole("button", { name: "Working note", exact: true }).click();
+  // The source view stays chosen for this document.
+  await expect.element(open.getByRole("button", { name: "Show rendered markdown" })).toBeVisible();
+
+  // A pin is a version inside the same tab, and a read-only comparison base.
+  await open.getByRole("button", { name: "Show changes since a pinned version" }).click();
+  const changes = open.getByRole("article", { name: "Working note changes" });
+  await expect.element(changes).toMatchTextContent("Pinned for Coordinate the Quest");
+  await expect.element(changes).toMatchTextContent("→ Current note");
+  await changes.getByRole("button", { name: "Back to document" }).click();
+  await expect.element(open.getByRole("article", { name: "Working note" })).toBeVisible();
 
   await open.getByRole("button", { name: "Open beside the conversation" }).click();
   expect(router.state.location.search).toMatchObject({ view: "conversation" });
   const beside = screen.getByRole("region", { name: "Documents beside the conversation" });
   await expect.element(screen.getByRole("region", { name: "Embedded chat" })).toBeVisible();
-  await beside.getByRole("button", { name: "Close Retained source" }).click();
+  // The discussion list folds into a selector; switching discussions keeps the documents.
+  await expect
+    .element(screen.getByRole("navigation", { name: "Quest conversations" }))
+    .not.toBeInTheDocument();
+  await screen.getByRole("combobox", { name: "Discussion" }).click();
+  await page.getByRole("option", { name: "Second talk" }).click();
+  expect(router.state.location.search).toMatchObject({ thread: "talk-1" });
+  await expect.element(beside.getByRole("article", { name: "Working note" })).toBeVisible();
+
+  // An explicit open of the chat's own tools takes the pane; the documents stay one click away.
+  useRightPanelStore
+    .getState()
+    .show(scopeThreadRef("example-environment" as never, "talk-1" as ThreadId));
+  await expect.element(beside).not.toBeInTheDocument();
+  await screen.getByRole("button", { name: "Back to documents" }).click();
   await expect.element(beside.getByRole("article", { name: "Working note" })).toBeVisible();
 
   await router.navigate({
@@ -1194,9 +1273,6 @@ it("opens documents as tabs, beside the conversation, and keeps them across view
   });
   await router.navigate({ to: "/quests" });
   await expect.element(beside.getByRole("article", { name: "Working note" })).toBeVisible();
-  await expect
-    .element(beside.getByRole("button", { name: "Close Retained source" }))
-    .not.toBeInTheDocument();
-  await beside.getByRole("button", { name: "Close documents" }).click();
+  await beside.getByRole("button", { name: "Hide documents" }).click();
   await expect.element(beside).not.toBeInTheDocument();
 });

@@ -224,7 +224,8 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
       closePreviewPanel();
       return;
     }
-    useRightPanelStore.getState().toggleVisibility(activeThreadRef);
+    // Shows rather than toggles: an embedding host can present an open panel as closed.
+    useRightPanelStore.getState().show(activeThreadRef);
     focusActivePanelTerminal(activeThreadRef);
   };
   const toggleRightPanelStable = useStableCallback(toggleRightPanel);

@@ -1,4 +1,4 @@
-import type { QuestDocument, QuestQuestion, QuestWork } from "@t3tools/contracts";
+import type { QuestQuestion, QuestWork } from "@t3tools/contracts";
 import type { FormEvent, ReactNode } from "react";
 
 import { Button } from "../ui/button";
@@ -10,7 +10,7 @@ import { draftText, useQuestDraft } from "./questDraftStore";
 import { workStateLabels } from "./questModel";
 import { QuestSelect } from "./QuestConversations";
 
-export function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="mb-4 block">
       <span className="mb-1.5 block text-sm font-medium">{label}</span>
@@ -36,7 +36,7 @@ function captureText(update: (fields: Record<string, string>) => void) {
 }
 
 /** The editor's draft; its presence is what keeps the editor open. */
-export function useEditorDraft(editor: "work" | "handoff" | "documents" | "document", id: string) {
+export function useEditorDraft(editor: "work" | "handoff" | "documents", id: string) {
   const { environmentId } = useQuest();
   return useQuestDraft(environmentId, `${editor}:${id}`);
 }
@@ -218,35 +218,6 @@ export function DocumentAssociations({ work }: { work: QuestWork }) {
           </label>
         ))}
         <EditorActions onCancel={clear} submit="Save associations" />
-      </fieldset>
-    </form>
-  );
-}
-
-export function DocumentEditor({ document }: { document: QuestDocument }) {
-  const { save, pending, canWrite } = useQuest();
-  const { draft, update, clear } = useEditorDraft("document", document.id);
-  return (
-    <form
-      onInput={captureText(update)}
-      onSubmit={async (event) => {
-        event.preventDefault();
-        const data = new FormData(event.currentTarget);
-        const saved = await save({
-          type: "document",
-          document: { ...document, title: formText(data, "title"), body: formText(data, "body") },
-        });
-        if (saved) clear();
-      }}
-    >
-      <fieldset disabled={pending || !canWrite}>
-        <Field label="Document title">
-          <Input name="title" defaultValue={draftText(draft, "title", document.title)} required />
-        </Field>
-        <Field label="Document content">
-          <Textarea name="body" defaultValue={draftText(draft, "body", document.body)} rows={14} />
-        </Field>
-        <EditorActions onCancel={clear} submit="Save document" />
       </fieldset>
     </form>
   );

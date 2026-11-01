@@ -421,6 +421,11 @@ export interface ChatEmbedding {
     threadRef: ScopedThreadRef,
     origin: { readonly threadId: ThreadId; readonly runId: RunId },
   ) => Promise<void>;
+  /**
+   * The host shows its own pane where the tools panel would be. The panel then presents as closed
+   * while its tabs and resources stay; an explicit open is a user action the host can observe.
+   */
+  readonly toolsPanelHidden?: boolean;
 }
 
 export function startNewThreadForProject(

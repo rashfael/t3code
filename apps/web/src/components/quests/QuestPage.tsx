@@ -27,8 +27,10 @@ import {
   openQuestDocumentTab,
   readQuestPanel,
   readQuestView,
+  rememberQuestDecision,
   rememberQuestPanel,
   rememberQuestView,
+  showQuestConversationTools,
   showQuestDocumentsBeside,
   useQuestDocumentTabs,
 } from "./questDraftStore";
@@ -36,15 +38,13 @@ import { questEnvironment } from "./questEnvironment";
 import { QUEST_TITLE, questionsByStatus } from "./questModel";
 import { QuestConversations } from "./QuestConversations";
 import { QuestOverview } from "./QuestOverview";
-import { DecisionList, HistoryList, QuestPanel } from "./QuestPanel";
+import { QuestDecisions } from "./QuestDecisions";
+import { HistoryList, QuestPanel } from "./QuestPanel";
 import { QuestWorkMap } from "./QuestWorkMap";
 
 // The document workspace loads with the first Documents view or split.
 const QuestDocumentsView = lazy(() =>
   import("./QuestDocumentWorkspace").then((module) => ({ default: module.QuestDocumentsView })),
-);
-const QuestDocumentsBeside = lazy(() =>
-  import("./QuestDocumentWorkspace").then((module) => ({ default: module.QuestDocumentsBeside })),
 );
 
 const VIEWS: ReadonlyArray<{ value: QuestView; label: string }> = [
@@ -59,6 +59,7 @@ const VIEWS: ReadonlyArray<{ value: QuestView; label: string }> = [
 /** The view a route shows: its own, else the remembered one when it names nothing else. */
 function resolveView(environmentId: EnvironmentId, search: QuestSearch): QuestView {
   if (search.view) return search.view;
+  if (search.question) return "decisions";
   const { env: _env, ...rest } = search;
   if (Object.keys(rest).length > 0) return "overview";
   return readQuestView(environmentId) ?? "overview";
@@ -146,9 +147,9 @@ function initialPanel(
   environmentId: EnvironmentId,
   search: QuestSearch,
 ): ReadonlyArray<PanelEntry> {
-  if (search.question) return [{ type: "question", id: search.question }];
   if (search.work) return [{ type: "work", id: search.work }];
-  return readQuestPanel(environmentId);
+  // Decisions open in their own view, never in the details panel.
+  return readQuestPanel(environmentId).filter((entry) => entry.type === "work");
 }
 
 function QuestWorkspaceView({
@@ -188,7 +189,7 @@ function QuestWorkspaceView({
   }
 
   async function save(change: QuestChange, source?: QuestUpdateInput["source"]) {
-    if (pendingRef.current) return false;
+    if (pendingRef.current) return null;
     pendingRef.current = true;
     setPending(true);
     setNotice("");
@@ -210,11 +211,11 @@ function QuestWorkspaceView({
           ? error.message
           : "Save failed. The draft remains here; reload the saved version before retrying a conflict.",
       );
-      return false;
+      return null;
     }
     setState(result.value);
     setNotice(`Saved · revision ${result.value.revision}`);
-    return true;
+    return result.value;
   }
 
   async function reload() {
@@ -237,6 +238,11 @@ function QuestWorkspaceView({
   }
 
   function openPanel(entry: PanelEntry, mode: "push" | "replace" = "replace") {
+    if (entry.type === "question") {
+      rememberQuestDecision(environmentId, entry.id);
+      showView("decisions", { question: entry.id });
+      return;
+    }
     setPanel(mode === "push" ? [...panel, entry] : [entry]);
   }
 
@@ -338,8 +344,12 @@ function QuestWorkspaceView({
             <span className="mb-1">
               <FileSurfaceAction
                 label="Documents beside the conversation"
-                pressed={documentTabs.beside}
-                onPress={() => showQuestDocumentsBeside(environmentId, !documentTabs.beside)}
+                pressed={documentTabs.beside && !documentTabs.tools}
+                onPress={() =>
+                  documentTabs.beside && documentTabs.tools
+                    ? showQuestConversationTools(environmentId, false)
+                    : showQuestDocumentsBeside(environmentId, !documentTabs.beside)
+                }
               >
                 <Columns2Icon className="size-3.5" />
               </FileSurfaceAction>
@@ -366,27 +376,13 @@ function QuestWorkspaceView({
               initialFocus={search.work ?? null}
             />
           ) : view === "conversation" ? (
-            <QuestConversations
-              about={search.about ?? null}
-              thread={search.thread ?? null}
-              beside={
-                documentTabs.beside ? (
-                  <Suspense fallback={null}>
-                    <QuestDocumentsBeside />
-                  </Suspense>
-                ) : null
-              }
-            />
+            <QuestConversations about={search.about ?? null} thread={search.thread ?? null} />
           ) : view === "documents" ? (
             <Suspense fallback={<FileSurfaceLoading />}>
               <QuestDocumentsView />
             </Suspense>
           ) : view === "decisions" ? (
-            <div className="scrollbar-gutter-both overflow-y-auto">
-              <div className="mx-auto max-w-3xl px-6 py-5">
-                <DecisionList />
-              </div>
-            </div>
+            <QuestDecisions requested={search.question ?? null} />
           ) : view === "history" ? (
             <div className="scrollbar-gutter-both overflow-y-auto">
               <div className="mx-auto max-w-3xl px-6 py-5">

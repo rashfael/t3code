@@ -16,17 +16,47 @@ interface QuestDraftStoreState {
   readonly views: Readonly<Record<string, QuestView>>;
   /** Open document tabs per environment, shared by Documents and the split beside a conversation. */
   readonly documents: Readonly<Record<string, QuestDocumentTabs>>;
+  /** The decision last selected per environment, shown again when Decisions reopens. */
+  readonly decisions: Readonly<Record<string, string>>;
+  /** Rendered or source presentation per `environmentId|documentId@version`. */
+  readonly readerModes: Readonly<Record<string, "rendered" | "source">>;
+  /** The before/after pair a Show changes view compares, kept until explicitly refreshed. */
+  readonly comparisons: Readonly<Record<string, QuestComparison>>;
+}
+
+/** Either side is null until its read arrives; `requestedAt` rejects a current read older than the request. */
+export interface QuestComparison {
+  readonly pinSha256: string;
+  readonly label: string;
+  readonly before: string | null;
+  readonly after: string | null;
+  readonly afterSha256: string | null;
+  readonly readAt: string | null;
+  readonly requestedAt: number;
 }
 
 export interface QuestDocumentTabs {
-  /** Document ids, or `<id>@<sha256>` for a retained pinned version. */
+  /** Logical document ids; a pinned version is a choice inside its document's tab. */
   readonly open: ReadonlyArray<string>;
   readonly active: string | null;
+  /** The pinned SHA-256 each document shows instead of its current version. */
+  readonly versions: Readonly<Record<string, string>>;
   /** Whether the open documents are shown beside the conversation. */
   readonly beside: boolean;
+  /** The conversation's own tools hold the pane beside it instead of the documents. */
+  readonly tools: boolean;
+  /** Documents fill the work area instead of sharing it with the conversation. */
+  readonly full: boolean;
 }
 
-const NO_DOCUMENT_TABS: QuestDocumentTabs = { open: [], active: null, beside: false };
+const NO_DOCUMENT_TABS: QuestDocumentTabs = {
+  open: [],
+  active: null,
+  versions: {},
+  beside: false,
+  tools: false,
+  full: false,
+};
 
 /**
  * Drafts live outside the Quest page so opening evidence, switching views or visiting a linked
@@ -38,6 +68,9 @@ export const useQuestDraftStore = create<QuestDraftStoreState>()(() => ({
   conversations: {},
   views: {},
   documents: {},
+  decisions: {},
+  readerModes: {},
+  comparisons: {},
 }));
 
 function draftKey(environmentId: EnvironmentId, key: string) {
@@ -117,26 +150,144 @@ function changeDocumentTabs(
   }));
 }
 
-/** Opens or selects a tab; `beside` shows the tabs next to the conversation. */
-export function openQuestDocumentTab(environmentId: EnvironmentId, tabId: string, beside: boolean) {
-  changeDocumentTabs(environmentId, (tabs) => ({
-    open: tabs.open.includes(tabId) ? tabs.open : [...tabs.open, tabId],
-    active: tabId,
-    beside: beside || tabs.beside,
-  }));
+function without<T>(record: Readonly<Record<string, T>>, key: string): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).filter(([entry]) => entry !== key));
 }
 
-/** Closes a tab and selects its neighbour. Its unsaved draft stays until saved or cancelled. */
+/** Splits a tab request: `<id>@<sha256>` selects that pinned version inside the document's tab. */
+function parseDocumentTabId(tabId: string): { id: string; sha256: string | null } {
+  const at = tabId.lastIndexOf("@");
+  return at > 0
+    ? { id: tabId.slice(0, at), sha256: tabId.slice(at + 1) }
+    : { id: tabId, sha256: null };
+}
+
+/** Opens or selects a document; `beside` shows it next to the conversation, taking the pane back. */
+export function openQuestDocumentTab(environmentId: EnvironmentId, tabId: string, beside: boolean) {
+  const { id, sha256 } = parseDocumentTabId(tabId);
+  changeDocumentTabs(environmentId, (tabs) => {
+    const versions = without(tabs.versions, id);
+    return {
+      ...tabs,
+      open: tabs.open.includes(id) ? tabs.open : [...tabs.open, id],
+      active: id,
+      versions: sha256 ? { ...versions, [id]: sha256 } : versions,
+      beside: beside || tabs.beside,
+      tools: beside ? false : tabs.tools,
+    };
+  });
+}
+
+/** Selects the current version (`null`) or a pinned one inside the document's tab. */
+export function selectQuestDocumentVersion(
+  environmentId: EnvironmentId,
+  documentId: string,
+  sha256: string | null,
+) {
+  changeDocumentTabs(environmentId, (tabs) => {
+    const versions = without(tabs.versions, documentId);
+    return { ...tabs, versions: sha256 ? { ...versions, [documentId]: sha256 } : versions };
+  });
+}
+
+/** Closes a tab and selects its neighbour. Callers confirm before closing over an unsaved draft. */
 export function closeQuestDocumentTab(environmentId: EnvironmentId, tabId: string) {
   changeDocumentTabs(environmentId, (tabs) => {
     const index = tabs.open.indexOf(tabId);
     const open = tabs.open.filter((item) => item !== tabId);
+    const versions = without(tabs.versions, tabId);
     const active =
       tabs.active === tabId ? (open[Math.min(index, open.length - 1)] ?? null) : tabs.active;
-    return { open, active, beside: tabs.beside && open.length > 0 };
+    return { ...tabs, open, active, versions, beside: tabs.beside && open.length > 0 };
   });
 }
 
 export function showQuestDocumentsBeside(environmentId: EnvironmentId, beside: boolean) {
-  changeDocumentTabs(environmentId, (tabs) => ({ ...tabs, beside }));
+  changeDocumentTabs(environmentId, (tabs) => ({
+    ...tabs,
+    beside,
+    tools: false,
+    full: beside && tabs.full,
+  }));
+}
+
+/** Gives the pane beside the conversation to its own tools, or back to the documents. */
+export function showQuestConversationTools(environmentId: EnvironmentId, tools: boolean) {
+  changeDocumentTabs(environmentId, (tabs) =>
+    tabs.tools === tools ? tabs : { ...tabs, tools, full: tools ? false : tabs.full },
+  );
+}
+
+export function showQuestDocumentsFull(environmentId: EnvironmentId, full: boolean) {
+  changeDocumentTabs(environmentId, (tabs) => ({ ...tabs, full }));
+}
+
+export function useRememberedQuestDecision(environmentId: EnvironmentId): string | null {
+  return useQuestDraftStore((store) => store.decisions[environmentId] ?? null);
+}
+
+export function rememberQuestDecision(environmentId: EnvironmentId, questionId: string | null) {
+  useQuestDraftStore.setState((store) => {
+    const decisions = without(store.decisions, environmentId);
+    return { decisions: questionId ? { ...decisions, [environmentId]: questionId } : decisions };
+  });
+}
+
+function readerKey(environmentId: EnvironmentId, documentId: string, version: string | null) {
+  return `${environmentId}|${documentId}@${version ?? "current"}`;
+}
+
+export function useQuestReaderMode(
+  environmentId: EnvironmentId,
+  documentId: string,
+  version: string | null,
+) {
+  const key = readerKey(environmentId, documentId, version);
+  const mode = useQuestDraftStore((store) => store.readerModes[key] ?? "rendered");
+  return {
+    rendered: mode === "rendered",
+    setRendered: (rendered: boolean) =>
+      useQuestDraftStore.setState((store) => ({
+        readerModes: { ...store.readerModes, [key]: rendered ? "rendered" : "source" },
+      })),
+  };
+}
+
+/**
+ * Scroll offsets by reader, so a passage survives switching tabs, versions and placements. Kept
+ * outside React state: a scroll only needs restoring on the next mount, never a render.
+ */
+const readerPositions = new Map<string, number>();
+
+export function readerPosition(
+  environmentId: EnvironmentId,
+  documentId: string,
+  version: string | null,
+  mode: string,
+) {
+  const key = `${readerKey(environmentId, documentId, version)}|${mode}`;
+  return {
+    read: () => readerPositions.get(key) ?? 0,
+    write: (offset: number) => readerPositions.set(key, offset),
+  };
+}
+
+function comparisonKey(environmentId: EnvironmentId, documentId: string) {
+  return `${environmentId}|${documentId}`;
+}
+
+export function useQuestComparison(environmentId: EnvironmentId, documentId: string) {
+  const key = comparisonKey(environmentId, documentId);
+  const comparison = useQuestDraftStore((store) => store.comparisons[key] ?? null);
+  return {
+    comparison,
+    set: (next: QuestComparison) =>
+      useQuestDraftStore.setState((store) => ({
+        comparisons: { ...store.comparisons, [key]: next },
+      })),
+    clear: () =>
+      useQuestDraftStore.setState((store) => {
+        return { comparisons: without(store.comparisons, key) };
+      }),
+  };
 }
