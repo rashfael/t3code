@@ -105,7 +105,14 @@ export function SidebarQuests({
       );
       return shell ? [{ member, shell }] : [];
     });
-    return { environmentId, quest, members };
+    // The shell list omits older settled threads; the core keeps its row without one.
+    const unlistedCore =
+      quest.members.find(
+        (member) =>
+          member.role === "core" &&
+          !members.some((item) => item.member.threadId === member.threadId),
+      ) ?? null;
+    return { environmentId, quest, members, unlistedCore };
   });
   const attention = attentionText(
     attentionOf(
@@ -139,7 +146,7 @@ export function SidebarQuests({
               Loading Quests…
             </li>
           ) : null}
-          {quests.map(({ environmentId, quest, members }) => {
+          {quests.map(({ environmentId, quest, members, unlistedCore }) => {
             const rowId = `quest:${environmentId}:${quest.questId}`;
             const isHere = onQuest && (search.env ?? quests[0]?.environmentId) === environmentId;
             // The core stays reachable when settled; settled discussions live in the Quest view.
@@ -187,12 +194,33 @@ export function SidebarQuests({
                     </div>
                   </div>
                 </Link>
-                {listed.length > 0 || settled > 0 ? (
+                {listed.length > 0 || settled > 0 || unlistedCore ? (
                   <ul
                     aria-label={`${quest.title} conversations`}
                     role={treeNavigation ? "group" : undefined}
                     className="ps-3"
                   >
+                    {unlistedCore ? (
+                      <li className="list-none">
+                        <Link
+                          to="/quests"
+                          search={{
+                            env: environmentId,
+                            view: "conversation",
+                            thread: unlistedCore.threadId,
+                          }}
+                          aria-current={
+                            isHere && shownConversation === unlistedCore.threadId
+                              ? "page"
+                              : undefined
+                          }
+                          className="block truncate px-(--sidebar-row-content-inset) py-1 text-sm text-muted-foreground hover:text-foreground"
+                          onClick={closeMobile}
+                        >
+                          {unlistedCore.title}
+                        </Link>
+                      </li>
+                    ) : null}
                     {listed
                       .toSorted(
                         (left, right) =>

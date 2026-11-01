@@ -27,6 +27,7 @@ import {
   authScopeResponse,
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
+  AuthFilesystemReadScope,
   AuthOrchestrationOperateScope,
   type AuthEnvironmentScope,
   type ScheduledTaskListResult,
@@ -2805,7 +2806,9 @@ export const layerWsRpc = (
         [WS_METHODS.questMembership]: () => questStore.membership,
         [WS_METHODS.questReconstruct]: (input) => questStore.reconstruct(input.revision),
         [WS_METHODS.questOpenConversation]: (input) =>
-          questConversations.open(input, QUEST_CLIENT_ACTOR),
+          questConversations.open(input, QUEST_CLIENT_ACTOR, {
+            readFiles: currentSession.scopes.includes(AuthFilesystemReadScope),
+          }),
         [WS_METHODS.questReadDocument]: (input) => questStore.readDocument(input.documentId),
         [WS_METHODS.questRetained]: (input) => questStore.retained(input.sha256),
         [WS_METHODS.questWorkspaceFiles]: () => questStore.workspaceFiles,

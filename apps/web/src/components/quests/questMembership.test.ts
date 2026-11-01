@@ -37,7 +37,11 @@ vi.mock(
     }) as never,
 );
 
-import { questMembershipAtom, threadNavigationTarget } from "./questMembership";
+import {
+  isAtThreadNavigationTarget,
+  questMembershipAtom,
+  threadNavigationTarget,
+} from "./questMembership";
 
 function quest(threadIds: ReadonlyArray<string>): QuestMembership {
   return {
@@ -75,5 +79,24 @@ describe("questMembershipAtom", () => {
       to: "/$environmentId/$threadId",
       params: { environmentId: "env-b", threadId: "shared-id" },
     });
+    // A sidebar file drop keeps its files once navigation lands in the thread's host.
+    const inQuest = {
+      pathname: "/quests",
+      search: { env: "env-a", view: "conversation", thread: "shared-id" },
+    };
+    expect(isAtThreadNavigationTarget(inQuest, member)).toBe(true);
+    expect(isAtThreadNavigationTarget({ pathname: "/env-a/shared-id", search: {} }, member)).toBe(
+      false,
+    );
+    expect(
+      isAtThreadNavigationTarget(
+        { pathname: "/quests", search: { env: "env-a", thread: "focused-a" } },
+        member,
+      ),
+    ).toBe(false);
+    expect(isAtThreadNavigationTarget(inQuest, sameIdElsewhere)).toBe(false);
+    expect(
+      isAtThreadNavigationTarget({ pathname: "/env-b/shared-id", search: {} }, sameIdElsewhere),
+    ).toBe(true);
   });
 });

@@ -607,11 +607,20 @@ function QuestionView({ id }: { id: string }) {
   );
   const answer = draftText(draft.draft, "answer", question.answer ?? "");
   const rationale = draftText(draft.draft, "rationale", question.rationale ?? "");
+  // An existing answer keeps its saved source, even a detached one; only a new answer gets a suggestion.
+  const savedSource = question.answer !== null ? question.answerSource : null;
   const source = draftText(
     draft.draft,
     "source",
-    discussions.findLast((item) => item.questionId === question.id)?.threadId ?? "",
+    savedSource?.threadId ??
+      (question.answer === null
+        ? (discussions.findLast((item) => item.questionId === question.id)?.threadId ?? "")
+        : ""),
   );
+  const detachedSource =
+    savedSource && !discussions.some((item) => item.threadId === savedSource.threadId)
+      ? savedSource
+      : null;
   const setAnswer = (value: string) => draft.update({ answer: value });
   const setRationale = (value: string) => draft.update({ rationale: value });
   async function saveAnswer(deferred: boolean) {
@@ -623,7 +632,11 @@ function QuestionView({ id }: { id: string }) {
         rationale: rationale || null,
         deferred,
       },
-      source ? { threadId: source, runId: null } : undefined,
+      savedSource?.threadId === source
+        ? savedSource
+        : source
+          ? { threadId: source, runId: null }
+          : undefined,
     );
     if (saved) draft.clear();
   }
@@ -788,7 +801,7 @@ function QuestionView({ id }: { id: string }) {
                 rows={2}
               />
             </Field>
-            {discussions.length > 0 ? (
+            {discussions.length > 0 || detachedSource ? (
               <Field label="From conversation">
                 <QuestSelect
                   label="Answer from conversation"
@@ -796,6 +809,14 @@ function QuestionView({ id }: { id: string }) {
                   onChange={(value) => draft.update({ source: value })}
                   options={[
                     { value: "", label: "Not from a conversation" },
+                    ...(detachedSource
+                      ? [
+                          {
+                            value: detachedSource.threadId,
+                            label: "A conversation no longer in the Quest",
+                          },
+                        ]
+                      : []),
                     ...discussions.map((item) => ({
                       value: item.threadId,
                       label: item.purpose || item.title,

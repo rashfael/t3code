@@ -13,6 +13,7 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 
 import * as ServerConfig from "../config.ts";
+import { questAgentContext } from "./questContext.ts";
 import { migrateQuestV1 } from "./questMigration.ts";
 import { questSeedV1 } from "./questSeed.ts";
 import * as QuestStore from "./QuestStore.ts";
@@ -682,6 +683,7 @@ describe("QuestStore", () => {
                 ...extra,
               },
               actor,
+              { readFiles: true },
             );
           const [first, second] = yield* Effect.all([open("client-a"), open("client-b")], {
             concurrency: "unbounded",
@@ -720,8 +722,66 @@ describe("QuestStore", () => {
           expect((yield* focused("focused-2", true)).conversation.threadId).toBe(
             discussion.conversation.threadId,
           );
-          expect((yield* focused("focused-3", false)).conversation.threadId).not.toBe(
-            discussion.conversation.threadId,
+          const another = yield* open("focused-3", {
+            role: "focused",
+            purposeKind: "decide",
+            purpose: "Compare the alternatives",
+            questionId: "summary-question",
+            resume: false,
+          });
+          expect(another.conversation.threadId).not.toBe(discussion.conversation.threadId);
+          // Subject resume picks the newest match; finishing a reservation targets exactly it.
+          expect((yield* focused("focused-4", true)).conversation.threadId).toBe(
+            another.conversation.threadId,
+          );
+          const exact = yield* open("finish-1", {
+            role: "focused",
+            purposeKind: "decide",
+            purpose: "Decide the summary gap",
+            questionId: "summary-question",
+            resume: true,
+            threadId: discussion.conversation.threadId,
+          });
+          expect(exact.conversation.threadId).toBe(discussion.conversation.threadId);
+          expect(
+            (yield* open("finish-2", { threadId: "not-in-the-quest" }).pipe(Effect.flip)).reason,
+          ).toBe("invalid");
+          // The core's current context follows the current milestone; a focused one keeps its subject.
+          const coreId = core[0]!.threadId;
+          const atReservation = yield* store.get;
+          expect(questAgentContext(atReservation, coreId)).toMatchObject({
+            currentWorkId: "milestone-a",
+            work: { id: "milestone-a" },
+            caller: { role: "core" },
+          });
+          const moved = yield* store.update(
+            {
+              expectedRevision: atReservation.revision,
+              change: { type: "current", workId: "summary-gap" },
+            },
+            actor,
+          );
+          const asCore = questAgentContext(moved, coreId);
+          expect(asCore).toMatchObject({
+            currentWorkId: "summary-gap",
+            work: { id: "summary-gap" },
+          });
+          expect(asCore.obligations.map((item) => item.questionId)).toContain("summary-question");
+          const moveBack = yield* store.update(
+            {
+              expectedRevision: moved.revision,
+              change: { type: "current", workId: "review-deliveries" },
+            },
+            actor,
+          );
+          expect(questAgentContext(moveBack, discussion.conversation.threadId)).toMatchObject({
+            currentWorkId: "review-deliveries",
+            work: { id: "summary-gap" },
+            caller: { role: "focused", sourceRevision: discussion.conversation.sourceRevision },
+          });
+          expect(questAgentContext(moveBack, coreId).work?.id).toBe("review-deliveries");
+          expect((yield* store.reconstruct(moved.revision)).domain.currentWorkId).toBe(
+            "summary-gap",
           );
           const current = yield* store.get;
           const detachCore = yield* store
@@ -788,7 +848,7 @@ const workspaceHarness = Effect.gen(function* () {
   yield* fs.symlink(path.join(outside, "secret.md"), path.join(workspace, "escape.md"));
   const plan = path.join(workspace, "notes", "plan.md");
   const statePath = path.join(directory, "userdata", "quest-prototype", "state.json");
-  return { workspace, plan, statePath, config };
+  return { workspace, outside, plan, statePath, config };
 });
 
 const setupFile = Effect.gen(function* () {
@@ -822,7 +882,7 @@ describe("QuestStore documents", () => {
     "registers only Markdown inside the workspace and pins the exact bytes a discussion used",
     () =>
       Effect.gen(function* () {
-        const { config, plan } = yield* workspaceHarness;
+        const { config, plan, outside } = yield* workspaceHarness;
         const fs = yield* FileSystem.FileSystem;
         yield* Effect.gen(function* () {
           const { store, file, read } = yield* setupFile;
@@ -864,6 +924,7 @@ describe("QuestStore documents", () => {
               interactionMode: "default",
             },
             actor,
+            { readFiles: true },
           );
           const pin = discussion.conversation.sources[0]!;
           expect(pin).toMatchObject({
@@ -878,6 +939,41 @@ describe("QuestStore documents", () => {
           const current = yield* store.readDocument(file.id);
           expect(current.content).toBe("# Plan\n\nLater edit\n");
           expect(current.sha256).not.toBe(pin.sha256);
+          // Without the caller's file grant, opening names the source but never reads it.
+          const unread = yield* store.reserveConversation(
+            {
+              operationId: "pin-no-files",
+              role: "focused",
+              purposeKind: "discuss-work",
+              purpose: "Review without file access",
+              workId: work.id,
+              questionId: null,
+              resume: false,
+              projectId: "project-1",
+              modelSelection: { instanceId: ProviderInstanceId.make("replay"), model: "replay" },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+            },
+            actor,
+            { readFiles: false },
+          );
+          expect(unread.conversation.sources).toEqual([
+            expect.objectContaining({ documentId: file.id, path: "notes/plan.md", sha256: null }),
+          ]);
+          expect(unread.conversation.prepared).not.toContain(current.sha256!.slice(0, 12));
+          // Registered ids resolve against the workspace, so it cannot silently move under them.
+          const moved = yield* store
+            .update(
+              {
+                expectedRevision: unread.state.revision,
+                change: { type: "workspace-register", root: outside },
+              },
+              actor,
+            )
+            .pipe(Effect.flip);
+          expect(moved.reason).toBe("invalid");
+          expect((yield* store.get).workspace).toEqual(unread.state.workspace);
+          expect((yield* store.readDocument(file.id)).content).toBe("# Plan\n\nLater edit\n");
         }).pipe(
           Effect.provide(QuestStore.layer.pipe(Layer.provide(config))),
           Effect.provideService(WorkspaceRoot, { plan }),
@@ -959,6 +1055,77 @@ describe("QuestStore documents", () => {
       }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("never writes through a parent folder replaced after the save's intent", () =>
+    Effect.gen(function* () {
+      const { config, plan, statePath, workspace, outside } = yield* workspaceHarness;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const notes = path.join(workspace, "notes");
+      const kept = path.join(workspace, "notes-original");
+      const outsidePlan = path.join(outside, "notes", "plan.md");
+      let armed = false;
+      // Right after the intent commits, `notes` becomes a symlink to a same-content outside copy.
+      const swapping = Layer.effect(
+        FileSystem.FileSystem,
+        Effect.gen(function* () {
+          const real = yield* FileSystem.FileSystem;
+          const swap = Effect.gen(function* () {
+            armed = false;
+            yield* real.makeDirectory(path.dirname(outsidePlan));
+            yield* real.writeFile(outsidePlan, yield* real.readFile(plan));
+            yield* real.rename(notes, kept);
+            yield* real.symlink(path.dirname(outsidePlan), notes);
+          });
+          return {
+            ...real,
+            rename: (from: string, to: string) =>
+              real
+                .rename(from, to)
+                .pipe(Effect.tap(() => (armed && to === statePath ? swap : Effect.void))),
+          };
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const { store, file, read } = yield* setupFile;
+        armed = true;
+        const escaped = yield* store.writeDocument(
+          {
+            operationId: "escape",
+            documentId: file.id,
+            expectedSha256: read.sha256!,
+            content: "Written beyond registered root\n",
+          },
+          actor,
+        );
+        expect(armed).toBe(false);
+        expect(escaped.outcome).toBe("pending");
+        const write = escaped.state.pendingWrites[0]!;
+        expect(write).toMatchObject({ status: "pending", documentId: file.id });
+        expect(yield* fs.readFileString(outsidePlan)).toBe(read.content!);
+        expect(yield* fs.readFileString(path.join(kept, "plan.md"))).toBe(read.content!);
+        // Recovery resolves the path again and refuses the same escape.
+        const refused = yield* store
+          .recoverWrite({ operationId: "escape-recover", writeId: write.id }, actor)
+          .pipe(Effect.flip);
+        expect(refused.reason).toBe("invalid");
+        expect(yield* fs.readFileString(outsidePlan)).toBe(read.content!);
+        expect((yield* store.get).pendingWrites).toEqual([write]);
+        yield* fs.remove(notes);
+        yield* fs.rename(kept, notes);
+        const recovered = yield* store.recoverWrite(
+          { operationId: "escape-recover-2", writeId: write.id },
+          actor,
+        );
+        expect(recovered.outcome).toBe("saved");
+        expect(yield* fs.readFileString(plan)).toBe("Written beyond registered root\n");
+        expect(yield* fs.readFileString(outsidePlan)).toBe(read.content!);
+      }).pipe(
+        Effect.provide(QuestStore.layer.pipe(Layer.provide(config), Layer.provide(swapping))),
+        Effect.provideService(WorkspaceRoot, { plan }),
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("keeps an interrupted save pending and recovers it from the file's actual bytes", () =>
     Effect.gen(function* () {
       const { config, plan, statePath } = yield* workspaceHarness;
@@ -1003,6 +1170,24 @@ describe("QuestStore documents", () => {
         );
         expect(retried.outcome).toBe("saved");
         expect(yield* fs.readFileString(plan)).toBe("Desired\n");
+        // A lost response is retried: the original save and the recovery both report what happened.
+        const original = yield* store.writeDocument(
+          {
+            operationId: "a",
+            documentId: file.id,
+            expectedSha256: read.sha256!,
+            content: "Desired\n",
+          },
+          actor,
+        );
+        const recoveredAgain = yield* store.recoverWrite(
+          { operationId: "a-recover", writeId: interrupted.state.pendingWrites[0]!.id },
+          actor,
+        );
+        expect([original.outcome, recoveredAgain.outcome]).toEqual(["saved", "saved"]);
+        expect(original.state.revision).toBe(retried.state.revision);
+        expect(recoveredAgain.state.revision).toBe(retried.state.revision);
+        expect(original.file.content).toBe("Desired\n");
 
         // Finalization boundary: the file holds the new bytes, but the Quest still reports pending.
         failStateCommits = stateCommits + 2;

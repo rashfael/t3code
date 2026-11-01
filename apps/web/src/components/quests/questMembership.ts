@@ -12,6 +12,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { environmentSummaries } from "~/state/presentation";
+import { isThreadRoutePathname } from "~/threadRoutes";
 import { questEnvironment } from "./questEnvironment";
 
 export interface QuestHomeMember extends QuestMember {
@@ -67,4 +68,19 @@ export function threadNavigationTarget(ref: ScopedThreadRef) {
     to: "/$environmentId/$threadId",
     params: { environmentId: ref.environmentId, threadId: ref.threadId },
   } as const;
+}
+
+/** Whether `location` already shows `ref` where `threadNavigationTarget` would open it. */
+export function isAtThreadNavigationTarget(
+  location: { readonly pathname: string; readonly search: unknown },
+  ref: ScopedThreadRef,
+): boolean {
+  const target = threadNavigationTarget(ref);
+  if (target.to !== "/quests") return isThreadRoutePathname(location.pathname, ref);
+  const search = (location.search ?? {}) as Record<string, unknown>;
+  return (
+    location.pathname.replace(/\/$/, "") === "/quests" &&
+    search.thread === ref.threadId &&
+    (search.env === undefined || search.env === ref.environmentId)
+  );
 }

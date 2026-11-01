@@ -1,5 +1,7 @@
+import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
+  AuthFilesystemReadScope,
   questQuestionStatus,
   type QuestFile,
   type QuestPendingWrite,
@@ -9,6 +11,7 @@ import { useState } from "react";
 
 import { randomUUID } from "~/lib/utils";
 import { useEnvironmentQuery } from "~/state/query";
+import { useEnvironmentScope } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -35,9 +38,14 @@ const outcomeText: Record<QuestWriteResult["outcome"], string> = {
 
 /** A registered Markdown file: the file owns its bytes, the Quest only its identity and history. */
 export function FileDocumentView({ file }: { file: QuestFile }) {
-  const { environmentId, state, canWrite, adopt, save, openPanel } = useQuest();
+  const { environmentId, state, canWrite: canWriteQuest, adopt, save, openPanel } = useQuest();
+  // The file's bytes need this connection's file grants; the Quest record does not.
+  const canReadFiles = useEnvironmentScope(environmentId, AuthFilesystemReadScope);
+  const canWrite = useAtomValue(questEnvironment.writeDocument.permissionAtom(environmentId));
   const query = useEnvironmentQuery(
-    questEnvironment.document({ environmentId, input: { documentId: file.id } }),
+    canReadFiles
+      ? questEnvironment.document({ environmentId, input: { documentId: file.id } })
+      : null,
   );
   const editor = useQuestDraft(environmentId, `file:${file.id}`);
   const write = useAtomCommand(questEnvironment.writeDocument, { reportFailure: false });
@@ -110,6 +118,11 @@ export function FileDocumentView({ file }: { file: QuestFile }) {
           </>
         ) : null}
       </p>
+      {canReadFiles ? null : (
+        <p className="mt-3 text-sm text-muted-foreground">
+          Reading this file needs file access on this connection.
+        </p>
+      )}
       {notice ? (
         <p role="status" className="mt-3 rounded border p-2 text-sm">
           {notice}
@@ -120,6 +133,8 @@ export function FileDocumentView({ file }: { file: QuestFile }) {
           write={pendingWrite}
           busy={busy}
           canWrite={canWrite}
+          canReadFiles={canReadFiles}
+          canDiscard={canWriteQuest}
           onRecover={() => void recoverWrite()}
           onDiscard={() => void save({ type: "write-discard", writeId: pendingWrite.id })}
           onUseDraft={(text) =>
@@ -196,6 +211,8 @@ function PendingWrite({
   write,
   busy,
   canWrite,
+  canReadFiles,
+  canDiscard,
   onRecover,
   onDiscard,
   onUseDraft,
@@ -203,6 +220,8 @@ function PendingWrite({
   write: QuestPendingWrite;
   busy: boolean;
   canWrite: boolean;
+  canReadFiles: boolean;
+  canDiscard: boolean;
   onRecover: () => void;
   onDiscard: () => void;
   onUseDraft: (text: string) => void;
@@ -232,15 +251,17 @@ function PendingWrite({
             {write.status === "conflict" ? "Check the file again" : "Recover"}
           </Button>
         ) : null}
-        <Button size="xs" variant="ghost" onClick={() => setShown((value) => !value)}>
-          {shown ? "Hide my draft" : "Show my draft"}
-        </Button>
+        {canReadFiles ? (
+          <Button size="xs" variant="ghost" onClick={() => setShown((value) => !value)}>
+            {shown ? "Hide my draft" : "Show my draft"}
+          </Button>
+        ) : null}
         {canWrite && draft?.content != null ? (
           <Button size="xs" variant="ghost" onClick={() => onUseDraft(draft.content ?? "")}>
             Edit my draft against the current file
           </Button>
         ) : null}
-        {canWrite ? (
+        {canDiscard ? (
           <Button size="xs" variant="ghost" disabled={busy} onClick={onDiscard}>
             Discard
           </Button>
@@ -256,9 +277,17 @@ function PendingWrite({
 }
 
 export function DocumentsList() {
-  const { environmentId, state, canWrite, pending, save, openPanel } = useQuest();
+  const { environmentId, state, pending, save, openPanel } = useQuest();
+  // Registering exposes files on this environment, so it needs the file read grant too.
+  const canWrite = useAtomValue(
+    questEnvironment.update.permissionAtom(environmentId, {
+      change: { type: "file-register" },
+    }),
+  );
   const files = useEnvironmentQuery(
-    state.workspace ? questEnvironment.workspaceFiles({ environmentId, input: {} }) : null,
+    state.workspace && canWrite
+      ? questEnvironment.workspaceFiles({ environmentId, input: {} })
+      : null,
   ).data;
   const [root, setRoot] = useState("");
   const [path, setPath] = useState("");

@@ -2,11 +2,13 @@ import {
   AuthEnvironmentMaintainScope,
   AuthDiagnosticsReadScope,
   AuthFilesystemReadScope,
+  AuthFilesystemWriteScope,
   AuthProvidersManageScope,
   AuthSettingsWriteScope,
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
   ProviderInstanceId,
+  QuestError,
   SecretProviderId,
   ThreadId,
   AuthOrchestrationOperateScope,
@@ -401,3 +403,129 @@ it.effect("denies manual cleanup before the handler without settings permission"
     expect(handled).toBe(false);
   }).pipe(Effect.scoped),
 );
+
+describe("Quest document authorization", () => {
+  const tested = [
+    WS_METHODS.questUpdate,
+    WS_METHODS.questReadDocument,
+    WS_METHODS.questRetained,
+    WS_METHODS.questWorkspaceFiles,
+    WS_METHODS.questWriteDocument,
+    WS_METHODS.questRecoverWrite,
+  ] as const;
+  type Tested = (typeof tested)[number];
+  const group = WsRpcGroup.omit(
+    ...[...WsRpcGroup.requests.keys()].filter(
+      (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, Tested> =>
+        !(tested as ReadonlyArray<string>).includes(tag),
+    ),
+  );
+  const reached = (handled: Array<string>, method: string) =>
+    Effect.sync(() => handled.push(method)).pipe(
+      Effect.andThen(Effect.fail(new QuestError({ reason: "invalid" }))),
+    );
+
+  it.effect("applies the filesystem grants to Quest files on top of orchestration scopes", () =>
+    Effect.gen(function* () {
+      const handled: Array<string> = [];
+      const connect = (scopes: Parameters<typeof RpcAuthorization.layer>[0]) =>
+        RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              group.toLayerHandler(WS_METHODS.questUpdate, ({ change }) =>
+                reached(handled, `update:${change.type}`),
+              ),
+              group.toLayerHandler(WS_METHODS.questReadDocument, () => reached(handled, "read")),
+              group.toLayerHandler(WS_METHODS.questRetained, () => reached(handled, "retained")),
+              group.toLayerHandler(WS_METHODS.questWorkspaceFiles, () => reached(handled, "list")),
+              group.toLayerHandler(WS_METHODS.questWriteDocument, () => reached(handled, "write")),
+              group.toLayerHandler(WS_METHODS.questRecoverWrite, () => reached(handled, "recover")),
+              RpcAuthorization.layer(scopes),
+            ),
+          ),
+        );
+      /** The permission a call was denied for, or "reached" when its handler ran. */
+      const outcome = <A, E extends { readonly _tag: string }, R>(call: Effect.Effect<A, E, R>) =>
+        call.pipe(
+          Effect.flip,
+          Effect.map((error): string =>
+            error._tag === "EnvironmentAuthorizationError" && "requiredPermission" in error
+              ? String(error.requiredPermission)
+              : "reached",
+          ),
+        );
+      const outcomes = (client: Effect.Success<ReturnType<typeof connect>>) =>
+        Effect.all([
+          outcome(
+            client[WS_METHODS.questUpdate]({
+              expectedRevision: 1,
+              change: { type: "current", workId: "work" },
+            }),
+          ),
+          outcome(
+            client[WS_METHODS.questUpdate]({
+              expectedRevision: 1,
+              change: { type: "workspace-register", root: "/elsewhere" },
+            }),
+          ),
+          outcome(
+            client[WS_METHODS.questUpdate]({
+              expectedRevision: 1,
+              change: { type: "file-register", path: "plan.md", title: "Plan" },
+            }),
+          ),
+          outcome(client[WS_METHODS.questReadDocument]({ documentId: "file-1" })),
+          outcome(client[WS_METHODS.questRetained]({ sha256: "0".repeat(64) })),
+          outcome(client[WS_METHODS.questWorkspaceFiles]({})),
+          outcome(
+            client[WS_METHODS.questWriteDocument]({
+              operationId: "op",
+              documentId: "file-1",
+              expectedSha256: "0".repeat(64),
+              content: "x",
+            }),
+          ),
+          outcome(client[WS_METHODS.questRecoverWrite]({ operationId: "op", writeId: "write-1" })),
+        ]);
+
+      const operator = yield* connect([AuthOrchestrationReadScope, AuthOrchestrationOperateScope]);
+      expect(yield* outcomes(operator)).toEqual([
+        "reached",
+        AuthFilesystemReadScope,
+        AuthFilesystemReadScope,
+        AuthFilesystemReadScope,
+        AuthFilesystemReadScope,
+        AuthFilesystemReadScope,
+        AuthFilesystemReadScope,
+        AuthFilesystemReadScope,
+      ]);
+      expect(handled).toEqual(["update:current"]);
+
+      const reader = yield* connect([
+        AuthOrchestrationReadScope,
+        AuthOrchestrationOperateScope,
+        AuthFilesystemReadScope,
+      ]);
+      expect(yield* outcomes(reader)).toEqual([
+        "reached",
+        "reached",
+        "reached",
+        "reached",
+        "reached",
+        "reached",
+        AuthFilesystemWriteScope,
+        AuthFilesystemWriteScope,
+      ]);
+
+      const fileOnly = yield* connect([
+        AuthOrchestrationReadScope,
+        AuthFilesystemReadScope,
+        AuthFilesystemWriteScope,
+      ]);
+      expect((yield* outcomes(fileOnly)).slice(-2)).toEqual([
+        AuthOrchestrationOperateScope,
+        AuthOrchestrationOperateScope,
+      ]);
+    }).pipe(Effect.scoped),
+  );
+});

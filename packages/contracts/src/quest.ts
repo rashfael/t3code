@@ -402,6 +402,8 @@ export const QuestOpenConversationInput = Schema.Struct({
   questionId: Schema.NullOr(Schema.String),
   /** Resume the newest discussion with the same purpose and subject instead of starting another. */
   resume: Schema.Boolean,
+  /** Finish creating exactly this reserved conversation; subject matching does not apply. */
+  threadId: Schema.optionalKey(Schema.String),
   projectId: Schema.String,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,

@@ -25,6 +25,7 @@ export class QuestConversations extends Context.Service<
     readonly open: (
       input: QuestOpenConversationInput,
       actor: QuestActor,
+      access: QuestStore.QuestFileAccess,
     ) => Effect.Effect<QuestOpenConversationResult, QuestError>;
   }
 >()("t3/quest/QuestConversations") {}
@@ -39,8 +40,9 @@ const make = Effect.gen(function* () {
   const open = Effect.fn("QuestConversations.open")(function* (
     input: QuestOpenConversationInput,
     actor: QuestActor,
+    access: QuestStore.QuestFileAccess,
   ) {
-    const reserved = yield* store.reserveConversation(input, actor);
+    const reserved = yield* store.reserveConversation(input, actor, access);
     const { conversation } = reserved;
     const threadId = ThreadId.make(conversation.threadId);
     const shell = yield* threads

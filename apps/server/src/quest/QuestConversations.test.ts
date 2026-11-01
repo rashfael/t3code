@@ -12,6 +12,7 @@ import * as QuestConversations from "./QuestConversations.ts";
 import * as QuestStore from "./QuestStore.ts";
 
 const actor = { kind: "client", id: null } as const;
+const files = { readFiles: true } as const;
 const selection = { instanceId: ProviderInstanceId.make("replay"), model: "replay" };
 
 function input(operationId: string): QuestOpenConversationInput {
@@ -85,7 +86,7 @@ describe("QuestConversations", () => {
         yield* Effect.gen(function* () {
           const conversations = yield* QuestConversations.QuestConversations;
           const store = yield* QuestStore.QuestStore;
-          const failed = yield* conversations.open(input("first"), actor).pipe(Effect.flip);
+          const failed = yield* conversations.open(input("first"), actor, files).pipe(Effect.flip);
           expect(failed.reason).toBe("unavailable");
           const reserved = (yield* store.get).conversations;
           expect(reserved).toEqual([
@@ -94,7 +95,7 @@ describe("QuestConversations", () => {
               creation: expect.objectContaining({ status: "reserved" }),
             }),
           ]);
-          const opened = yield* conversations.open(input("second"), actor);
+          const opened = yield* conversations.open(input("second"), actor, files);
           expect(opened.threadId).toBe(reserved[0]!.threadId);
           expect(launches.map((launch) => [launch.threadId, launch.commandId])).toEqual([
             [opened.threadId, "quest:first"],
@@ -105,7 +106,7 @@ describe("QuestConversations", () => {
             status: "ready",
             effectiveModelSelection: { model: "effective" },
           });
-          const resumed = yield* conversations.open(input("third"), actor);
+          const resumed = yield* conversations.open(input("third"), actor, files);
           expect(resumed).toMatchObject({ threadId: opened.threadId, created: false });
           expect(launches).toHaveLength(2);
         }).pipe(Effect.provide(layer));
@@ -118,9 +119,9 @@ describe("QuestConversations", () => {
       yield* Effect.gen(function* () {
         const conversations = yield* QuestConversations.QuestConversations;
         const store = yield* QuestStore.QuestStore;
-        const opened = yield* conversations.open(input("first"), actor);
+        const opened = yield* conversations.open(input("first"), actor, files);
         threads.set(opened.threadId, { deletedAt: "2026-11-01T00:00:00.000Z" });
-        const missing = yield* conversations.open(input("again"), actor).pipe(Effect.flip);
+        const missing = yield* conversations.open(input("again"), actor, files).pipe(Effect.flip);
         expect(missing.detail).toContain("Replace it");
         expect(launches).toHaveLength(1);
         expect((yield* store.get).conversations.map((item) => item.threadId)).toEqual([

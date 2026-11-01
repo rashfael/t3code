@@ -162,11 +162,7 @@ import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
-import {
-  buildThreadRouteParams,
-  resolveActiveThreadRouteRef,
-  resolveThreadRouteTarget,
-} from "../threadRoutes";
+import { resolveActiveThreadRouteRef, resolveThreadRouteTarget } from "../threadRoutes";
 import type { SidebarThreadSummary } from "../types";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { cn } from "~/lib/utils";
@@ -264,7 +260,11 @@ import {
 } from "./sidebar/SidebarThreadRow";
 import { SidebarDraftBlock } from "./sidebar/SidebarDraftBlock";
 import { SidebarQuests } from "./sidebar/SidebarQuests";
-import { threadNavigationTarget, useQuestMembership } from "./quests/questMembership";
+import {
+  isAtThreadNavigationTarget,
+  threadNavigationTarget,
+  useQuestMembership,
+} from "./quests/questMembership";
 import {
   SidebarProjectFolderHeader,
   sidebarFolderRowId,
@@ -1472,21 +1472,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
 
   const handleThreadFileDrop = async (threadRef: ScopedThreadRef, files: File[]) => {
     const dropId = queuePendingFileDrop({ threadRef, files });
-    const landedBefore =
-      router.buildLocation({
-        to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(threadRef),
-      }).pathname === router.state.location.pathname;
-    if (landedBefore) return;
+    if (isAtThreadNavigationTarget(router.state.location, threadRef)) return;
 
     try {
       await navigateToThread(threadRef);
-      const landed =
-        router.buildLocation({
-          to: "/$environmentId/$threadId",
-          params: buildThreadRouteParams(threadRef),
-        }).pathname === router.state.location.pathname;
-      if (!landed) clearPendingFileDrop(dropId);
+      if (!isAtThreadNavigationTarget(router.state.location, threadRef))
+        clearPendingFileDrop(dropId);
     } catch {
       clearPendingFileDrop(dropId);
     }

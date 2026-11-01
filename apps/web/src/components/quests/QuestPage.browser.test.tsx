@@ -1,4 +1,5 @@
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
 import {
   questAppliedUnderstanding,
@@ -35,6 +36,8 @@ const harness = vi.hoisted(() => ({
   newThread: vi.fn(),
   canWrite: true,
   shells: [] as Array<Record<string, unknown>>,
+  /** A thread's own detail, for conversations the trimmed shell list omits. */
+  details: {} as Record<string, { status: string; thread: Record<string, unknown> | null }>,
   membership: { quests: [], members: new Map(), hiddenKeys: new Set() } as unknown,
 }));
 
@@ -66,6 +69,16 @@ vi.mock(import("./questEnvironment"), () => ({
 vi.mock(import("./questMembership"), () => ({
   useQuestMembership: (() => harness.membership) as never,
   threadNavigationTarget: (() => ({ to: "/" })) as never,
+}));
+vi.mock(import("~/state/threads"), () => ({
+  useEnvironmentThread: ((_environmentId: string | null, threadId: string | null) => {
+    const detail = threadId === null ? undefined : harness.details[threadId];
+    return {
+      status: detail?.status ?? "loading",
+      data: detail?.thread ? Option.some({ thread: detail.thread }) : Option.none(),
+      error: Option.none(),
+    };
+  }) as never,
 }));
 vi.mock(import("~/state/shell"), () => ({
   useEnvironmentShellStatus: (() => "live") as never,
@@ -185,6 +198,7 @@ function setup() {
   harness.newThread.mockReset();
   harness.canWrite = true;
   harness.shells = [];
+  harness.details = {};
   harness.links = {};
   harness.environments = [{ environmentId: "example-environment", label: "Isolated example" }];
   useQuestDraftStore.setState({ drafts: {}, panels: {}, conversations: {} });
@@ -568,7 +582,123 @@ it("starts a purpose-bound discussion without sending, then resumes it instead o
   expect(harness.run).toHaveBeenCalledTimes(1);
 });
 
-it("keeps a fork made in the Quest chat in the Quest with its origin, and opens new threads ordinarily", async () => {
+it("finishes exactly the selected reservation and restores its context without overwriting the composer", async () => {
+  const initial = setup();
+  const reserved = conversation("thread-a", "Example · Unblock Part A", {
+    workId: "part-a",
+    purposeKind: "intervene",
+    purpose: "Unblock Part A",
+    prepared: "Prepared A",
+    creation: {
+      commandId: "quest:op-a",
+      status: "reserved",
+      requested: {
+        modelSelection: { instanceId: "replay", model: "replay-model" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        provenance: "client-default",
+      },
+      effectiveModelSelection: null,
+      reservedAt: at,
+      readyAt: null,
+    } as never,
+  });
+  // A newer discussion on the same subject with another purpose must not be the one resumed.
+  const newer = conversation("thread-b", "Example · Another angle", {
+    workId: "part-a",
+    purposeKind: "intervene",
+    purpose: "Another angle",
+  });
+  harness.quests = {
+    "example-environment": { ...initial, conversations: [reserved, newer] },
+  };
+  const ready = { ...reserved, creation: null };
+  harness.run.mockResolvedValueOnce({
+    _tag: "Success",
+    value: {
+      state: { ...initial, revision: 3, conversations: [ready, newer] },
+      threadId: "thread-a",
+      created: false,
+    },
+  });
+  const { screen, router } = await renderRoutes("/quests?view=conversation&thread=thread-a");
+  await using _screen = screen;
+  await screen.getByRole("button", { name: "Create it now" }).click();
+  await expect
+    .element(screen.getByRole("region", { name: "Embedded chat" }))
+    .toHaveTextContent("example-environment/thread-a");
+  expect(harness.run.mock.calls[0]?.[0].input).toMatchObject({
+    threadId: "thread-a",
+    resume: true,
+    purpose: "Unblock Part A",
+  });
+  const ref = scopeThreadRef("example-environment" as EnvironmentId, "thread-a" as ThreadId);
+  // This request only finished the reservation, yet the context still reaches the composer.
+  expect(useComposerDraftStore.getState().getComposerDraft(ref)?.prompt).toBe("Prepared A");
+
+  // On another client the unsent thread offers its context; an edited draft is never replaced.
+  harness.quests = {
+    "example-environment": { ...initial, revision: 3, conversations: [ready, newer] },
+  };
+  harness.shells = [shell("thread-a", { latestRun: null, latestUserMessageAt: null })];
+  useComposerDraftStore.getState().setPrompt(ref, "My own opening");
+  await router.navigate({ to: "/quests", search: { view: "conversation" } });
+  await expect
+    .element(screen.getByRole("region", { name: "Embedded chat" }))
+    .toHaveTextContent("example-environment/thread-a");
+  const insert = screen.getByRole("button", { name: "Insert prepared context" });
+  await expect.element(insert).not.toBeInTheDocument();
+  useComposerDraftStore.getState().setPrompt(ref, "");
+  await expect.element(insert).toBeVisible();
+  expect(useComposerDraftStore.getState().getComposerDraft(ref)?.prompt ?? "").toBe("");
+  await insert.click();
+  expect(useComposerDraftStore.getState().getComposerDraft(ref)?.prompt).toBe("Prepared A");
+  expect(harness.run).toHaveBeenCalledTimes(1);
+  useComposerDraftStore.getState().setPrompt(ref, "");
+});
+
+it.each([
+  { name: "a newer discussion on the question", newer: true },
+  { name: "no discussion left on the question", newer: false },
+])(
+  "keeps a detached answer source when only the rationale changes, with $name",
+  async ({ newer }) => {
+    const initial = setup();
+    const source = { threadId: "detached-thread", runId: "run-7" };
+    harness.quests = {
+      "example-environment": {
+        ...initial,
+        questions: [
+          {
+            ...initial.questions[0]!,
+            answer: "Use newer summary",
+            rationale: "First reason",
+            answerSource: source,
+          },
+        ],
+        conversations: newer
+          ? [conversation("newer-thread", "Newer discussion", { questionId: "question" })]
+          : [],
+      },
+    };
+    harness.run.mockResolvedValueOnce({
+      _tag: "Success",
+      value: harness.quests["example-environment"],
+    });
+    await using screen = await renderQuest();
+    await screen.getByRole("button", { name: /^Decisions/ }).click();
+    const details = screen.getByRole("complementary", { name: "Quest details" });
+    await details.getByRole("button", { name: /Which summary\?/ }).click();
+    await screen.getByRole("textbox", { name: "Rationale (optional)" }).fill("Second reason");
+    await screen.getByRole("button", { name: "Record answer", exact: true }).click();
+    expect(harness.run.mock.calls[0]?.[0].input).toMatchObject({
+      change: { type: "answer", rationale: "Second reason", answer: "Use newer summary" },
+      source,
+    });
+  },
+);
+
+it("keeps a fork made in the Quest chat in the Quest with its origin, and starts the next conversation in the Quest", async () => {
   const initial = setup();
   const core = conversation("core-1", "Example · Core", {
     role: "core",
@@ -577,19 +707,27 @@ it("keeps a fork made in the Quest chat in the Quest with its origin, and opens 
   });
   harness.quests = { "example-environment": { ...initial, conversations: [core] } };
   harness.shells = [shell("core-1")];
-  harness.run.mockResolvedValueOnce({
-    _tag: "Success",
-    value: {
-      ...initial,
-      revision: 1,
-      conversations: [core, conversation("fork-1", "Example · Core · fork", { context: "fork" })],
-    },
-  });
+  // A fork whose Quest link fails (another client saved first) opens where it actually is.
+  harness.run
+    .mockResolvedValueOnce({ _tag: "Failure", cause: Cause.fail(new Error("Stale revision")) })
+    .mockResolvedValueOnce({
+      _tag: "Success",
+      value: {
+        ...initial,
+        revision: 1,
+        conversations: [core, conversation("fork-1", "Example · Core · fork", { context: "fork" })],
+      },
+    });
   const { screen, router } = await renderRoutes("/quests?view=conversation&thread=core-1");
   await using _screen = screen;
   await screen.getByRole("button", { name: "Fork this run" }).click();
+  await vi.waitFor(() =>
+    expect(router.state.location.pathname).toBe("/example-environment/fork-1"),
+  );
+  await router.navigate({ to: "/quests", search: { view: "conversation", thread: "core-1" } });
+  await screen.getByRole("button", { name: "Fork this run" }).click();
   await vi.waitFor(() => expect(router.state.location.search).toMatchObject({ thread: "fork-1" }));
-  expect(harness.run.mock.calls[0]?.[0].input.change).toMatchObject({
+  expect(harness.run.mock.calls[1]?.[0].input.change).toMatchObject({
     type: "link",
     threadId: "fork-1",
     purposeKind: "digress",
@@ -598,11 +736,19 @@ it("keeps a fork made in the Quest chat in the Quest with its origin, and opens 
   });
   await expect.element(screen.getByText("Provider fork")).toBeVisible();
 
+  // A background send or the header's new-thread action asks for the next conversation: the
+  // Quest offers a purpose-bound one instead of leaving for an ordinary draft.
   await screen.getByRole("button", { name: "New thread" }).click();
-  expect(harness.newThread).toHaveBeenCalledWith(
-    { environmentId: "example-environment", projectId: "project-1" },
-    {},
-  );
+  await expect
+    .element(
+      screen.getByRole("region", { name: "Start a discussion" }).getByRole("textbox", {
+        name: "Purpose",
+      }),
+    )
+    .toHaveValue("Explore a side question");
+  expect(router.state.location.pathname).toBe("/quests");
+  expect(router.state.location.search).toMatchObject({ about: "digression" });
+  expect(harness.newThread).not.toHaveBeenCalled();
 });
 
 it("starts the core once, and keeps a deleted core visible until it is explicitly replaced", async () => {
@@ -626,11 +772,30 @@ it("starts the core once, and keeps a deleted core visible until it is explicitl
   await vi.waitFor(() => expect(router.state.location.search).toMatchObject({ thread: "core-1" }));
   expect(harness.run.mock.calls[0]?.[0].input).toMatchObject({ role: "core", resume: true });
 
+  // A core the trimmed shell list omits is not deleted; its own detail decides.
+  const rail = screen.getByRole("navigation", { name: "Quest conversations" });
+  const coreEntry = rail.getByRole("button", { name: /Coordinate the Quest/ });
+  await expect.element(coreEntry.getByText("loading…", { exact: true })).toBeVisible();
+  await expect.element(rail.getByText(/The core conversation was deleted/)).not.toBeInTheDocument();
+  // The mocks are not reactive: a new shell list stands in for the detail stream updating.
+  harness.shells = [];
+  harness.details = {
+    "core-1": {
+      status: "live",
+      thread: { deletedAt: null, archivedAt: null, settledOverride: "settled" },
+    },
+  };
+  await router.navigate({ to: "/quests", search: { view: "conversation" } });
+  await expect.element(coreEntry.getByText("settled", { exact: true })).toBeVisible();
+  harness.shells = [];
+  harness.details = { "core-1": { status: "deleted", thread: null } };
+  await router.navigate({ to: "/quests", search: { view: "conversation", thread: "core-1" } });
+  await expect.element(rail.getByText(/The core conversation was deleted/)).toBeVisible();
+
   // The core's thread was deleted elsewhere: no silent recreation or detachment.
   harness.run.mockResolvedValueOnce({ _tag: "Success", value: { ...initial, revision: 3 } });
   harness.shells = [shell("core-1", { deletedAt: at })];
-  await router.navigate({ to: "/quests", search: { view: "conversation", thread: "core-1" } });
-  const rail = screen.getByRole("navigation", { name: "Quest conversations" });
+  await router.navigate({ to: "/quests", search: { view: "conversation" } });
   await expect.element(rail.getByText(/The core conversation was deleted/)).toBeVisible();
   await rail.getByRole("textbox", { name: "Why replace the core" }).fill("Deleted by accident");
   await rail.getByRole("button", { name: "Retire and replace the core" }).click();
@@ -832,12 +997,20 @@ it("lists each environment's Quest with full rows, keeps settled discussions in 
         ]),
       },
       // The same thread id on another environment belongs to that environment's Quest.
-      { environmentId: "second-environment", quest: quest([["focused-a", "focused"]]) },
+      // Its core is settled beyond the trimmed shell list, so it has no shell here.
+      {
+        environmentId: "second-environment",
+        quest: quest([
+          ["core-2", "core"],
+          ["focused-a", "focused"],
+        ]),
+      },
     ],
     members: new Map([
       member("example-environment", "core-1", "core"),
       member("example-environment", "focused-a", "focused"),
       member("example-environment", "settled-b", "focused"),
+      member("second-environment", "core-2", "core"),
       member("second-environment", "focused-a", "focused"),
     ] as never),
     hiddenKeys: new Set(),
@@ -905,6 +1078,11 @@ it("lists each environment's Quest with full rows, keeps settled discussions in 
     .not.toBeInTheDocument();
   await expect.element(first.getByRole("link", { name: "1 settled in the Quest" })).toBeVisible();
   await expect.element(screen.getByText("Row second-environment/focused-a")).toBeVisible();
+  const unlistedCore = screen.getByRole("link", { name: "core-2", exact: true });
+  await expect.element(unlistedCore).toBeVisible();
+  await expect
+    .element(unlistedCore)
+    .toHaveAttribute("href", expect.stringContaining("thread=core-2"));
 
   const toggle = screen.getByRole("button", { name: /^Quests/ });
   await toggle.click();

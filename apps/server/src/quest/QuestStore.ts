@@ -4,6 +4,7 @@ import * as NodeCrypto from "node:crypto";
 import {
   QuestBaseline,
   QuestError,
+  QuestPendingWrite,
   QuestRevisionRecord,
   QuestState,
   questAppliedUnderstanding,
@@ -54,6 +55,11 @@ export interface QuestReservation {
   readonly created: boolean;
 }
 
+/** Whether the caller holds the environment's filesystem read grant; pins never read files without it. */
+export interface QuestFileAccess {
+  readonly readFiles: boolean;
+}
+
 export class QuestStore extends Context.Service<
   QuestStore,
   {
@@ -70,6 +76,7 @@ export class QuestStore extends Context.Service<
     readonly reserveConversation: (
       input: QuestOpenConversationInput,
       actor: QuestActor,
+      access: QuestFileAccess,
     ) => Effect.Effect<QuestReservation, QuestError>;
     readonly finalizeConversation: (
       threadId: string,
@@ -107,6 +114,7 @@ const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeStoreFile = Schema.decodeUnknownEffect(QuestStoreFile);
 const decodeV2 = Schema.decodeUnknownEffect(QuestStateV2);
 const decodeV1 = Schema.decodeUnknownEffect(QuestStateV1);
+const isPendingWrite = Schema.is(QuestPendingWrite);
 
 interface Loaded {
   readonly state: QuestState;
@@ -251,9 +259,10 @@ function changeState(
       const answer = change.answer?.trim() ? change.answer : null;
       const rationale = change.rationale?.trim() ? change.rationale : null;
       if (!question || question.applied || (!change.deferred && answer === null)) return null;
-      const sourceThread = source
-        ? current.conversations.find((item) => item.threadId === source.threadId)
-        : undefined;
+      const sourceTitle = (threadId: string | undefined) =>
+        threadId === undefined
+          ? null
+          : (current.conversations.find((item) => item.threadId === threadId)?.title ?? threadId);
       return {
         state: {
           ...current,
@@ -272,15 +281,11 @@ function changeState(
           changes: [
             { label: "Answer", before: question.answer, after: answer },
             { label: "Rationale", before: question.rationale, after: rationale },
-            ...(source
-              ? [
-                  {
-                    label: "From conversation",
-                    before: null,
-                    after: sourceThread?.title ?? source.threadId,
-                  },
-                ]
-              : []),
+            {
+              label: "From conversation",
+              before: sourceTitle(question.answerSource?.threadId),
+              after: sourceTitle(source?.threadId),
+            },
           ].filter((item) => item.before !== item.after || item.label === "Answer"),
         },
       };
@@ -667,8 +672,15 @@ const make = Effect.gen(function* () {
 
   /** Validates what needs the filesystem, then hands a plain change to `changeState`. */
   const prepare = Effect.fn("QuestStore.prepare")(function* (state: QuestState, change: Change) {
-    if (change.type === "workspace-register")
-      return { ...change, root: yield* validateQuestWorkspace(fs, path, change.root) };
+    if (change.type === "workspace-register") {
+      const root = yield* validateQuestWorkspace(fs, path, change.root);
+      // Document ids and pending saves resolve against this root; moving it would silently retarget them.
+      if (state.workspace !== null && state.workspace.root !== root && state.files.length > 0)
+        return yield* invalid(
+          "This Quest's documents are registered in its current workspace. Moving them to another folder is not supported.",
+        );
+      return { ...change, root };
+    }
     if (change.type === "file-register") {
       if (!state.workspace) return yield* invalid("Register the Quest workspace first.");
       const resolved = yield* resolveQuestFile(fs, path, state.workspace.root, change.path);
@@ -701,6 +713,7 @@ const make = Effect.gen(function* () {
   const pinSources = Effect.fn("QuestStore.pinSources")(function* (
     state: QuestState,
     ids: ReadonlyArray<string>,
+    access: QuestFileAccess,
   ) {
     const at = yield* now;
     return yield* Effect.forEach(ids, (documentId) =>
@@ -711,6 +724,14 @@ const make = Effect.gen(function* () {
           return { documentId, path: null, sha256: sha, capturedAt: at, unavailable: null };
         }
         const file = state.files.find((item) => item.id === documentId);
+        if (file && !access.readFiles)
+          return {
+            documentId,
+            path: file.path,
+            sha256: null,
+            capturedAt: at,
+            unavailable: "not read: this connection has no file access",
+          } satisfies QuestSourcePin;
         if (!file || !state.workspace)
           return {
             documentId,
@@ -744,6 +765,7 @@ const make = Effect.gen(function* () {
   const reserveConversation = Effect.fn("QuestStore.reserveConversation")(function* (
     input: QuestOpenConversationInput,
     actor: QuestActor,
+    access: QuestFileAccess,
   ) {
     const loaded = yield* load();
     const { state } = loaded;
@@ -762,6 +784,11 @@ const make = Effect.gen(function* () {
         conversation: replayedConversation,
         created: false,
       } satisfies QuestReservation;
+    if (input.threadId !== undefined) {
+      const exact = byThread(input.threadId);
+      if (!exact) return yield* invalid("That conversation is no longer part of the Quest.");
+      return { state, conversation: exact, created: false } satisfies QuestReservation;
+    }
     if (input.role === "core") {
       const core = state.conversations.find((item) => item.role === "core");
       if (core) return { state, conversation: core, created: false } satisfies QuestReservation;
@@ -785,7 +812,11 @@ const make = Effect.gen(function* () {
     )
       return yield* invalid();
     const workId = input.role === "core" ? state.currentWorkId : input.workId;
-    const sources = yield* pinSources(state, questSourceIds(state, workId, input.questionId));
+    const sources = yield* pinSources(
+      state,
+      questSourceIds(state, workId, input.questionId),
+      access,
+    );
     const at = yield* now;
     const about = question?.title ?? work?.title ?? null;
     const shape = {
@@ -966,6 +997,37 @@ const make = Effect.gen(function* () {
     };
   }).pipe(Effect.withSpan("QuestStore.workspaceFiles"));
 
+  /** A save's current outcome from the state and its archive, for retries and repeated recovery. */
+  const writeOutcome = Effect.fn("QuestStore.writeOutcome")(function* (
+    loaded: Loaded,
+    writeId: string,
+  ) {
+    const open = loaded.state.pendingWrites.find((item) => item.id === writeId);
+    const removal = loaded.archive?.records
+      .flatMap((record) =>
+        record.changes
+          .filter(
+            (change) =>
+              change.collection === "pendingWrites" &&
+              change.id === writeId &&
+              change.after === null,
+          )
+          .map((change) => ({ record, before: change.before })),
+      )
+      .at(-1);
+    const removed = removal && isPendingWrite(removal.before) ? removal.before : null;
+    const write = open ?? removed;
+    if (!write) return yield* invalid("That save is no longer pending.");
+    if (!open && removal?.record.operation === "write-discard")
+      return yield* invalid("That save was discarded. Its versions stay retained.");
+    const file = yield* readDocument(write.documentId);
+    return {
+      state: loaded.state,
+      outcome: open ? open.status : "saved",
+      file,
+    } satisfies QuestWriteResult;
+  });
+
   const writeMeta = (operationId: string, operation: string, actor: QuestActor): Meta => ({
     operationId,
     operation,
@@ -973,20 +1035,42 @@ const make = Effect.gen(function* () {
     source: null,
   });
 
-  /** Replaces the file only while it still holds `expectedSha`; the check-to-rename window is not atomic. */
+  /** Fails unless `relative` still resolves inside the workspace to the file the save started with. */
+  const confirmTarget = Effect.fn("QuestStore.confirmTarget")(function* (
+    root: string,
+    relative: string,
+    real: string,
+  ) {
+    const resolved = yield* resolveQuestFile(fs, path, root, relative);
+    if (resolved.real !== real)
+      return yield* new QuestError({
+        reason: "unavailable",
+        detail: `${relative} no longer leads to the file this save started with.`,
+      });
+  });
+
+  /**
+   * Replaces the file only while it still holds `expectedSha` and still resolves inside the
+   * workspace. Containment is checked again right before the rename; content and path changes by
+   * other writers within the last check-to-rename window are not excluded atomically.
+   */
   const replaceFile = Effect.fn("QuestStore.replaceFile")(function* (
+    root: string,
+    relative: string,
     real: string,
     writeId: string,
     expectedSha: string,
     bytes: Uint8Array,
   ) {
+    yield* confirmTarget(root, relative, real);
     const current = sha256(yield* fs.readFile(real));
     if (current !== expectedSha) return { replaced: false as const, actual: current };
     const temporary = `${real}.quest-${writeId}.tmp`;
     yield* fs.writeFile(temporary, bytes);
-    yield* fs
-      .rename(temporary, real)
-      .pipe(Effect.tapError(() => fs.remove(temporary).pipe(Effect.ignore)));
+    yield* confirmTarget(root, relative, real).pipe(
+      Effect.andThen(fs.rename(temporary, real)),
+      Effect.tapError(() => fs.remove(temporary).pipe(Effect.ignore)),
+    );
     return { replaced: true as const, actual: sha256(bytes) };
   });
 
@@ -1049,11 +1133,19 @@ const make = Effect.gen(function* () {
   const completeWrite = Effect.fn("QuestStore.completeWrite")(function* (
     loaded: Loaded,
     write: QuestState["pendingWrites"][number],
-    real: string,
+    target: { readonly root: string; readonly real: string },
     bytes: Uint8Array,
     meta: Meta,
   ) {
-    const replaced = yield* replaceFile(real, write.id, write.expectedSha256, bytes).pipe(
+    const { real } = target;
+    const replaced = yield* replaceFile(
+      target.root,
+      write.path,
+      real,
+      write.id,
+      write.expectedSha256,
+      bytes,
+    ).pipe(
       Effect.map((result) => ({ ...result, failed: null })),
       Effect.catch((cause) =>
         Effect.succeed({ replaced: false as const, actual: null, failed: cause }),
@@ -1067,7 +1159,7 @@ const make = Effect.gen(function* () {
           write.documentId,
           write.path,
           null,
-          "The file could not be written. The save is kept as pending.",
+          `${replaced.failed?._tag === "QuestError" ? `${replaced.failed.message} ` : ""}The file was not written. The save is kept as pending.`,
         ),
       };
     if (!replaced.replaced) {
@@ -1096,15 +1188,18 @@ const make = Effect.gen(function* () {
     const target = fileFor(loaded.state, input.documentId);
     if (!target) return yield* invalid("That document is not registered in this Quest.");
     const meta = writeMeta(input.operationId, "document-write", actor);
-    const earlier = (suffix: string) =>
-      loaded.archive?.records.some(
-        (record) => record.operationId === `${input.operationId}${suffix}`,
-      ) ?? false;
-    if (earlier("") || earlier(":conflict") || earlier(":intent")) {
-      const read = yield* readDocument(input.documentId);
-      const outcome = earlier("") ? "saved" : earlier(":conflict") ? "conflict" : "pending";
-      return { state: loaded.state, outcome, file: read } satisfies QuestWriteResult;
-    }
+    // A retry reports what became of the save it started, including a later recovery or discard.
+    const startedWrite = loaded.archive?.records
+      .filter((record) =>
+        [
+          input.operationId,
+          `${input.operationId}:intent`,
+          `${input.operationId}:conflict`,
+        ].includes(record.operationId ?? ""),
+      )
+      .flatMap((record) => record.changes)
+      .find((change) => change.collection === "pendingWrites")?.id;
+    if (startedWrite !== undefined) return yield* writeOutcome(loaded, startedWrite);
     if (loaded.state.pendingWrites.some((item) => item.documentId === input.documentId))
       return yield* invalid(
         "An earlier save of this document is unresolved. Recover or discard it first.",
@@ -1157,7 +1252,13 @@ const make = Effect.gen(function* () {
     const afterIntent = yield* load();
     if (afterIntent.state.revision !== intent.revision)
       return yield* storageError("The Quest changed during a save.");
-    return yield* completeWrite(afterIntent, write, observed.real, proposed, meta);
+    return yield* completeWrite(
+      afterIntent,
+      write,
+      { root: target.root, real: observed.real },
+      proposed,
+      meta,
+    );
   }, mutex.withPermits(1));
 
   const recoverWrite = Effect.fn("QuestStore.recoverWrite")(function* (
@@ -1166,7 +1267,7 @@ const make = Effect.gen(function* () {
   ) {
     const loaded = yield* load();
     const write = loaded.state.pendingWrites.find((item) => item.id === input.writeId);
-    if (!write) return yield* invalid("That save is no longer pending.");
+    if (!write) return yield* writeOutcome(loaded, input.writeId);
     const target = fileFor(loaded.state, write.documentId);
     if (!target) return yield* invalid("That document is not registered in this Quest.");
     const meta = writeMeta(input.operationId, "document-write-recover", actor);
@@ -1186,7 +1287,7 @@ const make = Effect.gen(function* () {
       return yield* completeWrite(
         loaded,
         write,
-        actual.real,
+        { root: target.root, real: actual.real },
         new TextEncoder().encode(proposed.content),
         meta,
       );

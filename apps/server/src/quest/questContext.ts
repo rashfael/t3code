@@ -108,15 +108,18 @@ export function questContextPacket(
 /** Current, bounded context for an agent in a Quest conversation. History is a separate read. */
 export function questAgentContext(state: QuestState, threadId: string | null) {
   const member = state.conversations.find((item) => item.threadId === threadId) ?? null;
-  const workId = member
-    ? subjectWorkId(state, member.workId, member.questionId)
-    : state.currentWorkId;
+  // The core coordinates whatever is current now; a focused discussion keeps its own subject.
+  const workId =
+    member && member.role !== "core"
+      ? subjectWorkId(state, member.workId, member.questionId)
+      : state.currentWorkId;
   const work = state.work.find((item) => item.id === workId) ?? null;
   const core = state.conversations.find((item) => item.role === "core") ?? null;
   return {
     questId: QUEST_ID,
     title: QUEST_TITLE,
     revision: state.revision,
+    currentWorkId: state.currentWorkId,
     caller: member
       ? {
           threadId: member.threadId,

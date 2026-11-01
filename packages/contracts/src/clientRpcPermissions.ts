@@ -2,6 +2,8 @@ import * as Schema from "effect/Schema";
 import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./git.ts";
 import {
   AuthAccessWriteScope,
+  AuthFilesystemReadScope,
+  AuthFilesystemWriteScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
@@ -78,6 +80,13 @@ export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 const decodePrepareThread = Schema.decodeUnknownSync(GitPreparePullRequestThreadInput);
 const decodeStackedAction = Schema.decodeUnknownSync(GitRunStackedActionInput);
 
+function questUpdateRegistersFiles(input: unknown): boolean {
+  if (typeof input !== "object" || input === null || !("change" in input)) return false;
+  const { change } = input;
+  if (typeof change !== "object" || change === null || !("type" in change)) return false;
+  return change.type === "workspace-register" || change.type === "file-register";
+}
+
 export function clientRpcRequiredScopes(
   method: string,
   input: unknown,
@@ -95,6 +104,11 @@ export function clientRpcRequiredScopes(
     )
       return [AuthSourceControlWriteScope, AuthOrchestrationReadScope];
   }
+  // Quest documents are files on this environment: the filesystem grants apply on top of operate.
+  if (method === WS_METHODS.questWriteDocument || method === WS_METHODS.questRecoverWrite)
+    return [AuthOrchestrationOperateScope, AuthFilesystemReadScope, AuthFilesystemWriteScope];
+  if (method === WS_METHODS.questUpdate && questUpdateRegistersFiles(input))
+    return [AuthOrchestrationOperateScope, AuthFilesystemReadScope];
   return Object.hasOwn(CLIENT_GUARDED_RPC_SCOPES, method)
     ? [CLIENT_GUARDED_RPC_SCOPES[method as ClientGuardedRpcTag]]
     : [];
