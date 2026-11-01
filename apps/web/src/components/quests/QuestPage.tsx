@@ -293,7 +293,7 @@ function QuestWorkspaceView({
                 aria-current={view === item.value ? "page" : undefined}
                 onClick={() => showView(item.value)}
                 className={cn(
-                  "-mb-px shrink-0 border-b-2 px-3 pb-2 text-sm",
+                  "-mb-px shrink-0 cursor-pointer border-b-2 px-3 pb-2 text-sm",
                   view === item.value
                     ? "border-primary font-medium text-foreground"
                     : "border-transparent text-muted-foreground hover:text-foreground",
