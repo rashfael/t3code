@@ -9,6 +9,8 @@ import {
   QuestRevisionRecord,
   QuestState,
   isQuestFocus,
+  isQuestShortTitle,
+  QUEST_SHORT_TITLE_MAX,
   questAppliedUnderstanding,
   type ModelSelection,
   type QuestActor,
@@ -184,6 +186,7 @@ interface Meta {
 
 const WORK_FIELDS = [
   ["title", "Title"],
+  ["shortTitle", "Short title"],
   ["state", "State"],
   ["parentId", "Parent"],
   ["owner", "Human owner"],
@@ -198,6 +201,8 @@ const WORK_FIELDS = [
   ["workstreamIds", "Workstreams"],
   ["phase", "Phase"],
 ] as const satisfies ReadonlyArray<readonly [keyof QuestWork, string]>;
+
+const SHORT_TITLE_RULE = `short titles are trimmed and 1 to ${QUEST_SHORT_TITLE_MAX} characters.`;
 
 function fieldText(value: QuestWork[keyof QuestWork]): string | null {
   if (value === null || value === undefined) return null;
@@ -293,6 +298,8 @@ function proposeEdits(
           return refuse("new work ids use lowercase letters, digits and dashes.");
         if (exists(work.id)) return refuse(`work “${work.id}” already exists.`);
         if (!work.title.trim()) return refuse("new work needs a title.");
+        if (work.shortTitle !== undefined && !isQuestShortTitle(work.shortTitle))
+          return refuse(SHORT_TITLE_RULE);
         if (work.focus !== null && !isQuestFocus(work.focus))
           return refuse("planned focus is 1 to 5.");
         if (work.parentId !== null && !exists(work.parentId))
@@ -309,6 +316,12 @@ function proposeEdits(
         if (!work) return refuse(`work “${draft.workId}” is not in the Quest.`);
         const after = draft.after;
         if (after.title !== undefined && !after.title.trim()) return refuse("titles are required.");
+        if (
+          after.shortTitle !== undefined &&
+          after.shortTitle !== null &&
+          !isQuestShortTitle(after.shortTitle)
+        )
+          return refuse(SHORT_TITLE_RULE);
         if (after.focus !== undefined && after.focus !== null && !isQuestFocus(after.focus))
           return refuse("planned focus is 1 to 5.");
         if (after.parentId !== undefined && after.parentId !== null) {
@@ -368,15 +381,17 @@ function proposeEdits(
 
 /** Plan patches clear optional fields with null or an empty list; stored work omits them instead. */
 function withoutUnset(
-  work: Omit<QuestWork, "focus" | "role" | "phase"> & {
+  work: Omit<QuestWork, "shortTitle" | "focus" | "role" | "phase"> & {
+    readonly shortTitle?: string | null;
     readonly focus?: number | null;
     readonly role?: QuestWork["role"] | null;
     readonly phase?: QuestWork["phase"] | null;
   },
 ): QuestWork {
-  const { focus, role, phase, workstreamIds, ...rest } = work;
+  const { shortTitle, focus, role, phase, workstreamIds, ...rest } = work;
   return {
     ...rest,
+    ...(shortTitle === null || shortTitle === undefined ? {} : { shortTitle }),
     ...(focus === null || focus === undefined ? {} : { focus }),
     ...(role === null || role === undefined ? {} : { role }),
     ...(phase === null || phase === undefined ? {} : { phase }),
@@ -734,6 +749,7 @@ function changeState(
         work.kind !== existing.kind ||
         !work.title.trim() ||
         (work.focus !== undefined && !isQuestFocus(work.focus)) ||
+        (work.shortTitle !== undefined && !isQuestShortTitle(work.shortTitle)) ||
         !validWorkstreams(current.work, work.id, work.workstreamIds) ||
         work.documentIds.some((id) => !documentExists(current, id)) ||
         !validParent(current, work)
@@ -760,6 +776,7 @@ function changeState(
         current.work.some((item) => item.id === work.id) ||
         !work.title.trim() ||
         (work.focus !== undefined && !isQuestFocus(work.focus)) ||
+        (work.shortTitle !== undefined && !isQuestShortTitle(work.shortTitle)) ||
         !validWorkstreams(current.work, work.id, work.workstreamIds) ||
         work.documentIds.some((id) => !documentExists(current, id)) ||
         !validParent(current, work)

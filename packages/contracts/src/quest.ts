@@ -34,6 +34,8 @@ export const QuestWork = Schema.Struct({
   /** An attempt is one try at its parent work; its outcome is history, not delivery progress. */
   kind: Schema.Literals(["work", "attempt"]),
   title: Schema.String,
+  /** Short display name where space is tight, such as the overview; the title stays the full name. */
+  shortTitle: Schema.optionalKey(Schema.String),
   state: QuestWorkState,
   owner: Schema.String,
   agent: Schema.String,
@@ -58,6 +60,13 @@ export const QUEST_FOCUS_LEVELS = [1, 2, 3, 4, 5] as const;
 
 export function isQuestFocus(value: number): boolean {
   return Number.isInteger(value) && value >= 1 && value <= 5;
+}
+
+export const QUEST_SHORT_TITLE_MAX = 32;
+
+/** A short title is trimmed, not empty and short; it is a display name, not an id or slug. */
+export function isQuestShortTitle(value: string): boolean {
+  return value === value.trim() && value.length > 0 && value.length <= QUEST_SHORT_TITLE_MAX;
 }
 
 /** A non-decomposition link. `follows`: `from` comes after `to`. `retries`: `from` retries `to`. */
@@ -310,6 +319,7 @@ export type QuestContribution = typeof QuestContribution.Type;
 
 const QuestPlanWorkPatch = Schema.Struct({
   title: Schema.optionalKey(Schema.String),
+  shortTitle: Schema.optionalKey(Schema.NullOr(Schema.String)),
   state: Schema.optionalKey(QuestWorkState),
   parentId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   understanding: Schema.optionalKey(Schema.String),
@@ -324,6 +334,7 @@ const QuestPlanNewWork = Schema.Struct({
   id: Schema.String,
   parentId: Schema.NullOr(Schema.String),
   title: Schema.String,
+  shortTitle: Schema.optionalKey(Schema.String),
   state: QuestWorkState,
   understanding: Schema.String,
   focus: Schema.NullOr(Schema.Number),

@@ -227,6 +227,7 @@ describe("QuestStore", () => {
                 type: "work",
                 work: {
                   ...unfocused,
+                  shortTitle: "Overview",
                   role: "milestone",
                   workstreamIds: [stream.id],
                   phase: "integration",
@@ -236,6 +237,7 @@ describe("QuestStore", () => {
             actor,
           );
           expect(semantic.history.at(-1)?.changes).toEqual([
+            { label: "Short title", before: null, after: "Overview" },
             { label: "Role", before: null, after: "milestone" },
             { label: "Workstreams", before: null, after: stream.id },
             { label: "Phase", before: null, after: "integration" },
@@ -347,6 +349,16 @@ describe("QuestStore", () => {
             )
             .pipe(Effect.flip);
           expect(outOfRange.reason).toBe("invalid");
+          const blankShortTitle = yield* store
+            .update(
+              {
+                expectedRevision: current.revision,
+                change: { type: "work", work: { ...first, shortTitle: " " } },
+              },
+              actor,
+            )
+            .pipe(Effect.flip);
+          expect(blankShortTitle.reason).toBe("invalid");
           // Membership names workstreams only; ordinary work is not one.
           const notAStream = yield* store
             .update(
@@ -1723,7 +1735,11 @@ describe("QuestStore plan coordination", () => {
                     workId: "two-discussions",
                   },
                   { type: "change-work", workId: "a4-demonstration", after: { state: "deferred" } },
-                  { type: "change-work", workId: "milestone-a", after: { role: "milestone" } },
+                  {
+                    type: "change-work",
+                    workId: "milestone-a",
+                    after: { role: "milestone", shortTitle: "Corpus" },
+                  },
                 ],
               },
             },
@@ -1797,11 +1813,15 @@ describe("QuestStore plan coordination", () => {
             role: "milestone",
             phase: "integration",
           });
-          expect(state.work.find((item) => item.id === "milestone-a")?.role).toBe("milestone");
+          expect(state.work.find((item) => item.id === "milestone-a")).toMatchObject({
+            role: "milestone",
+            shortTitle: "Corpus",
+            title: "Milestone A · visible corpus and useful next work",
+          });
           expect(state.history.at(-1)?.changes).toContainEqual({
-            label: "“Milestone A · visible corpus and useful next work” · role",
-            before: "role: (none)",
-            after: "role: milestone",
+            label: "“Milestone A · visible corpus and useful next work” · short title, role",
+            before: "short title: (none)\nrole: (none)",
+            after: "short title: Corpus\nrole: milestone",
           });
           expect(state.work.find((item) => item.id === a4.id)?.state).toBe("review");
           expect(state.currentWorkId).toBe("two-discussions");

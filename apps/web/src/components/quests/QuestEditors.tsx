@@ -1,4 +1,4 @@
-import type { QuestQuestion, QuestWork } from "@t3tools/contracts";
+import { QUEST_SHORT_TITLE_MAX, type QuestQuestion, type QuestWork } from "@t3tools/contracts";
 import type { FormEvent, ReactNode } from "react";
 
 import { Button } from "../ui/button";
@@ -65,10 +65,13 @@ export function WorkEditor({ work }: { work: QuestWork }) {
       onSubmit={async (event) => {
         event.preventDefault();
         const data = new FormData(event.currentTarget);
+        const { shortTitle: _previous, ...rest } = work;
+        const shortTitle = formText(data, "shortTitle").trim();
         const saved = await save({
           type: "work",
           work: {
-            ...work,
+            ...rest,
+            ...(shortTitle ? { shortTitle } : {}),
             title: formText(data, "title"),
             state: formText(data, "state") as QuestWork["state"],
             owner: formText(data, "owner"),
@@ -83,6 +86,14 @@ export function WorkEditor({ work }: { work: QuestWork }) {
       <fieldset disabled={pending || !canWrite} className="min-w-0">
         <Field label="Work title">
           <Input name="title" defaultValue={text("title")} required />
+        </Field>
+        <Field label="Short title">
+          <Input
+            name="shortTitle"
+            defaultValue={text("shortTitle")}
+            maxLength={QUEST_SHORT_TITLE_MAX}
+            placeholder="Used where space is tight, such as the overview"
+          />
         </Field>
         <Field label="Current understanding">
           <Textarea name="understanding" defaultValue={text("understanding")} rows={7} />

@@ -303,8 +303,8 @@ function RoadmapLabel({
   return (
     <div
       className={cn(
-        "absolute flex max-w-80 items-center gap-1 whitespace-nowrap",
-        below ? "origin-top-left rotate-[18deg]" : "origin-bottom-left -rotate-[18deg]",
+        "absolute flex max-w-64 items-center gap-1 whitespace-nowrap",
+        below ? "origin-top-left rotate-45" : "origin-bottom-left -rotate-45",
       )}
       // Anchored by the corner nearest the bar, which is also the rotation origin.
       style={
@@ -327,7 +327,7 @@ function RoadmapLabel({
           isSelected && "underline decoration-2",
         )}
       >
-        {work.title}
+        {work.shortTitle ?? work.title}
       </button>
       {needs > 0 ? (
         <Badge

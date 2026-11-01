@@ -2,6 +2,7 @@ import type { QuestDomain, QuestPlanEdit, QuestPlanWorkPatch, QuestWork } from "
 
 const PLAN_WORK_KEYS = [
   "title",
+  "shortTitle",
   "state",
   "parentId",
   "understanding",
@@ -13,6 +14,7 @@ const PLAN_WORK_KEYS = [
 type PlanWorkKey = (typeof PLAN_WORK_KEYS)[number];
 const PLAN_WORK_LABELS: Record<PlanWorkKey, string> = {
   title: "title",
+  shortTitle: "short title",
   state: "state",
   parentId: "parent",
   understanding: "understanding",

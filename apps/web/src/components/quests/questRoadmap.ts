@@ -2,9 +2,15 @@ import { questQuestionStatus, type QuestState, type QuestWork } from "@t3tools/c
 
 import { deliveryLeaves } from "./questModel";
 
-const ROADMAP_COLUMN = 240;
-/** Room after the last column for its angled labels. */
-const ROADMAP_LABEL = 200;
+/** Narrowest distance between columns. */
+const MIN_COLUMN = 160;
+/**
+ * Labels rise at 45°, so a label reaches the next column this far above the row the ribbons to the
+ * row above end in; it keeps labels of neighbouring rows and those ribbons apart.
+ */
+const LABEL_CLEARANCE = 56;
+/** Room after the last column and above the top row for a 45° label at its widest (max-w-64). */
+const LABEL_REACH = 190;
 const PADDING_X = 24;
 const PADDING_Y = 12;
 
@@ -520,8 +526,6 @@ export const FOCUS_UNIT = 4;
 export const NEUTRAL_FOCUS = 3;
 export const ROADMAP_BAR = 6;
 const LABEL_ROOM = 56;
-/** Above the top row and below the bottom one: an angled label rises or falls this far. */
-const LABEL_EDGE = 104;
 
 function focusWeight(work: QuestWork): number {
   return work.focus ?? NEUTRAL_FOCUS;
@@ -540,7 +544,6 @@ function arrange(
   /** Where the missing later milestone is shown, if it is. */
   gap: Gap | null,
 ): Roadmap {
-  const column = ROADMAP_COLUMN;
   const byId = new Map(placed.map((stop) => [stop.work.id, stop]));
   const incomingCount = new Map<string, number>();
   for (const link of links)
@@ -566,13 +569,14 @@ function arrange(
   const linkWidth = (link: PlacedLink) => need.get(link.target)! / incomingCount.get(link.target)!;
   const barHeight = (id: string) => need.get(id)!;
   const pitch = Math.max(...placed.map((stop) => barHeight(stop.work.id))) + LABEL_ROOM;
+  const column = Math.max(MIN_COLUMN, pitch + LABEL_CLEARANCE);
   const allRows = [
     ...placed.map((stop) => stop.row),
     ...links.flatMap((link) => link.via.map((point) => point.row)),
   ];
   const minRow = Math.min(...allRows, gap?.row ?? Infinity);
   const maxRow = Math.max(...allRows, gap?.row ?? -Infinity);
-  const top = LABEL_EDGE + pitch / 2;
+  const top = LABEL_REACH + pitch / 2;
   const yOf = (row: number) => top + (row - minRow) * pitch;
   const xOf = (index: number) => PADDING_X + index * column;
 
@@ -621,8 +625,8 @@ function arrange(
     stops,
     paths,
     gap: gap ? { x: xOf(gap.column), y: yOf(gap.row) } : null,
-    width: PADDING_X * 2 + (columns - 1) * column + ROADMAP_LABEL,
-    height: Math.max(lowest, yOf(maxRow)) + LABEL_EDGE + PADDING_Y,
+    width: PADDING_X * 2 + (columns - 1) * column + LABEL_REACH,
+    height: Math.max(lowest, yOf(maxRow)) + LABEL_REACH + PADDING_Y,
   };
 }
 
