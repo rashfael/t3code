@@ -934,9 +934,15 @@ it("keeps unsaved answers and edits while evidence, other panels or a thread are
   setup();
   const { screen, router } = await renderRoutes("/quests");
   await using _screen = screen;
-  await screen.getByRole("button", { name: /^Decisions/ }).click();
+  const roadmap = screen.getByRole("region", { name: "Milestone roadmap" });
   const details = screen.getByRole("complementary", { name: "Quest details" });
-  await details.getByRole("button", { name: /Which summary\?/ }).click();
+  await roadmap.getByRole("button", { name: /^Part B · / }).click();
+  await expect.element(details.getByRole("heading", { name: "Part B" })).toBeVisible();
+  await expect
+    .element(roadmap.getByRole("button", { name: /^Part B · / }))
+    .toHaveAttribute("aria-current", "true");
+  await details.getByRole("button", { name: "Close details" }).click();
+  await roadmap.getByRole("button", { name: "Needs you: Which summary?" }).click();
   await details.getByRole("textbox", { name: "Answer" }).fill("A drafted answer");
   await details.getByRole("textbox", { name: "Rationale (optional)" }).fill("Drafted reason");
   await details.getByRole("button", { name: /^Retained source/ }).click();

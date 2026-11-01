@@ -320,7 +320,7 @@ function QuestWorkspaceView({
           ) : view === "conversation" ? (
             <QuestConversations about={search.about ?? null} thread={search.thread ?? null} />
           ) : (
-            <QuestOverview />
+            <QuestOverview selectedWorkId={current?.type === "work" ? current.id : null} />
           )}
         </div>
         {current ? (
