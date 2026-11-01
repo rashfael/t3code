@@ -24,21 +24,15 @@ export const phaseLabels: Record<QuestPhase, string> = {
   hardening: "Hardening",
 };
 
-/** One hue per workstream, in the order the workstreams were recorded; it groups, it never orders. */
-const WORKSTREAM_HUES = [
-  "fill-sky-500 stroke-sky-500",
-  "fill-violet-500 stroke-violet-500",
-  "fill-emerald-500 stroke-emerald-500",
-  "fill-amber-500 stroke-amber-500",
-  "fill-rose-500 stroke-rose-500",
-  "fill-teal-500 stroke-teal-500",
-] as const;
+/** Palette slots for workstream identity colours, `--stream-1` to `--stream-6` in the theme. */
+const WORKSTREAM_SLOTS = 6;
 
-export function workstreamHues(state: QuestState): ReadonlyMap<string, string> {
+/** Each workstream's palette slot (0-based), in the order the workstreams were recorded. */
+export function workstreamSlots(state: QuestState): ReadonlyMap<string, number> {
   return new Map(
     state.work
       .filter((item) => item.role === "workstream")
-      .map((item, index) => [item.id, WORKSTREAM_HUES[index % WORKSTREAM_HUES.length]!]),
+      .map((item, index) => [item.id, index % WORKSTREAM_SLOTS]),
   );
 }
 

@@ -2,9 +2,7 @@ import { questQuestionStatus, type QuestState, type QuestWork } from "@t3tools/c
 
 import { deliveryLeaves } from "./questModel";
 
-/** Column spacing narrows to fit the available width, down to where angled labels stay apart. */
-const ROADMAP_COLUMN = 200;
-const ROADMAP_COLUMN_MIN = 110;
+const ROADMAP_COLUMN = 240;
 /** Room after the last column for its angled labels. */
 const ROADMAP_LABEL = 200;
 const PADDING_X = 24;
@@ -47,6 +45,8 @@ export interface RoadmapPath {
   /** Ribbon centre where it leaves the source bar and enters the target bar. */
   readonly sourceY: number;
   readonly targetY: number;
+  /** Ribbon centre where it passes the columns between its ends, so it never cuts through them. */
+  readonly via: ReadonlyArray<{ readonly x: number; readonly y: number }>;
 }
 
 export interface Roadmap {
@@ -61,17 +61,19 @@ export interface Roadmap {
 }
 
 type PlacedStop = Omit<RoadmapStop, "x" | "y" | "inHeight" | "outHeight">;
-type PlacedLink = Omit<RoadmapPath, "width" | "sourceY" | "targetY">;
+type PlacedLink = Omit<RoadmapPath, "width" | "sourceY" | "targetY" | "via"> & {
+  readonly via: ReadonlyArray<{ readonly column: number; readonly row: number }>;
+};
 
 /**
  * With explicit milestones, the whole plan's milestone network; otherwise the current work and
  * its parts, so Quests recorded before milestones were explicit keep their view.
  */
-export function layoutRoadmap(state: QuestState, available: number | null = null): Roadmap | null {
+export function layoutRoadmap(state: QuestState): Roadmap | null {
   const roadmap = state.work.some((item) => item.kind === "work" && item.role === "milestone")
     ? layoutMilestones(state)
     : layoutCurrentWork(state);
-  return roadmap && arrange(...roadmap, available);
+  return roadmap && arrange(...roadmap);
 }
 
 type Gap = { readonly column: number; readonly row: number };
@@ -114,15 +116,10 @@ function layoutMilestones(state: QuestState): Placement {
   };
   const current = milestoneOf(state.currentWorkId);
 
-  const links = new Map<string, PlacedLink>();
-  const prerequisites = new Map<string, Set<string>>();
+  const edges = new Map<string, { kind: "follows" | "within"; source: string; target: string }>();
   const link = (kind: "follows" | "within", source: string, target: string) => {
     const id = `${kind}:${source}:${target}`;
-    if (links.has(id)) return;
-    links.set(id, { id, kind, source, target });
-    const set = prerequisites.get(target) ?? new Set();
-    set.add(source);
-    prerequisites.set(target, set);
+    if (!edges.has(id)) edges.set(id, { kind, source, target });
   };
   for (const milestone of milestones) {
     const outer = enclosing(milestone.id);
@@ -136,13 +133,47 @@ function layoutMilestones(state: QuestState): Placement {
     if (contains(before, after) || contains(after, before)) continue;
     link("follows", before, after);
   }
+  // A dependency another path already implies is still true, but drawing it again only adds a
+  // crossing; the details panel keeps every recorded relation.
+  const reaches = (from: string, to: string, skip: string) => {
+    const seen = new Set<string>();
+    const stack = [from];
+    while (stack.length > 0) {
+      const at = stack.pop()!;
+      for (const [id, edge] of edges) {
+        if (id === skip || edge.source !== at || seen.has(edge.target)) continue;
+        if (edge.target === to) return true;
+        seen.add(edge.target);
+        stack.push(edge.target);
+      }
+    }
+    return false;
+  };
+  for (const [id, edge] of edges) if (reaches(edge.source, edge.target, id)) edges.delete(id);
 
+  const prerequisites = new Map<string, Set<string>>();
+  for (const edge of edges.values()) {
+    const set = prerequisites.get(edge.target) ?? new Set();
+    set.add(edge.source);
+    prerequisites.set(edge.target, set);
+  }
   const ranks = longestRanks(
     milestones.map((item) => item.id),
     prerequisites,
   );
+  const maxRank = Math.max(0, ...ranks.values());
 
-  // Starting milestones of one workstream sit together; those that lead somewhere come first.
+  // Layered graph: a dependency spanning several columns passes through a waypoint in each.
+  const layers = Array.from({ length: maxRank + 1 }, () => new Array<string>());
+  const before = new Map<string, Array<string>>();
+  const after = new Map<string, Array<string>>();
+  const waypoints = new Set<string>();
+  const chains = new Map<string, Array<string>>();
+  const connect = (from: string, to: string) => {
+    after.set(from, [...(after.get(from) ?? []), to]);
+    before.set(to, [...(before.get(to) ?? []), from]);
+  };
+  // Starting milestones of one workstream sit together.
   const streamOrder = new Map(
     state.work.filter((item) => item.role === "workstream").map((item, index) => [item.id, index]),
   );
@@ -151,21 +182,101 @@ function layoutMilestones(state: QuestState): Placement {
       Number.MAX_SAFE_INTEGER,
       ...(work.workstreamIds ?? []).map((id) => streamOrder.get(id) ?? Number.MAX_SAFE_INTEGER),
     );
-  const leads = new Set([...links.values()].map((item) => item.source));
-  const starts = milestones
-    .filter((item) => ranks.get(item.id) === 0)
-    .toSorted(
-      (a, b) =>
-        Number(leads.has(b.id)) - Number(leads.has(a.id)) || streamIndex(a) - streamIndex(b),
-    );
+  for (const milestone of milestones.toSorted((a, b) => streamIndex(a) - streamIndex(b)))
+    layers[ranks.get(milestone.id) ?? 0]!.push(milestone.id);
+  for (const [id, edge] of edges) {
+    const from = ranks.get(edge.source) ?? 0;
+    const to = ranks.get(edge.target) ?? 0;
+    const chain = [edge.source];
+    for (let column = from + 1; column < to; column += 1) {
+      const waypoint = `${id}@${column}`;
+      waypoints.add(waypoint);
+      layers[column]!.push(waypoint);
+      chain.push(waypoint);
+    }
+    chain.push(edge.target);
+    for (let index = 1; index < chain.length; index += 1) connect(chain[index - 1]!, chain[index]!);
+    chains.set(id, chain);
+  }
+
+  // Order each column by the mean position of its neighbours, sweeping both ways, and keep the
+  // order with the fewest crossings.
+  const order = new Map<string, number>();
+  const number = () =>
+    layers.forEach((layer) => layer.forEach((id, index) => order.set(id, index)));
+  number();
+  const mean = (ids: ReadonlyArray<string> | undefined, fallback: number) =>
+    ids && ids.length > 0
+      ? ids.reduce((sum, id) => sum + (order.get(id) ?? 0), 0) / ids.length
+      : fallback;
+  const crossings = () => {
+    let count = 0;
+    for (const layer of layers.slice(0, -1)) {
+      const segments = layer.flatMap((id) =>
+        (after.get(id) ?? []).map((to) => [order.get(id)!, order.get(to)!] as const),
+      );
+      for (const [index, [a1, b1]] of segments.entries())
+        for (const [a2, b2] of segments.slice(index + 1)) if ((a1 - a2) * (b1 - b2) < 0) count += 1;
+    }
+    return count;
+  };
+  let best = { count: crossings(), layers: layers.map((layer) => [...layer]) };
+  for (let sweep = 0; sweep < 6; sweep += 1) {
+    const down = sweep % 2 === 0;
+    const sequence = down ? layers.slice(1) : layers.slice(0, -1).toReversed();
+    for (const layer of sequence) {
+      const keyed = layer.map((id, index) => ({
+        id,
+        key: mean(down ? before.get(id) : after.get(id), index),
+      }));
+      keyed.sort((a, b) => a.key - b.key);
+      layer.splice(0, layer.length, ...keyed.map((item) => item.id));
+      layer.forEach((id, index) => order.set(id, index));
+    }
+    const count = crossings();
+    if (count < best.count) best = { count, layers: layers.map((layer) => [...layer]) };
+  }
+  best.layers.forEach((layer, index) => layers.splice(index, 1, layer));
+  number();
+
+  // Rows: each node as level as possible with its neighbours, keeping column order and spacing.
   const rows = new Map<string, number>();
-  starts.forEach((item, index) => rows.set(item.id, index));
-  const place = rowPlacer(rows);
-  const maxRank = Math.max(0, ...ranks.values());
-  for (let rank = 1; rank <= maxRank; rank += 1)
-    for (const milestone of milestones)
-      if (ranks.get(milestone.id) === rank)
-        rows.set(milestone.id, place.at(rank, place.mean(prerequisites.get(milestone.id) ?? [])));
+  const spacing = (a: string, b: string) => (waypoints.has(a) || waypoints.has(b) ? 0.6 : 1);
+  const settle = (layer: ReadonlyArray<string>, wanted: (id: string) => number) => {
+    const placed: Array<number> = [];
+    for (const [index, id] of layer.entries())
+      placed.push(
+        index === 0
+          ? wanted(id)
+          : Math.max(wanted(id), placed[index - 1]! + spacing(layer[index - 1]!, id)),
+      );
+    const shift =
+      layer.reduce((sum, id, index) => sum + wanted(id) - placed[index]!, 0) / (layer.length || 1);
+    layer.forEach((id, index) => rows.set(id, placed[index]! + shift));
+  };
+  const level = (id: string, neighbours: ReadonlyArray<string> | undefined) => {
+    const known = (neighbours ?? []).filter((other) => rows.has(other));
+    return known.length > 0
+      ? known.reduce((sum, other) => sum + rows.get(other)!, 0) / known.length
+      : (rows.get(id) ?? order.get(id) ?? 0);
+  };
+  for (const layer of layers) settle(layer, (id) => level(id, before.get(id)));
+  for (const layer of layers.toReversed()) settle(layer, (id) => level(id, after.get(id)));
+  for (const layer of layers) settle(layer, (id) => level(id, before.get(id)));
+
+  const links: Array<PlacedLink> = [...edges].map(([id, edge]) => ({
+    id,
+    kind: edge.kind,
+    source: edge.source,
+    target: edge.target,
+    via: chains
+      .get(id)!
+      .slice(1, -1)
+      .map((waypoint) => ({
+        column: Number(waypoint.split("@").at(-1)),
+        row: rows.get(waypoint)!,
+      })),
+  }));
 
   const scope = new Map<string, Array<QuestWork>>();
   for (const item of state.work) {
@@ -186,12 +297,12 @@ function layoutMilestones(state: QuestState): Placement {
       ),
     });
   });
-  const hasNext = current !== null && [...links.values()].some((item) => item.source === current);
+  const hasNext = current !== null && links.some((item) => item.source === current);
   const gap =
     current === null || hasNext
       ? null
       : { column: (ranks.get(current) ?? 0) + 1, row: rows.get(current) ?? 0 };
-  return [placed, [...links.values()], Math.max(maxRank, gap?.column ?? 0) + 1, gap];
+  return [placed, links, Math.max(maxRank, gap?.column ?? 0) + 1, gap];
 }
 
 /** Column of each id: one past its latest prerequisite. A cycle is cut where it is found. */
@@ -382,6 +493,7 @@ function layoutCurrentWork(state: QuestState): Placement | null {
       kind: "fork" as const,
       source: milestone.id,
       target: part.id,
+      via: [],
     })),
     ...[...prerequisites, ...successors].flatMap(([target, sources]) =>
       [...sources].map((source) => ({
@@ -389,6 +501,7 @@ function layoutCurrentWork(state: QuestState): Placement | null {
         kind: "follows" as const,
         source,
         target,
+        via: [],
       })),
     ),
   ];
@@ -405,9 +518,9 @@ export const FOCUS_UNIT = 4;
 /** Drawing weight for work whose focus is not set: structural, deliberately not zero. */
 export const NEUTRAL_FOCUS = 3;
 export const ROADMAP_BAR = 6;
-const LABEL_ROOM = 44;
+const LABEL_ROOM = 56;
 /** Above the top row and below the bottom one: an angled label rises or falls this far. */
-const LABEL_EDGE = 76;
+const LABEL_EDGE = 104;
 
 function focusWeight(work: QuestWork): number {
   return work.focus ?? NEUTRAL_FOCUS;
@@ -425,19 +538,8 @@ function arrange(
   columns: number,
   /** Where the missing later milestone is shown, if it is. */
   gap: Gap | null,
-  /** Width to fit into; null keeps the widest spacing. */
-  available: number | null,
 ): Roadmap {
-  const column =
-    available === null || columns < 2
-      ? ROADMAP_COLUMN
-      : Math.min(
-          ROADMAP_COLUMN,
-          Math.max(
-            ROADMAP_COLUMN_MIN,
-            Math.floor((available - PADDING_X * 2 - ROADMAP_LABEL) / (columns - 1)),
-          ),
-        );
+  const column = ROADMAP_COLUMN;
   const byId = new Map(placed.map((stop) => [stop.work.id, stop]));
   const incomingCount = new Map<string, number>();
   for (const link of links)
@@ -458,7 +560,10 @@ function arrange(
     return Math.max(inHeight.get(id) ?? 0, outHeight.get(id) ?? 0, own);
   };
   const pitch = Math.max(...placed.map((stop) => barHeight(stop.work.id))) + LABEL_ROOM;
-  const allRows = placed.map((stop) => stop.row);
+  const allRows = [
+    ...placed.map((stop) => stop.row),
+    ...links.flatMap((link) => link.via.map((point) => point.row)),
+  ];
   const minRow = Math.min(...allRows, gap?.row ?? Infinity);
   const maxRow = Math.max(...allRows, gap?.row ?? -Infinity);
   const top = LABEL_EDGE + pitch / 2;
@@ -477,18 +582,18 @@ function arrange(
     };
   });
   const stopsById = new Map(stops.map((stop) => [stop.work.id, stop]));
-  // Ribbons stack on each side of a bar in the vertical order of their other ends.
+  // Ribbons stack on each side of a bar in the vertical order of where they go next.
   const offsets = new Map<string, { sourceY: number; targetY: number; width: number }>();
+  const nextY = (link: PlacedLink, side: "source" | "target") => {
+    const point = side === "source" ? link.via[0] : link.via.at(-1);
+    if (point) return yOf(point.row);
+    return stopsById.get(side === "source" ? link.target : link.source)!.y;
+  };
   const stackSide = (side: "source" | "target") => {
     for (const stop of stops) {
       const attached = links
         .filter((link) => link[side] === stop.work.id)
-        .toSorted((a, b) => {
-          const other = side === "source" ? "target" : "source";
-          const ay = stopsById.get(a[other])!.y;
-          const by = stopsById.get(b[other])!.y;
-          return ay - by || a.id.localeCompare(b.id);
-        });
+        .toSorted((a, b) => nextY(a, side) - nextY(b, side) || a.id.localeCompare(b.id));
       const height = side === "source" ? stop.outHeight : stop.inHeight;
       let cursor = stop.y - height / 2;
       for (const link of attached) {
@@ -503,7 +608,11 @@ function arrange(
   };
   stackSide("source");
   stackSide("target");
-  const paths: Array<RoadmapPath> = links.map((link) => ({ ...link, ...offsets.get(link.id)! }));
+  const paths: Array<RoadmapPath> = links.map((link) => ({
+    ...link,
+    ...offsets.get(link.id)!,
+    via: link.via.map((point) => ({ x: xOf(point.column), y: yOf(point.row) })),
+  }));
   const lowest = Math.max(...stops.map((stop) => stop.y + barHeight(stop.work.id) / 2));
   return {
     column,

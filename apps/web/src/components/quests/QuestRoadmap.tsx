@@ -1,11 +1,11 @@
 import type { QuestWork } from "@t3tools/contracts";
-import { BotIcon, CircleAlertIcon } from "lucide-react";
+import { BotIcon, ChevronLeftIcon, ChevronRightIcon, CircleAlertIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
 
 import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
 import { useQuest, useWorkInspection } from "./questContext";
 import { conversationStatusLabel, useQuestConversationThreads } from "./QuestConversations";
 import {
@@ -13,7 +13,7 @@ import {
   describeCounts,
   phaseLabels,
   workStateLabels,
-  workstreamHues,
+  workstreamSlots,
 } from "./questModel";
 import { layoutRoadmap, ribbonD, ROADMAP_BAR, type RoadmapStop } from "./questRoadmap";
 
@@ -25,6 +25,49 @@ const ribbonClass: Record<QuestWork["state"], string> = {
   deferred: "fill-muted-foreground stroke-muted-foreground",
   done: "fill-success stroke-success",
 };
+
+type Overflow = { readonly earlier: boolean; readonly later: boolean };
+
+function overflowOf(element: HTMLElement): Overflow {
+  return {
+    earlier: element.scrollLeft > 1,
+    later: element.scrollLeft + element.clientWidth < element.scrollWidth - 1,
+  };
+}
+
+function keepIfSame(next: Overflow) {
+  return (previous: Overflow) =>
+    previous.earlier === next.earlier && previous.later === next.later ? previous : next;
+}
+
+// Literal classes so Tailwind generates them; one per workstream palette slot. Ribbons into
+// planned milestones are lighter but keep their colour.
+const streamRibbon = [
+  {
+    reached: "fill-stream-1/80 stroke-stream-1 dark:fill-stream-1/85",
+    ahead: "fill-stream-1/50 stroke-stream-1 dark:fill-stream-1/55",
+  },
+  {
+    reached: "fill-stream-2/80 stroke-stream-2 dark:fill-stream-2/85",
+    ahead: "fill-stream-2/50 stroke-stream-2 dark:fill-stream-2/55",
+  },
+  {
+    reached: "fill-stream-3/80 stroke-stream-3 dark:fill-stream-3/85",
+    ahead: "fill-stream-3/50 stroke-stream-3 dark:fill-stream-3/55",
+  },
+  {
+    reached: "fill-stream-4/80 stroke-stream-4 dark:fill-stream-4/85",
+    ahead: "fill-stream-4/50 stroke-stream-4 dark:fill-stream-4/55",
+  },
+  {
+    reached: "fill-stream-5/80 stroke-stream-5 dark:fill-stream-5/85",
+    ahead: "fill-stream-5/50 stroke-stream-5 dark:fill-stream-5/55",
+  },
+  {
+    reached: "fill-stream-6/80 stroke-stream-6 dark:fill-stream-6/85",
+    ahead: "fill-stream-6/50 stroke-stream-6 dark:fill-stream-6/55",
+  },
+] as const;
 
 /** The workstream a ribbon continues: one both ends share, else where it leads, else where it starts. */
 function ribbonStream(source: QuestWork, target: QuestWork): string | null {
@@ -42,16 +85,17 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
   const { state, openPanel, previewWorkId } = useQuest();
   const inspect = useWorkInspection();
   const threads = useQuestConversationThreads();
-  const [available, setAvailable] = useState<number | null>(null);
-  const roadmap = layoutRoadmap(state, available);
-  const scroller = useRef<HTMLDivElement | null>(null);
-  const measure = (element: HTMLDivElement | null) => {
-    scroller.current = element;
-    if (!element) return;
-    const update = () => setAvailable(element.clientWidth);
-    update();
-    return observeResize(element, update);
+  const roadmap = layoutRoadmap(state);
+  const scroller = useRef<HTMLDivElement>(null);
+  const [overflow, setOverflow] = useState<Overflow>({ earlier: false, later: false });
+  const updateOverflow = () => {
+    if (scroller.current) setOverflow(keepIfSame(overflowOf(scroller.current)));
   };
+  const pan = (direction: -1 | 1) =>
+    scroller.current?.scrollBy({
+      left: direction * scroller.current.clientWidth * 0.75,
+      behavior: "smooth",
+    });
   // Past work keeps the left edge; scroll only as far as the current milestone and its next step need.
   const reach = roadmap
     ? Math.max(0, ...roadmap.stops.filter((stop) => stop.isCurrent).map((stop) => stop.x)) +
@@ -62,9 +106,10 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
     const element = scroller.current;
     if (!element) return;
     element.scrollLeft = Math.max(0, reach - element.clientWidth);
+    setOverflow(keepIfSame(overflowOf(element)));
   }, [reach]);
   if (!roadmap) return null;
-  const hues = workstreamHues(state);
+  const slots = workstreamSlots(state);
   const byId = new Map(roadmap.stops.map((stop) => [stop.work.id, stop]));
   const working = (stop: RoadmapStop) =>
     stop.threadIds.filter(
@@ -81,8 +126,30 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
   const half = ROADMAP_BAR / 2;
 
   return (
-    <section aria-label="Milestone roadmap" className="border-b">
-      <div ref={measure} className="overflow-x-auto">
+    <section aria-label="Milestone roadmap" className="relative border-b">
+      {overflow.earlier ? (
+        <Button
+          size="icon-sm"
+          variant="outline"
+          aria-label="Earlier milestones"
+          className="absolute top-1/2 left-2 z-10 -translate-y-1/2"
+          onClick={() => pan(-1)}
+        >
+          <ChevronLeftIcon />
+        </Button>
+      ) : null}
+      {overflow.later ? (
+        <Button
+          size="icon-sm"
+          variant="outline"
+          aria-label="Later milestones"
+          className="absolute top-1/2 right-2 z-10 -translate-y-1/2"
+          onClick={() => pan(1)}
+        >
+          <ChevronRightIcon />
+        </Button>
+      ) : null}
+      <div ref={scroller} className="overflow-x-auto" onScroll={updateOverflow}>
         <div className="relative mx-auto" style={{ width: roadmap.width, height: roadmap.height }}>
           <svg
             aria-hidden
@@ -97,23 +164,35 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
               const unset = target.work.focus === undefined;
               const lit = highlighted === source.work.id || highlighted === target.work.id;
               const stream = ribbonStream(source.work, target.work);
+              const slot = stream === null ? undefined : slots.get(stream);
               const ahead = target.work.state === "planned" || target.work.state === "deferred";
+              const points = [
+                { x: source.x + half, y: path.sourceY },
+                ...path.via,
+                { x: target.x - half, y: path.targetY },
+              ];
               return (
-                <path
+                <g
                   key={path.id}
-                  d={ribbonD(
-                    source.x + half,
-                    path.sourceY,
-                    target.x - half,
-                    path.targetY,
-                    path.width,
-                  )}
-                  className={(stream ? hues.get(stream) : null) ?? ribbonClass[target.work.state]}
-                  fillOpacity={(unset ? 0.22 : 0.45) * (ahead ? 0.5 : 1) + (lit ? 0.2 : 0)}
-                  strokeOpacity={unset ? 0.7 : 0}
-                  strokeWidth={1}
+                  className={
+                    slot === undefined
+                      ? ribbonClass[target.work.state]
+                      : streamRibbon[slot]![ahead ? "ahead" : "reached"]
+                  }
+                  fillOpacity={
+                    slot === undefined ? (ahead ? 0.3 : 0.6) + (lit ? 0.25 : 0) : lit ? 1 : 0.9
+                  }
+                  strokeOpacity={unset ? 0.3 : 0}
+                  strokeWidth={0.75}
                   strokeDasharray={unset ? "3 3" : undefined}
-                />
+                >
+                  {points.slice(1).map((point, index) => (
+                    <path
+                      key={`${point.x}:${point.y}`}
+                      d={ribbonD(points[index]!.x, points[index]!.y, point.x, point.y, path.width)}
+                    />
+                  ))}
+                </g>
               );
             })}
             {roadmap.stops.map((stop) => {
@@ -267,7 +346,7 @@ function RoadmapLabel({
   return (
     <div
       className={cn(
-        "absolute flex max-w-56 items-center gap-1 whitespace-nowrap",
+        "absolute flex max-w-80 items-center gap-1 whitespace-nowrap",
         below ? "origin-top-left rotate-[18deg]" : "origin-bottom-left -rotate-[18deg]",
       )}
       // Anchored by the corner nearest the bar, which is also the rotation origin.
@@ -283,7 +362,7 @@ function RoadmapLabel({
         aria-current={isSelected ? "true" : undefined}
         {...inspection}
         className={cn(
-          "min-w-0 cursor-pointer truncate rounded-sm px-0.5 text-xs outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+          "min-w-0 cursor-pointer truncate rounded-sm bg-background/90 px-1 text-sm leading-5 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
           stop.isCurrent ? "font-semibold" : "font-medium",
           work.state === "planned" || work.state === "deferred"
             ? "text-muted-foreground"

@@ -248,6 +248,12 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --color-info-foreground: var(--info-foreground);
   --color-info: var(--info);
   --color-guest: var(--guest);
+  --color-stream-1: var(--stream-1);
+  --color-stream-2: var(--stream-2);
+  --color-stream-3: var(--stream-3);
+  --color-stream-4: var(--stream-4);
+  --color-stream-5: var(--stream-5);
+  --color-stream-6: var(--stream-6);
   --color-guest-foreground: var(--guest-foreground);
   --color-guest-surface: var(--guest-surface);
   --color-destructive-foreground: var(--destructive-foreground);
@@ -1164,6 +1170,14 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --warning: var(--color-amber-500);
   --warning-foreground: var(--color-amber-700);
   --warning-surface: color-mix(in srgb, var(--warning) 8%, transparent);
+  /* Quest workstream identities: the vivid hues of the map mocks, with teal and cyan in place of
+     amber so a stream's colour never reads as a warning. */
+  --stream-1: var(--color-blue-500);
+  --stream-2: var(--color-violet-500);
+  --stream-3: var(--color-green-500);
+  --stream-4: var(--color-rose-500);
+  --stream-5: var(--color-teal-500);
+  --stream-6: var(--color-cyan-500);
   --update: var(--primary);
   --update-foreground: var(--primary);
   /* Keep every sidebar primitive on the same light surface hierarchy, including
@@ -1186,6 +1200,12 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 
   @variant dark {
     color-scheme: dark;
+    --stream-1: var(--color-blue-400);
+    --stream-2: var(--color-violet-400);
+    --stream-3: var(--color-green-400);
+    --stream-4: var(--color-rose-400);
+    --stream-5: var(--color-teal-400);
+    --stream-6: var(--color-cyan-400);
     /* The canvas is true black, matching the sidebar. Raised surfaces keep the tone they had
        over neutral-950, so cards, popovers, and the composer still lift. Borders and hover
        states provide separation without milky gray fills. */

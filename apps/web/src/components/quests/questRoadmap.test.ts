@@ -177,6 +177,7 @@ describe("layoutRoadmap", () => {
         milestone("now", null, "active"),
         work("now-part", "now", "active"),
         milestone("later-a", null, "planned"),
+        milestone("skip", null, "done"),
         milestone("later-b", null, "planned"),
         // Shares a workstream with "first" but nothing orders it: it stands alone.
         { ...milestone("aside", null, "planned"), workstreamIds: ["stream-a"] },
@@ -189,6 +190,11 @@ describe("layoutRoadmap", () => {
         follows("now", "journeys"),
         follows("later-a", "now-part"),
         follows("later-b", "now"),
+        // Already implied by left → journeys → now → later-b: true, but not drawn again.
+        follows("later-b", "left"),
+        // Spans the column of "journeys", so it is routed past it.
+        follows("skip", "first"),
+        follows("now", "skip"),
       ],
       questions: [question("q-setup", "setup"), question("q-right", "right-task")],
       conversations: [],
@@ -196,7 +202,17 @@ describe("layoutRoadmap", () => {
     const roadmap = layoutRoadmap(plan)!;
     const stop = (id: string) => roadmap.stops.find((item) => item.work.id === id)!;
     expect(roadmap.stops.map((item) => item.work.id).toSorted()).toEqual(
-      ["first", "journeys", "left", "right", "now", "later-a", "later-b", "aside"].toSorted(),
+      [
+        "first",
+        "journeys",
+        "left",
+        "right",
+        "now",
+        "later-a",
+        "later-b",
+        "aside",
+        "skip",
+      ].toSorted(),
     );
     expect(roadmap.paths.map((path) => path.id).toSorted()).toEqual(
       [
@@ -207,8 +223,13 @@ describe("layoutRoadmap", () => {
         "follows:journeys:now",
         "follows:now:later-a",
         "follows:now:later-b",
+        "follows:first:skip",
+        "follows:skip:now",
       ].toSorted(),
     );
+    const routed = roadmap.paths.find((path) => path.id === "follows:skip:now")!;
+    expect(routed.via.map((point) => point.x)).toEqual([stop("journeys").x]);
+    expect(routed.via[0]!.y).not.toBe(stop("journeys").y);
     // Earlier, current and later sit in order; parallel branches share a column and converge.
     expect(stop("left").x).toBe(stop("right").x);
     expect(stop("first").x).toBeLessThan(stop("left").x);
