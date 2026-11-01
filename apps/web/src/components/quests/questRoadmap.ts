@@ -222,11 +222,19 @@ export function layoutRoadmap(state: QuestState): Roadmap | null {
   };
 }
 
+const BEND = 20;
+const bendStart = (source: RoadmapStop, target: RoadmapStop) =>
+  Math.max(source.x, target.x - BEND * 2);
+
 /** A horizontal lane from `source` that bends into `target`'s row just before its column. */
 export function roadmapPathD(source: RoadmapStop, target: RoadmapStop): string {
   if (source.y === target.y) return `M ${source.x} ${source.y} H ${target.x}`;
-  const bend = 20;
-  const start = Math.max(source.x, target.x - bend * 2);
+  const start = bendStart(source, target);
   const mid = (start + target.x) / 2;
   return `M ${source.x} ${source.y} H ${start} C ${mid} ${source.y}, ${mid} ${target.y}, ${target.x} ${target.y}`;
+}
+
+/** The stretch a milestone's forks share before they bend apart. */
+export function roadmapTrunkD(milestone: RoadmapStop, firstPart: RoadmapStop): string {
+  return `M ${milestone.x} ${milestone.y} H ${bendStart(milestone, firstPart)}`;
 }
