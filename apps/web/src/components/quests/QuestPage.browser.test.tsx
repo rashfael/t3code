@@ -1296,7 +1296,15 @@ it("reads documents from one tree, keeps reading state, compares a pin and share
   expect(router.state.location.search).toMatchObject({ view: "conversation" });
   const beside = screen.getByRole("region", { name: "Documents beside the conversation" });
   await expect.element(screen.getByRole("region", { name: "Embedded chat" })).toBeVisible();
-  // The discussion list folds into a selector; switching discussions keeps the documents.
+  // With room for a usable chat, the discussion rail stays beside the documents.
+  await expect
+    .element(screen.getByRole("navigation", { name: "Quest conversations" }))
+    .toBeVisible();
+  await expect
+    .element(screen.getByRole("combobox", { name: "Discussion" }))
+    .not.toBeInTheDocument();
+  // Cramped, the list folds into a selector; switching discussions keeps the documents.
+  await page.viewport(1300, 900);
   await expect
     .element(screen.getByRole("navigation", { name: "Quest conversations" }))
     .not.toBeInTheDocument();

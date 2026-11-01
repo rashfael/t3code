@@ -65,6 +65,7 @@ import { CommandDialog, CommandDialogPopup, CommandFooterAction } from "../ui/co
 import { Input } from "../ui/input";
 import { PanelTabCloseButton } from "../ui/panel-tab-close-button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { ScrollArea } from "../ui/scroll-area";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useQuest } from "./questContext";
@@ -570,6 +571,11 @@ function QuestDocumentPicker({
   );
 }
 
+/** The strip hides its scrollbar like the panel tabs, so a newly active tab scrolls itself into view. */
+function scrollTabIntoView(tab: HTMLElement | null) {
+  tab?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
 /** Open documents as T3 file tabs over the active document. Shared by Documents and the split. */
 function QuestDocumentTabs({
   placement,
@@ -605,66 +611,69 @@ function QuestDocumentTabs({
           </Button>
         ) : null}
         {leading}
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-          {tabs.open.map((id) => {
-            const entry = findEntry(state, id);
-            const title = entry?.title ?? "Missing document";
-            const isActive = tabs.active === id;
-            const unsaved =
-              drafts[`${environmentId}|file:${id}`] !== undefined ||
-              drafts[`${environmentId}|document:${id}`] !== undefined;
-            const pinned = tabs.versions[id] !== undefined;
-            return (
-              <div
-                key={id}
-                className={cn(
-                  "group/tab flex h-6 max-w-52 shrink-0 items-center gap-0.5 rounded-md pr-2 pl-1.5 text-xs",
-                  isActive
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-                )}
-              >
-                <PanelTabCloseButton
-                  label={`Close ${title}`}
-                  onClick={() =>
-                    unsaved ? setClosing(id) : closeQuestDocumentTab(environmentId, id)
-                  }
+        <ScrollArea radius="none" hideScrollbars scrollFade className="min-w-0 flex-1">
+          <div className="flex h-full w-max min-w-full items-center gap-1">
+            {tabs.open.map((id) => {
+              const entry = findEntry(state, id);
+              const title = entry?.title ?? "Missing document";
+              const isActive = tabs.active === id;
+              const unsaved =
+                drafts[`${environmentId}|file:${id}`] !== undefined ||
+                drafts[`${environmentId}|document:${id}`] !== undefined;
+              const pinned = tabs.versions[id] !== undefined;
+              return (
+                <div
+                  key={id}
+                  ref={isActive ? scrollTabIntoView : undefined}
+                  className={cn(
+                    "group/tab flex h-6 max-w-52 shrink-0 items-center gap-0.5 rounded-md pr-2 pl-1.5 text-xs",
+                    isActive
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                  )}
                 >
-                  <PierreEntryIcon
-                    pathValue={entry ? entryIconPath(state, entry) : `${title}.md`}
-                    kind="file"
-                    theme={theme}
-                    className="size-3"
-                  />
-                  {unsaved ? (
-                    <span
-                      className="absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full bg-current"
-                      aria-hidden
-                    />
-                  ) : null}
-                </PanelTabCloseButton>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <button
-                        type="button"
-                        aria-current={isActive ? "page" : undefined}
-                        className="flex min-w-0 cursor-pointer items-center gap-1"
-                        onClick={() => openQuestDocumentTab(environmentId, id, beside)}
-                      >
-                        <span className="truncate">{title}</span>
-                        {pinned ? (
-                          <span className="shrink-0 text-muted-foreground">pinned</span>
-                        ) : null}
-                      </button>
+                  <PanelTabCloseButton
+                    label={`Close ${title}`}
+                    onClick={() =>
+                      unsaved ? setClosing(id) : closeQuestDocumentTab(environmentId, id)
                     }
-                  />
-                  <TooltipPopup>{unsaved ? `${title} · unsaved` : title}</TooltipPopup>
-                </Tooltip>
-              </div>
-            );
-          })}
-        </div>
+                  >
+                    <PierreEntryIcon
+                      pathValue={entry ? entryIconPath(state, entry) : `${title}.md`}
+                      kind="file"
+                      theme={theme}
+                      className="size-3"
+                    />
+                    {unsaved ? (
+                      <span
+                        className="absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full bg-current"
+                        aria-hidden
+                      />
+                    ) : null}
+                  </PanelTabCloseButton>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          type="button"
+                          aria-current={isActive ? "page" : undefined}
+                          className="flex min-w-0 cursor-pointer items-center gap-1"
+                          onClick={() => openQuestDocumentTab(environmentId, id, beside)}
+                        >
+                          <span className="truncate">{title}</span>
+                          {pinned ? (
+                            <span className="shrink-0 text-muted-foreground">pinned</span>
+                          ) : null}
+                        </button>
+                      }
+                    />
+                    <TooltipPopup>{unsaved ? `${title} · unsaved` : title}</TooltipPopup>
+                  </Tooltip>
+                </div>
+              );
+            })}
+          </div>
+        </ScrollArea>
         <FileSurfaceAction label="Open or add document" onPress={() => setPicking(true)}>
           <PlusIcon className="size-3.5" />
         </FileSurfaceAction>

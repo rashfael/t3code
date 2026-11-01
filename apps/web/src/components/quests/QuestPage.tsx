@@ -307,7 +307,10 @@ function QuestWorkspaceView({
           </div>
         </div>
         <div className="mt-2 flex items-end gap-2">
-          <nav className="flex min-w-0 flex-1 gap-1 overflow-x-auto" aria-label="Quest views">
+          <nav
+            className="-mb-px flex min-w-0 flex-1 gap-1 overflow-x-auto overflow-y-hidden"
+            aria-label="Quest views"
+          >
             {VIEWS.map((item) => (
               <button
                 key={item.value}
@@ -315,7 +318,7 @@ function QuestWorkspaceView({
                 aria-current={view === item.value ? "page" : undefined}
                 onClick={() => showView(item.value)}
                 className={cn(
-                  "-mb-px shrink-0 cursor-pointer border-b-2 px-3 pb-2 text-sm",
+                  "shrink-0 cursor-pointer border-b-2 px-3 pb-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                   view === item.value
                     ? "border-primary font-medium text-foreground"
                     : "border-transparent text-muted-foreground hover:text-foreground",

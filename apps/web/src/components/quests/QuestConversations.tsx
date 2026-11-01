@@ -27,6 +27,7 @@ import {
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import { useMediaQuery } from "~/hooks/useMediaQuery";
+import { observeResize } from "~/lib/observeResize";
 import { cn, randomUUID } from "~/lib/utils";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { useRightPanelStore } from "~/rightPanelStore";
@@ -301,6 +302,9 @@ function useToolsPaneOwner(threadId: string | null) {
 const QuestDocumentsBeside = lazy(() =>
   import("./QuestDocumentWorkspace").then((module) => ({ default: module.QuestDocumentsBeside })),
 );
+/** The rail's `w-64`. */
+const RAIL_WIDTH = 256;
+const MIN_CHAT_WIDTH = 480;
 
 export function QuestConversations({
   about,
@@ -331,6 +335,18 @@ export function QuestConversations({
   const narrow = useMediaQuery("max-xl");
   const documentsShown = tabs.beside && !tabs.tools && tabs.open.length > 0;
   const chatHidden = documentsShown && (narrow || tabs.full);
+  const [railFits, setRailFits] = useState(false);
+  const showRail = !tabs.beside || railFits;
+  // The rail stays beside documents while the chat would keep a usable width next to both.
+  const observeChatRoom = (chat: HTMLDivElement) => {
+    const measure = () => {
+      if (chat.offsetParent === null) return;
+      const railShown = chat.parentElement?.previousElementSibling != null;
+      setRailFits(chat.clientWidth - (railShown ? 0 : RAIL_WIDTH) >= MIN_CHAT_WIDTH);
+    };
+    measure();
+    return observeResize(chat, measure);
+  };
   useToolsPaneOwner(selectedId);
   // A registered Quest file linked from the chat opens beside it; any other file keeps its panel.
   const openInHost = (hostPath: string) => {
@@ -390,10 +406,15 @@ export function QuestConversations({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
-      {tabs.beside ? null : <ConversationRail selectedId={selectedId} threads={threads} />}
+      {showRail ? <ConversationRail selectedId={selectedId} threads={threads} /> : null}
       <div className="flex min-h-0 min-w-0 flex-1">
-        <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col", chatHidden && "hidden")}>
-          {tabs.beside ? <ConversationSelector selectedId={selectedId} threads={threads} /> : null}
+        <div
+          ref={observeChatRoom}
+          className={cn("flex min-h-0 min-w-0 flex-1 flex-col", chatHidden && "hidden")}
+        >
+          {tabs.beside && (!showRail || tabs.tools) ? (
+            <ConversationSelector selectedId={selectedId} threads={threads} listed={showRail} />
+          ) : null}
           {subject && !thread ? (
             <StartDiscussion
               key={about}
@@ -482,13 +503,16 @@ export function QuestConversations({
   );
 }
 
-/** While documents share the row, the discussion list folds into this selector above the chat. */
+/** While documents share a cramped row, the discussion list folds into this selector above the chat. */
 function ConversationSelector({
   selectedId,
   threads,
+  listed,
 }: {
   selectedId: string | null;
   threads: ReadonlyMap<string, EnvironmentThreadShell>;
+  /** The rail already lists the discussions; only the way back to documents remains. */
+  listed: boolean;
 }) {
   const { environmentId, state, showView } = useQuest();
   const tabs = useQuestDocumentTabs(environmentId);
@@ -506,7 +530,7 @@ function ConversationSelector({
   return (
     <div className="flex h-9 shrink-0 items-center gap-2 border-b px-3">
       <MessageSquareIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
-      {options.length > 0 ? (
+      {options.length > 0 && !listed ? (
         <Select
           value={selectedId ?? ""}
           items={options}
