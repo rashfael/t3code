@@ -1,26 +1,21 @@
 import { questQuestionStatus, type QuestWork } from "@t3tools/contracts";
-import {
-  ChevronDownIcon,
-  ChevronRightIcon,
-  CrosshairIcon,
-  MessageSquareIcon,
-  MinusIcon,
-  PlusIcon,
-} from "lucide-react";
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { ChevronDownIcon, ChevronRightIcon, CrosshairIcon, MessageSquareIcon } from "lucide-react";
+import { useState, type KeyboardEvent } from "react";
 
 import { cn } from "~/lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { useQuest } from "./questContext";
+import { useQuest, useWorkInspection } from "./questContext";
 import {
-  edgePath,
-  layoutWorkGraph,
-  NODE_HEIGHT,
-  NODE_WIDTH,
-  type GraphEdge,
-  type GraphNode,
-} from "./questGraph";
+  boundaryPath,
+  cellsPath,
+  FIELD_HEIGHT,
+  FIELD_WIDTH,
+  layoutTerritory,
+  territoryLinks,
+  type Region,
+  type Territory,
+} from "./questTerritory";
 import {
   childrenOf,
   deliveryLeaves,
@@ -43,13 +38,17 @@ const stateDot: Record<QuestWork["state"], string> = {
   done: "bg-success",
 };
 
-const edgeStyles: Record<GraphEdge["kind"], { className: string; dash?: string; label: string }> = {
-  part: { className: "text-border", label: "Part of" },
-  follows: { className: "text-info", label: "Comes before" },
-  retries: { className: "text-warning", dash: "6 4", label: "Retried by" },
+/** Recorded states are filled; planned and deferred scope is hatched, since its extent is a guess. */
+const regionFill: Record<QuestWork["state"], string> = {
+  planned: "text-muted-foreground",
+  active: "fill-info/30 stroke-info/30",
+  attention: "fill-warning/35 stroke-warning/35",
+  review: "fill-secondary-foreground/20 stroke-secondary-foreground/20",
+  deferred: "text-muted-foreground/60",
+  done: "fill-success/25 stroke-success/25",
 };
 
-const ZOOM_STEPS = [0.5, 0.67, 0.8, 1, 1.25] as const;
+const isUncertain = (work: QuestWork) => work.state === "planned" || work.state === "deferred";
 
 function initiallyExpanded(
   state: ReturnType<typeof useQuest>["state"],
@@ -74,9 +73,14 @@ export function QuestWorkMap({
   const { state } = useQuest();
   const [expanded, setExpanded] = useState(() => initiallyExpanded(state, initialFocus));
   const [focusId, setFocusId] = useState<string | null>(null);
-  const [layout, setLayout] = useState<"graph" | "outline">("graph");
+  const [layout, setLayout] = useState<"territory" | "outline">("territory");
   const focus = focusId ? (state.work.find((item) => item.id === focusId) ?? null) : null;
-  const roots = focus ? [focus] : childrenOf(state, null);
+  // Work whose saved parent is missing starts its own branch rather than vanishing.
+  const roots = focus
+    ? [focus]
+    : state.work.filter(
+        (item) => item.parentId === null || !state.work.some((other) => other.id === item.parentId),
+      );
   const threads = useQuestConversationThreads();
   const toggle = (id: string) =>
     setExpanded((previous) => {
@@ -89,6 +93,10 @@ export function QuestWorkMap({
     setFocusId(id);
     if (id) setExpanded((previous) => new Set([...previous, id]));
   };
+  // The region last clicked or focused; unlike the pin it survives closing the details overlay.
+  const [targetId, setTargetId] = useState(selectedId);
+  const selected = targetId ? state.work.find((item) => item.id === targetId) : undefined;
+  const selectedParts = selected ? childrenOf(state, selected.id).length : 0;
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
@@ -119,6 +127,36 @@ export function QuestWorkMap({
             : null}
         </nav>
         <div className="ms-auto flex flex-wrap items-center gap-1">
+          {/* Always rendered so choosing a region never shifts the map under the pointer. */}
+          <span
+            role="group"
+            aria-label={selected ? `Selected: ${selected.title}` : "No region selected"}
+            className="me-1 flex items-center gap-1 border-e pe-2"
+          >
+            <span className="max-w-40 truncate text-xs text-muted-foreground">
+              {selected?.title ?? "Click a region"}
+            </span>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={!selected || selectedParts === 0}
+              onClick={() => selected && toggle(selected.id)}
+            >
+              {selected && expanded.has(selected.id) && selectedParts > 0
+                ? "Collapse"
+                : `Expand${selectedParts > 0 ? ` ${selectedParts}` : ""}`}
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={!selected || selectedParts === 0}
+              aria-label={selected ? `Focus on ${selected.title}` : "Focus"}
+              onClick={() => selected && focusOn(selected.id)}
+            >
+              <CrosshairIcon aria-hidden />
+              Focus
+            </Button>
+          </span>
           <Button
             size="xs"
             variant="ghost"
@@ -133,20 +171,24 @@ export function QuestWorkMap({
             size="xs"
             variant={layout === "outline" ? "secondary" : "ghost"}
             aria-pressed={layout === "outline"}
-            onClick={() => setLayout(layout === "graph" ? "outline" : "graph")}
+            onClick={() => setLayout(layout === "territory" ? "outline" : "territory")}
           >
             Outline
           </Button>
         </div>
       </div>
-      {layout === "graph" ? (
-        <WorkGraphView
-          rootIds={roots.map((item) => item.id)}
-          expanded={expanded}
-          onToggle={toggle}
-          onFocus={focusOn}
+      {layout === "territory" ? (
+        <TerritoryView
+          territory={layoutTerritory(
+            state,
+            expanded,
+            roots.map((item) => item.id),
+          )}
           selectedId={selectedId}
           threads={threads}
+          onToggle={toggle}
+          onTarget={setTargetId}
+          onShowOutline={() => setLayout("outline")}
         />
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
@@ -169,291 +211,271 @@ export function QuestWorkMap({
   );
 }
 
-function WorkGraphView({
-  rootIds,
-  expanded,
-  onToggle,
-  onFocus,
+function TerritoryView({
+  territory,
   selectedId,
   threads,
+  onToggle,
+  onTarget,
+  onShowOutline,
 }: {
-  rootIds: ReadonlyArray<string>;
-  expanded: ReadonlySet<string>;
-  onToggle: (id: string) => void;
-  onFocus: (id: string) => void;
+  territory: Territory;
   selectedId: string | null;
   threads: ReturnType<typeof useQuestConversationThreads>;
+  onToggle: (id: string) => void;
+  onTarget: (id: string) => void;
+  onShowOutline: () => void;
 }) {
-  const { state } = useQuest();
-  const [zoom, setZoom] = useState(1);
-  const viewport = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
-  const graph = layoutWorkGraph(state, expanded, rootIds);
-  const nodes = new Map(graph.nodes.map((node) => [node.work.id, node]));
-  const hasExample = graph.edges.some((edge) => edge.relation?.provenance === "example");
-  const kinds = new Set(graph.edges.map((edge) => edge.kind));
-  const reveal = selectedId ?? state.currentWorkId;
-
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the browser viewport to the work the map was opened for
-  useEffect(() => {
-    const element = viewport.current?.querySelector<HTMLElement>(`[data-work-id="${reveal}"]`);
-    element?.scrollIntoView({ block: "center", inline: "center" });
-  }, [reveal]);
-
-  function zoomBy(step: 1 | -1) {
-    const index = ZOOM_STEPS.findIndex((value) => value >= zoom);
-    const next = ZOOM_STEPS[Math.min(ZOOM_STEPS.length - 1, Math.max(0, index + step))]!;
-    setZoom(next);
-  }
-
-  function fit() {
-    const element = viewport.current;
-    if (!element) return;
-    const scale = Math.min(
-      1,
-      element.clientWidth / graph.width,
-      element.clientHeight / graph.height,
+  const { state, previewWorkId } = useQuest();
+  const inspect = useWorkInspection();
+  const active = previewWorkId ?? selectedId;
+  const links = territoryLinks(state, territory, active);
+  const leaves = territory.regions.filter((region) => !region.expanded);
+  const parents = territory.regions.filter((region) => region.expanded);
+  const missing = territory.undrawn.length + territory.unreachable.length;
+  const signals = (work: QuestWork) => {
+    const waiting = state.questions.some((question) => {
+      if (question.workId !== work.id) return false;
+      const status = questQuestionStatus(question);
+      return status === "open" || status === "recorded";
+    });
+    const working = state.conversations.some(
+      (item) =>
+        item.workId === work.id &&
+        conversationStatusLabel(threads.get(item.threadId) ?? null) === "agent working",
     );
-    setZoom(Math.max(0.3, Math.floor(scale * 100) / 100));
-  }
-
-  function startPan(event: PointerEvent<HTMLDivElement>) {
-    if ((event.target as HTMLElement).closest("button") || !viewport.current) return;
-    drag.current = {
-      x: event.clientX,
-      y: event.clientY,
-      left: viewport.current.scrollLeft,
-      top: viewport.current.scrollTop,
+    return { needsYou: waiting || work.state === "attention", working };
+  };
+  const describe = (region: Region) => {
+    const { needsYou, working } = signals(region.work);
+    return [
+      region.work.title,
+      region.work.kind === "attempt" ? "Attempt" : null,
+      workStateLabels[region.work.state],
+      state.currentWorkId === region.work.id ? "Current milestone" : null,
+      region.childCount > 0
+        ? `${region.childCount} ${region.childCount === 1 ? "part" : "parts"}, ${region.expanded ? "expanded" : "folded"}`
+        : null,
+      needsYou ? "Needs you" : null,
+      working ? "Agent working" : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  };
+  const interact = (region: Region) => {
+    const handlers = inspect(region.work.id);
+    const id = region.work.id;
+    return {
+      ...handlers,
+      onClick: () => {
+        onTarget(id);
+        handlers.onClick();
+      },
+      tabIndex: 0,
+      role: "button",
+      "aria-label": describe(region),
+      "aria-pressed": selectedId === region.work.id,
+      "data-work-id": region.work.id,
+      onKeyDown: (event: KeyboardEvent) => {
+        const opens = event.key === "ArrowRight" || event.key === "+";
+        const closes = event.key === "ArrowLeft" || event.key === "-";
+        if (region.childCount > 0 && (opens ? !region.expanded : closes && region.expanded)) {
+          event.preventDefault();
+          onToggle(id);
+          return;
+        }
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onTarget(id);
+        handlers.onClick();
+      },
+      onDoubleClick: () => {
+        if (region.childCount > 0) onToggle(id);
+      },
+      className: "cursor-pointer outline-none",
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }
-
-  function pan(event: PointerEvent<HTMLDivElement>) {
-    if (!drag.current || !viewport.current) return;
-    viewport.current.scrollLeft = drag.current.left - (event.clientX - drag.current.x);
-    viewport.current.scrollTop = drag.current.top - (event.clientY - drag.current.y);
-  }
+  };
 
   return (
-    <div className="relative min-h-0 flex-1">
+    <div className="relative flex min-h-0 flex-1 flex-col">
       <div
-        ref={viewport}
         role="group"
         aria-label="Work map"
-        className="absolute inset-0 cursor-grab overflow-auto active:cursor-grabbing"
-        onPointerDown={startPan}
-        onPointerMove={pan}
-        onPointerUp={() => (drag.current = null)}
-        onPointerCancel={() => (drag.current = null)}
+        className="scrollbar-gutter-both min-h-0 flex-1 overflow-auto p-3"
       >
-        <div style={{ width: graph.width * zoom, height: graph.height * zoom }}>
-          <div
-            className="relative origin-top-left"
-            style={{ width: graph.width, height: graph.height, transform: `scale(${zoom})` }}
-          >
-            <svg
-              aria-hidden
-              className="pointer-events-none absolute inset-0"
-              width={graph.width}
-              height={graph.height}
+        <svg
+          viewBox={`0 0 ${FIELD_WIDTH} ${FIELD_HEIGHT}`}
+          className="mx-auto block h-auto max-h-full w-full"
+          style={{ maxWidth: FIELD_WIDTH * 1.4 }}
+        >
+          <defs>
+            <pattern
+              id="quest-territory-hatch"
+              width="7"
+              height="7"
+              patternUnits="userSpaceOnUse"
+              patternTransform="rotate(45)"
             >
-              <defs>
-                {(["follows", "retries"] as const).map((kind) => (
-                  <marker
-                    key={kind}
-                    id={`quest-arrow-${kind}`}
-                    viewBox="0 0 10 10"
-                    refX="9"
-                    refY="5"
-                    markerWidth="7"
-                    markerHeight="7"
-                    orient="auto-start-reverse"
-                    className={edgeStyles[kind].className}
-                  >
-                    <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
-                  </marker>
-                ))}
-              </defs>
-              {graph.edges.map((edge) => {
-                const source = nodes.get(edge.source);
-                const target = nodes.get(edge.target);
-                if (!source || !target) return null;
-                const style = edgeStyles[edge.kind];
-                const example = edge.relation?.provenance === "example";
-                return (
-                  <path
-                    key={edge.id}
-                    data-edge={edge.kind}
-                    d={edgePath(source, target, edge.kind)}
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={edge.kind === "part" ? 1.25 : 1.75}
-                    strokeDasharray={example ? "2 4" : style.dash}
-                    opacity={edge.viaAncestor ? 0.5 : 1}
-                    markerEnd={edge.kind === "part" ? undefined : `url(#quest-arrow-${edge.kind})`}
-                    className={style.className}
-                  />
-                );
-              })}
-            </svg>
-            {graph.nodes.map((node) => (
-              <GraphCard
-                key={node.work.id}
-                node={node}
-                selected={selectedId === node.work.id}
-                threads={threads}
-                onToggle={onToggle}
-                onFocus={onFocus}
+              <line x1="0" y1="0" x2="0" y2="7" stroke="currentColor" strokeWidth="1.4" />
+            </pattern>
+            <marker
+              id="quest-territory-arrow"
+              viewBox="0 0 10 10"
+              refX="8"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto"
+            >
+              <path d="M 0 0 L 10 5 L 0 10 z" className="fill-foreground" />
+            </marker>
+          </defs>
+          {leaves.map((region) => {
+            const uncertain = isUncertain(region.work);
+            const isActive = active === region.work.id;
+            return (
+              <g key={region.work.id} {...interact(region)}>
+                <path
+                  d={cellsPath(region.cells)}
+                  className={regionFill[region.work.state]}
+                  fill={uncertain ? "url(#quest-territory-hatch)" : undefined}
+                  stroke={uncertain ? "none" : undefined}
+                  strokeWidth={0.8}
+                  opacity={region.work.kind === "attempt" ? 0.6 : 1}
+                />
+                <path
+                  d={boundaryPath(region.cells)}
+                  fill="none"
+                  strokeWidth={isActive ? 2.5 : 1}
+                  strokeDasharray={uncertain || region.work.kind === "attempt" ? "4 3" : undefined}
+                  className={isActive ? "stroke-foreground" : "stroke-foreground/35"}
+                />
+              </g>
+            );
+          })}
+          {parents.map((region) => (
+            <path
+              key={region.work.id}
+              d={boundaryPath(region.cells)}
+              fill="none"
+              pointerEvents="none"
+              strokeWidth={Math.max(1.5, 4 - region.depth)}
+              className={
+                state.currentWorkId === region.work.id
+                  ? "stroke-info"
+                  : active === region.work.id
+                    ? "stroke-foreground"
+                    : "stroke-foreground/60"
+              }
+            />
+          ))}
+          {leaves
+            .filter((region) => state.currentWorkId === region.work.id)
+            .map((region) => (
+              <path
+                key={`current:${region.work.id}`}
+                d={boundaryPath(region.cells)}
+                fill="none"
+                pointerEvents="none"
+                strokeWidth={3}
+                className="stroke-info"
               />
             ))}
-          </div>
-        </div>
+          {links.map((link) => {
+            const mx = (link.from.x + link.to.x) / 2;
+            const my =
+              (link.from.y + link.to.y) / 2 - Math.abs(link.to.x - link.from.x) * 0.15 - 12;
+            return (
+              <path
+                key={link.id}
+                data-link={link.type}
+                d={`M ${link.from.x} ${link.from.y} Q ${mx} ${my} ${link.to.x} ${link.to.y}`}
+                fill="none"
+                pointerEvents="none"
+                strokeWidth={2}
+                strokeDasharray={
+                  link.type === "retries" ? "6 4" : link.viaAncestor ? "2 3" : undefined
+                }
+                markerEnd="url(#quest-territory-arrow)"
+                className="stroke-foreground"
+              />
+            );
+          })}
+          {leaves.map((region) => (
+            <RegionLabel key={region.work.id} region={region} {...signals(region.work)} />
+          ))}
+          {parents.map((region) => {
+            // Expanded regions name themselves at their top edge, clear of their parts' names.
+            const title =
+              region.work.title.length > 34
+                ? `${region.work.title.slice(0, 33)}…`
+                : region.work.title;
+            return (
+              <g key={region.work.id} {...interact(region)}>
+                <text
+                  x={region.crest.x}
+                  y={Math.max(14, region.crest.y - 2)}
+                  textAnchor="middle"
+                  strokeWidth={4}
+                  className={cn(
+                    "text-2xs font-semibold tracking-wide uppercase [paint-order:stroke] stroke-background",
+                    state.currentWorkId === region.work.id ? "fill-info" : "fill-foreground/80",
+                  )}
+                >
+                  {title}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
       </div>
-      <div className="pointer-events-none absolute inset-x-3 bottom-3 flex flex-wrap items-end justify-between gap-2">
-        <ul
-          aria-label="Map legend"
-          className="pointer-events-auto flex flex-wrap gap-x-3 gap-y-1 rounded-md border bg-background/95 px-2.5 py-1.5 text-2xs text-muted-foreground"
-        >
-          {(["part", "follows", "retries"] as const)
-            .filter((kind) => kind === "part" || kinds.has(kind))
-            .map((kind) => (
-              <li key={kind} className="flex items-center gap-1.5">
-                <svg aria-hidden width="22" height="8" className={edgeStyles[kind].className}>
-                  <line
-                    x1="1"
-                    y1="4"
-                    x2="21"
-                    y2="4"
-                    stroke="currentColor"
-                    strokeWidth="1.75"
-                    strokeDasharray={edgeStyles[kind].dash}
-                  />
-                </svg>
-                {edgeStyles[kind].label}
-              </li>
-            ))}
-          {hasExample ? <li>Dotted: example link</li> : null}
-          <li>Faded: via a collapsed item</li>
-        </ul>
-        <div
-          role="toolbar"
-          aria-label="Zoom"
-          className="pointer-events-auto flex items-center gap-0.5 rounded-md border bg-background/95 p-0.5"
-        >
-          <Button size="icon-xs" variant="ghost" aria-label="Zoom out" onClick={() => zoomBy(-1)}>
-            <MinusIcon />
-          </Button>
-          <span className="w-10 text-center text-2xs tabular-nums">{Math.round(zoom * 100)}%</span>
-          <Button size="icon-xs" variant="ghost" aria-label="Zoom in" onClick={() => zoomBy(1)}>
-            <PlusIcon />
-          </Button>
-          <Button size="xs" variant="ghost" onClick={fit}>
-            Fit
-          </Button>
-        </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t px-4 py-1.5 text-2xs text-muted-foreground">
+        <span>Filled: recorded state · hatched, dashed edge: planned or deferred scope</span>
+        <span>Arrows: recorded order around the inspected region</span>
+        <span>Area is not effort · double-click, arrow keys or the toolbar expand</span>
+        {missing > 0 ? (
+          <button type="button" className="ms-auto underline" onClick={onShowOutline}>
+            {missing} not drawn here · Outline lists all work
+          </button>
+        ) : null}
       </div>
     </div>
   );
 }
 
-function GraphCard({
-  node,
-  selected,
-  threads,
-  onToggle,
-  onFocus,
+function RegionLabel({
+  region,
+  needsYou,
+  working,
 }: {
-  node: GraphNode;
-  selected: boolean;
-  threads: ReturnType<typeof useQuestConversationThreads>;
-  onToggle: (id: string) => void;
-  onFocus: (id: string) => void;
+  region: Region;
+  needsYou: boolean;
+  working: boolean;
 }) {
-  const { state, openPanel } = useQuest();
-  const { work } = node;
-  const waiting = state.questions.filter((question) => {
-    if (question.workId !== work.id) return false;
-    const status = questQuestionStatus(question);
-    return status === "open" || status === "recorded";
-  });
-  const conversations = state.conversations.filter((item) => item.workId === work.id);
-  const running = conversations.filter((item) => {
-    const thread = threads.get(item.threadId) ?? null;
-    return conversationStatusLabel(thread) === "agent working";
-  });
-  const isCurrent = state.currentWorkId === work.id;
+  const marks = `${needsYou ? "! " : ""}${working ? "● " : ""}`;
+  const fits = Math.floor(region.span / 7.5) - marks.length;
+  if (fits < 4) return null;
+  const title =
+    region.work.title.length > fits
+      ? `${region.work.title.slice(0, fits - 1)}…`
+      : region.work.title;
   return (
-    <div
-      data-work-id={work.id}
+    <text
+      x={region.anchor.x}
+      y={region.anchor.y}
+      textAnchor="middle"
+      dominantBaseline="middle"
+      pointerEvents="none"
+      strokeWidth={3}
       className={cn(
-        "absolute flex rounded-lg border bg-card text-left shadow-xs",
-        work.kind === "attempt" && "border-dashed bg-background",
-        isCurrent && "border-info",
-        selected && "ring-2 ring-ring",
+        "text-xs [paint-order:stroke] stroke-background",
+        isUncertain(region.work) ? "fill-muted-foreground" : "fill-foreground font-medium",
       )}
-      style={{ left: node.x, top: node.y, width: NODE_WIDTH, height: NODE_HEIGHT }}
     >
-      <button
-        type="button"
-        aria-label={`${work.title} · ${work.kind === "attempt" ? "Attempt · " : ""}${workStateLabels[work.state]}`}
-        aria-pressed={selected}
-        className="min-w-0 flex-1 rounded-s-lg px-2.5 py-1.5 text-left hover:bg-accent/50"
-        onClick={() => openPanel({ type: "work", id: work.id })}
-      >
-        <span className="flex items-center gap-1.5 text-2xs text-muted-foreground">
-          <span aria-hidden className={cn("size-2 shrink-0 rounded-full", stateDot[work.state])} />
-          <span className="truncate">
-            {work.kind === "attempt" ? "Attempt · " : ""}
-            {workStateLabels[work.state]}
-            {isCurrent ? " · Current" : ""}
-          </span>
-          {waiting.length > 0 ? (
-            <Badge variant="warning" size="sm" className="ms-auto">
-              {waiting.length} {waiting.length === 1 ? "decision" : "decisions"}
-            </Badge>
-          ) : null}
-          {conversations.length > 0 ? (
-            <span className={cn("flex items-center gap-0.5", waiting.length === 0 && "ms-auto")}>
-              <MessageSquareIcon aria-hidden className="size-3" />
-              {conversations.length}
-              <span className="sr-only">
-                linked {conversations.length === 1 ? "conversation" : "conversations"}
-                {running.length ? `, ${running.length} agent working` : ""}
-              </span>
-            </span>
-          ) : null}
-        </span>
-        <span className="mt-0.5 line-clamp-2 text-xs font-medium leading-snug">{work.title}</span>
-      </button>
-      {node.childCount > 0 ? (
-        <span className="flex flex-col border-s">
-          <button
-            type="button"
-            className="flex flex-1 items-center gap-0.5 px-1.5 text-2xs text-muted-foreground hover:bg-accent"
-            aria-label={`${node.expanded ? "Collapse" : "Expand"} ${work.title}`}
-            aria-expanded={node.expanded}
-            onClick={() => onToggle(work.id)}
-          >
-            {node.expanded ? (
-              <MinusIcon aria-hidden className="size-3" />
-            ) : (
-              <>
-                <PlusIcon aria-hidden className="size-3" />
-                <span className="tabular-nums">{node.childCount}</span>
-              </>
-            )}
-          </button>
-          <button
-            type="button"
-            className="flex flex-1 items-center justify-center border-t px-1.5 text-muted-foreground hover:bg-accent"
-            aria-label={`Focus on ${work.title}`}
-            onClick={() => onFocus(work.id)}
-          >
-            <CrosshairIcon aria-hidden className="size-3" />
-          </button>
-        </span>
-      ) : null}
-    </div>
+      {needsYou ? <tspan className="fill-warning font-bold">! </tspan> : null}
+      {working ? <tspan className="fill-info">● </tspan> : null}
+      {title}
+    </text>
   );
 }
 

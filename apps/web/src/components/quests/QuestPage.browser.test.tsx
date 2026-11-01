@@ -475,33 +475,72 @@ it("reads evidence beside the work that referenced it on a read-only connection"
   expect(harness.run).not.toHaveBeenCalled();
 });
 
-it("draws the work map as a graph with typed edges, expansion, focus and selection", async () => {
+it("draws the work map as nested regions with expansion, focus, selection and inspected relations", async () => {
   setup();
   await using screen = await renderQuest();
   await screen.getByRole("button", { name: "Work map", exact: true }).click();
   const map = screen.getByRole("group", { name: "Work map" });
-  const edges = (kind: string) => document.querySelectorAll(`[data-edge="${kind}"]`).length;
+  const details = screen.getByRole("complementary", { name: "Quest details" });
+  const links = () => document.querySelectorAll("[data-link]").length;
   await expect.element(map.getByRole("button", { name: /^Part B ·/ })).toBeVisible();
-  expect(edges("follows")).toBe(1);
-  expect(edges("part")).toBeGreaterThan(0);
+  // Relations appear only around inspected work, never as a permanent overlay.
+  expect(links()).toBe(0);
   await expect.element(map.getByRole("button", { name: /^Earlier try/ })).not.toBeInTheDocument();
-  await map.getByRole("button", { name: "Expand Part A" }).click();
+  await map.getByRole("button", { name: /^Part A ·/ }).click();
+  // The test viewport is narrow, where details cover the map until closed.
+  await details.getByRole("button", { name: "Close details" }).click();
+  await screen.getByRole("button", { name: "Expand 1" }).click();
   await expect
     .element(map.getByRole("button", { name: "Earlier try · Attempt · Recorded outcome" }))
     .toBeVisible();
-  await map.getByRole("button", { name: "Focus on Example milestone" }).click();
+  await map.getByRole("button", { name: /^Example milestone ·/ }).click();
+  await details.getByRole("button", { name: "Close details" }).click();
+  await screen.getByRole("button", { name: "Focus on Example milestone" }).click();
   await expect.element(map.getByRole("button", { name: /^Later branch/ })).not.toBeInTheDocument();
   await map.getByRole("button", { name: /^Part B ·/ }).click();
-  const details = screen.getByRole("complementary", { name: "Quest details" });
   await expect.element(details.getByText("Part A, followed by Part B")).toBeVisible();
   await expect.element(details.getByRole("button", { name: "Retained source" })).toBeVisible();
-  // The test viewport is narrow, where details cover the map until closed.
+  expect(links()).toBe(1);
   await details.getByRole("button", { name: "Close details" }).click();
   await screen.getByRole("button", { name: "Whole Quest" }).click();
   await expect.element(map.getByRole("button", { name: /^Later branch/ })).toBeVisible();
-  await map.getByRole("button", { name: "Collapse Example milestone" }).click();
+  await map.getByRole("button", { name: /^Example milestone ·/ }).click();
+  await details.getByRole("button", { name: "Close details" }).click();
+  await screen.getByRole("button", { name: "Collapse", exact: true }).click();
   await expect.element(map.getByRole("button", { name: /^Part B ·/ })).not.toBeInTheDocument();
-  await vi.waitFor(() => expect(edges("follows")).toBe(0));
+  expect(harness.run).not.toHaveBeenCalled();
+});
+
+it("saves and clears planned focus explicitly from the work details", async () => {
+  const initial = setup();
+  await using screen = await renderQuest();
+  const roadmap = screen.getByRole("region", { name: "Milestone roadmap" });
+  const details = screen.getByRole("complementary", { name: "Quest details" });
+  await roadmap.getByRole("button", { name: /^Part B · / }).click();
+  await expect.element(details.getByText("Not set")).toBeVisible();
+  const saved = (focus: number | undefined) => {
+    const work = initial.work.map((item) => {
+      if (item.id !== "part-b") return item;
+      const { focus: _previous, ...rest } = item;
+      return focus === undefined ? rest : { ...rest, focus };
+    });
+    return { ...initial, revision: initial.revision + 1, work };
+  };
+  harness.run.mockResolvedValueOnce({ _tag: "Success", value: saved(4) });
+  await details.getByRole("button", { name: "Planned focus 4 of 5, Strong" }).click();
+  expect(harness.run).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      input: expect.objectContaining({
+        change: { type: "work", work: expect.objectContaining({ id: "part-b", focus: 4 }) },
+      }),
+    }),
+  );
+  await expect.element(details.getByText("4 of 5 · Strong")).toBeVisible();
+  harness.run.mockResolvedValueOnce({ _tag: "Success", value: saved(undefined) });
+  await details.getByRole("button", { name: "Clear", exact: true }).click();
+  const cleared = harness.run.mock.lastCall?.[0].input.change.work;
+  expect(cleared).not.toHaveProperty("focus");
+  await expect.element(details.getByText("Not set")).toBeVisible();
 });
 
 function conversation(

@@ -27,8 +27,19 @@ export const QuestWork = Schema.Struct({
   priorAttempts: Schema.String,
   findings: Schema.String,
   handoff: Schema.String,
+  /**
+   * Relative planned focus from 1 (light) to 5 (main concentration). Absent means not set, which is
+   * not zero. It is a plan, not measured effort, agent count, completion or confidence.
+   */
+  focus: Schema.optionalKey(Schema.Number),
 });
 export type QuestWork = typeof QuestWork.Type;
+
+export const QUEST_FOCUS_LEVELS = [1, 2, 3, 4, 5] as const;
+
+export function isQuestFocus(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 5;
+}
 
 /** A non-decomposition link. `follows`: `from` comes after `to`. `retries`: `from` retries `to`. */
 export const QuestRelation = Schema.Struct({

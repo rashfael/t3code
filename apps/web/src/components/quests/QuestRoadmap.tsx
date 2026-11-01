@@ -4,51 +4,45 @@ import { BotIcon, CircleAlertIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 
 import { Badge } from "../ui/badge";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { useQuest } from "./questContext";
+import { useQuest, useWorkInspection } from "./questContext";
 import { conversationStatusLabel, useQuestConversationThreads } from "./QuestConversations";
 import { deliveryLeaves, describeCounts, workStateLabels } from "./questModel";
-import {
-  layoutRoadmap,
-  ROADMAP_LABEL,
-  roadmapPathD,
-  roadmapTrunkD,
-  type RoadmapStop,
-} from "./questRoadmap";
+import { layoutRoadmap, ribbonD, ROADMAP_BAR, type RoadmapStop } from "./questRoadmap";
 
-const dotClass: Record<QuestWork["state"], string> = {
-  planned: "fill-background stroke-muted-foreground",
+const ribbonClass: Record<QuestWork["state"], string> = {
+  planned: "fill-muted-foreground stroke-muted-foreground",
   active: "fill-info stroke-info",
   attention: "fill-warning stroke-warning",
-  review: "fill-secondary-foreground/60 stroke-secondary-foreground/60",
-  deferred: "fill-background stroke-muted-foreground [stroke-dasharray:2_2]",
+  review: "fill-secondary-foreground stroke-secondary-foreground",
+  deferred: "fill-muted-foreground stroke-muted-foreground",
   done: "fill-success stroke-success",
 };
 
-/** Drawn inside one translucent group, so lanes that overlap at forks and joins do not mix. */
-const pathClass: Record<QuestWork["state"], string> = {
-  planned: "stroke-muted-foreground/60",
-  active: "stroke-info",
-  attention: "stroke-warning",
-  review: "stroke-secondary-foreground/60",
-  deferred: "stroke-muted-foreground/60 [stroke-dasharray:4_6]",
-  done: "stroke-success",
-};
-
-/** Milestone-level paths above the overview: what runs side by side, what joins, what is next. */
+/**
+ * Milestone overview as a Sankey: the current milestone fans out to its parts, recorded `follows`
+ * relations join and continue, and ribbon width is the explicit planned focus of the work a ribbon
+ * leads into. Work without a focus is drawn at a neutral width with a faded, dashed ribbon.
+ */
 export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null }) {
-  const { state, openPanel } = useQuest();
+  const { state, openPanel, previewWorkId } = useQuest();
+  const inspect = useWorkInspection();
   const threads = useQuestConversationThreads();
   const roadmap = layoutRoadmap(state);
   if (!roadmap) return null;
   const byId = new Map(roadmap.stops.map((stop) => [stop.work.id, stop]));
-  const milestone = roadmap.stops[0]!;
-  const firstFork = roadmap.paths.find((path) => path.kind === "fork");
-  const firstPart = firstFork ? byId.get(firstFork.target) : undefined;
   const working = (stop: RoadmapStop) =>
     stop.threadIds.filter(
       (id) => conversationStatusLabel(threads.get(id) ?? null) === "agent working",
     ).length;
+  const lowestInColumn = new Map<number, RoadmapStop>();
+  const columnSize = new Map<number, number>();
+  for (const stop of roadmap.stops) {
+    columnSize.set(stop.column, (columnSize.get(stop.column) ?? 0) + 1);
+    const lowest = lowestInColumn.get(stop.column);
+    if (!lowest || stop.y > lowest.y) lowestInColumn.set(stop.column, stop);
+  }
+  const highlighted = previewWorkId ?? selectedWorkId;
+  const half = ROADMAP_BAR / 2;
 
   return (
     <section aria-label="Milestone roadmap" className="border-b">
@@ -59,51 +53,94 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
             width={roadmap.width}
             height={roadmap.height}
             className="absolute inset-0"
-            fill="none"
           >
-            <g opacity={0.6} strokeWidth={4} strokeLinecap="round">
-              {roadmap.paths.map((path) => {
-                const source = byId.get(path.source);
-                const target = byId.get(path.target);
-                if (!source || !target) return null;
-                // A lane keeps the colour of the part it carries, so forks take their target's state.
-                const lane = source.role === "milestone" ? target : source;
-                return (
-                  <path
-                    key={path.id}
-                    d={roadmapPathD(source, target)}
-                    className={pathClass[lane.work.state]}
-                  />
-                );
-              })}
-              {firstPart ? (
+            {roadmap.paths.map((path) => {
+              const source = byId.get(path.source);
+              const target = byId.get(path.target);
+              if (!source || !target) return null;
+              const unset = target.work.focus === undefined;
+              const lit = highlighted === source.work.id || highlighted === target.work.id;
+              return (
                 <path
-                  d={roadmapTrunkD(milestone, firstPart)}
-                  className={pathClass[milestone.work.state]}
+                  key={path.id}
+                  d={ribbonD(
+                    source.x + half,
+                    path.sourceY,
+                    target.x - half,
+                    path.targetY,
+                    path.width,
+                  )}
+                  className={ribbonClass[target.work.state]}
+                  fillOpacity={(unset ? 0.22 : 0.45) + (lit ? 0.2 : 0)}
+                  strokeOpacity={unset ? 0.7 : 0}
+                  strokeWidth={1}
+                  strokeDasharray={unset ? "3 3" : undefined}
                 />
-              ) : null}
-            </g>
-            {roadmap.stops.map((stop) => (
-              <g key={stop.work.id}>
-                {stop.role === "milestone" ? (
-                  <circle cx={stop.x} cy={stop.y} r={11} className="fill-info/15" />
-                ) : null}
-                <circle
-                  cx={stop.x}
-                  cy={stop.y}
-                  r={stop.role === "milestone" ? 7 : 5.5}
-                  strokeWidth={2}
-                  className={dotClass[stop.work.state]}
-                />
-              </g>
-            ))}
+              );
+            })}
+            {roadmap.stops.map((stop) => {
+              const height = Math.max(stop.inHeight, stop.outHeight);
+              const split = stop.inHeight !== stop.outHeight;
+              return (
+                <g key={stop.work.id} className="cursor-pointer" {...inspect(stop.work.id)}>
+                  {/* A wider transparent target keeps thin bars easy to hover and tap. */}
+                  <rect
+                    x={stop.x - 8}
+                    y={stop.y - height / 2 - 4}
+                    width={16}
+                    height={height + 8}
+                    fill="transparent"
+                  />
+                  {split ? (
+                    <>
+                      <rect
+                        x={stop.x - half}
+                        y={stop.y - stop.inHeight / 2}
+                        width={half}
+                        height={stop.inHeight}
+                        className="fill-foreground/70"
+                      />
+                      <rect
+                        x={stop.x}
+                        y={stop.y - stop.outHeight / 2}
+                        width={half}
+                        height={stop.outHeight}
+                        className="fill-foreground/70"
+                      />
+                    </>
+                  ) : (
+                    <rect
+                      x={stop.x - half}
+                      y={stop.y - height / 2}
+                      width={ROADMAP_BAR}
+                      height={height}
+                      className="fill-foreground/70"
+                    />
+                  )}
+                  {selectedWorkId === stop.work.id ? (
+                    <rect
+                      x={stop.x - half - 3}
+                      y={stop.y - height / 2 - 3}
+                      width={ROADMAP_BAR + 6}
+                      height={height + 6}
+                      rx={2}
+                      fill="none"
+                      strokeWidth={2}
+                      className="stroke-ring"
+                    />
+                  ) : null}
+                </g>
+              );
+            })}
             {roadmap.gap ? (
-              <circle
-                cx={roadmap.gap.x}
-                cy={roadmap.gap.y}
-                r={5.5}
-                strokeWidth={2}
-                className="fill-background stroke-muted-foreground/60 [stroke-dasharray:2_2]"
+              <rect
+                x={roadmap.gap.x - half}
+                y={roadmap.gap.y - 8}
+                width={ROADMAP_BAR}
+                height={16}
+                fill="none"
+                strokeDasharray="2 2"
+                className="stroke-muted-foreground/60"
               />
             ) : null}
           </svg>
@@ -111,9 +148,15 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
             <RoadmapLabel
               key={stop.work.id}
               stop={stop}
+              below={
+                stop.role !== "milestone" &&
+                (columnSize.get(stop.column) ?? 0) > 1 &&
+                lowestInColumn.get(stop.column) === stop
+              }
+              areaHeight={roadmap.height}
               working={working(stop)}
               isSelected={selectedWorkId === stop.work.id}
-              onOpen={() => openPanel({ type: "work", id: stop.work.id })}
+              inspection={inspect(stop.work.id)}
               onOpenNeed={() => {
                 const need = stop.needs.length === 1 ? stop.needs[0]! : null;
                 openPanel(
@@ -131,12 +174,15 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
           ))}
           {roadmap.gap ? (
             <span
-              className="absolute flex h-6 items-center ps-4 text-xs text-muted-foreground italic"
-              style={{ left: roadmap.gap.x - 6, top: roadmap.gap.y - 12 }}
+              className="absolute -translate-y-1/2 ps-3 text-xs whitespace-nowrap text-muted-foreground italic"
+              style={{ left: roadmap.gap.x, top: roadmap.gap.y }}
             >
               No later milestone recorded
             </span>
           ) : null}
+          <p className="absolute bottom-1 left-3 text-2xs text-muted-foreground">
+            Width: planned focus · faded dashed: not set
+          </p>
         </div>
       </div>
     </section>
@@ -145,115 +191,99 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
 
 function RoadmapLabel({
   stop,
+  below,
+  areaHeight,
   working,
   isSelected,
   summary,
-  onOpen,
+  inspection,
   onOpenNeed,
 }: {
   stop: RoadmapStop;
+  below: boolean;
+  areaHeight: number;
   working: number;
   isSelected: boolean;
   summary: string | null;
-  onOpen: () => void;
+  inspection: ReturnType<ReturnType<typeof useWorkInspection>>;
   onOpenNeed: () => void;
 }) {
   const { work } = stop;
   const needs = stop.needs.length;
+  const height = Math.max(stop.inHeight, stop.outHeight);
   const description = [
     stop.role === "milestone" ? "Current milestone" : stop.role === "successor" ? "Follows" : null,
     workStateLabels[work.state],
+    work.focus === undefined ? "Planned focus not set" : `Planned focus ${work.focus} of 5`,
     summary && summary !== "No parts recorded" ? summary : null,
   ]
     .filter(Boolean)
     .join(" · ");
+  // Angled so long names fit between columns; the full title is in the details panel.
   return (
     <div
-      className="absolute flex h-6 items-center gap-1"
-      style={{ left: stop.x - 12, top: stop.y - 12, width: ROADMAP_LABEL }}
+      className={cn(
+        "absolute flex max-w-56 items-center gap-1 whitespace-nowrap",
+        below ? "origin-top-left rotate-[18deg]" : "origin-bottom-left -rotate-[18deg]",
+      )}
+      // Anchored by the corner nearest the bar, which is also the rotation origin.
+      style={
+        below
+          ? { left: stop.x - 2, top: stop.y + height / 2 + 4 }
+          : { left: stop.x - 2, bottom: areaHeight - (stop.y - height / 2 - 4) }
+      }
     >
-      <Tooltip>
-        <TooltipTrigger
+      <button
+        type="button"
+        aria-label={`${work.title} · ${description}`}
+        aria-current={isSelected ? "true" : undefined}
+        {...inspection}
+        className={cn(
+          "min-w-0 cursor-pointer truncate rounded-sm px-0.5 text-xs outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+          stop.role === "milestone" ? "font-semibold" : "font-medium",
+          work.state === "planned" || work.state === "deferred"
+            ? "text-muted-foreground"
+            : "text-foreground",
+          isSelected && "underline decoration-2",
+        )}
+      >
+        {work.title}
+      </button>
+      {needs > 0 ? (
+        <Badge
+          variant="warning"
+          size="sm"
           render={
             <button
               type="button"
-              aria-label={`${work.title} · ${description}`}
-              aria-current={isSelected ? "true" : undefined}
-              onClick={onOpen}
-              className={cn(
-                "group flex h-6 min-w-0 items-center rounded-md ps-5 pe-0.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-                isSelected && "ring-2 ring-ring ring-inset",
-              )}
+              aria-label={
+                needs === 1
+                  ? `Needs you: ${stop.needs[0]!.title}`
+                  : `${needs} items need you in ${work.title}`
+              }
+              onClick={onOpenNeed}
             />
           }
         >
-          <span
-            className={cn(
-              "truncate rounded-sm bg-background px-1 group-hover:underline",
-              stop.role === "milestone" ? "font-semibold" : "font-medium",
-              work.state === "planned" || work.state === "deferred"
-                ? "text-muted-foreground"
-                : "text-foreground",
-            )}
-          >
-            {work.title}
-          </span>
-        </TooltipTrigger>
-        <TooltipPopup side="top">
-          <span className="block font-medium">{work.title}</span>
-          <span className="block">{description}</span>
-        </TooltipPopup>
-      </Tooltip>
-      <span className="flex shrink-0 items-center gap-1 rounded-md bg-background empty:hidden">
-        {needs > 0 ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Badge
-                  variant="warning"
-                  size="sm"
-                  render={
-                    <button
-                      type="button"
-                      aria-label={
-                        needs === 1
-                          ? `Needs you: ${stop.needs[0]!.title}`
-                          : `${needs} items need you in ${work.title}`
-                      }
-                      onClick={onOpenNeed}
-                    />
-                  }
-                />
-              }
-            >
-              <CircleAlertIcon aria-hidden />
-              {needs}
-            </TooltipTrigger>
-            <TooltipPopup side="top">
-              {stop.needs.map((need) => (
-                <span key={`${need.type}:${need.id}`} className="block">
-                  {need.title}
-                </span>
-              ))}
-            </TooltipPopup>
-          </Tooltip>
-        ) : null}
-        {stop.reviewCount > 0 ? (
-          <Badge variant="secondary" size="sm">
-            {stop.reviewCount} to review
-          </Badge>
-        ) : null}
-        {working > 0 ? (
-          <Badge
-            variant="info"
-            size="sm"
-            aria-label={`Agent working in ${working} linked conversations`}
-          >
-            <BotIcon aria-hidden />
-            {working}
-          </Badge>
-        ) : null}
-      </span>
+          <CircleAlertIcon aria-hidden />
+          {needs}
+        </Badge>
+      ) : null}
+      {stop.reviewCount > 0 ? (
+        <Badge variant="secondary" size="sm">
+          {stop.reviewCount} to review
+        </Badge>
+      ) : null}
+      {working > 0 ? (
+        <Badge
+          variant="info"
+          size="sm"
+          aria-label={`Agent working in ${working} linked conversations`}
+        >
+          <BotIcon aria-hidden />
+          {working}
+        </Badge>
+      ) : null}
     </div>
   );
 }

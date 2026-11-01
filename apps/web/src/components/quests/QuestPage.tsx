@@ -166,6 +166,7 @@ function QuestWorkspaceView({
   const documentTabs = useQuestDocumentTabs(environmentId);
   const [state, setState] = useState(initial);
   const [panel, setPanelState] = useState(() => initialPanel(environmentId, search));
+  const [preview, setPreview] = useState<{ view: QuestView; id: string } | null>(null);
   const [pending, setPending] = useState(false);
   const [notice, setNotice] = useState("");
   const [epoch, setEpoch] = useState(0);
@@ -248,6 +249,12 @@ function QuestWorkspaceView({
   const decisions = questionsByStatus(state.questions);
   const waitingDecisions = decisions.open.length + decisions.recorded.length;
   const current = panel.at(-1) ?? null;
+  // A preview belongs to the view it was started in; switching views drops it.
+  const previewWorkId = preview?.view === view ? preview.id : null;
+  const previewing =
+    previewWorkId !== null && !(current?.type === "work" && current.id === previewWorkId);
+  // Geographic views keep a stable inspector column so previews do not reflow what is hovered.
+  const keepsInspector = view === "overview" || view === "map";
   return (
     <QuestWorkspace
       value={{
@@ -260,6 +267,15 @@ function QuestWorkspaceView({
         openPanel,
         showView,
         openDocument,
+        previewWorkId,
+        previewWork: (id) =>
+          setPreview((previous) =>
+            id === null
+              ? null
+              : previous?.id === id && previous.view === view
+                ? previous
+                : { view, id },
+          ),
       }}
     >
       <header className="border-b px-4 pt-3">
@@ -381,18 +397,39 @@ function QuestWorkspaceView({
             <QuestOverview selectedWorkId={current?.type === "work" ? current.id : null} />
           )}
         </div>
-        {current ? (
+        {current || previewing || keepsInspector ? (
           <aside
             aria-label="Quest details"
-            className="absolute inset-0 z-20 flex min-h-0 flex-col bg-background lg:static lg:w-[30rem] lg:shrink-0 lg:border-l"
+            className={cn(
+              "absolute inset-0 z-20 flex min-h-0 flex-col bg-background lg:static lg:w-[30rem] lg:shrink-0 lg:border-l",
+              !current && "hidden lg:flex",
+            )}
           >
-            <QuestPanel
-              key={`${JSON.stringify(current)}:${state.revision}:${epoch}`}
-              entry={current}
-              canGoBack={panel.length > 1}
-              onBack={() => setPanel(panel.slice(0, -1))}
-              onClose={() => setPanel([])}
-            />
+            {current ? (
+              // Stays mounted under a preview so open editors keep their input and caret.
+              <div className={cn("flex min-h-0 flex-1 flex-col", previewing && "lg:hidden")}>
+                <QuestPanel
+                  key={`${JSON.stringify(current)}:${state.revision}:${epoch}`}
+                  entry={current}
+                  canGoBack={panel.length > 1}
+                  onBack={() => setPanel(panel.slice(0, -1))}
+                  onClose={() => setPanel([])}
+                />
+              </div>
+            ) : null}
+            {previewing && previewWorkId !== null ? (
+              <div className="hidden min-h-0 flex-1 flex-col lg:flex">
+                <QuestPanel
+                  key={`preview:${previewWorkId}:${state.revision}`}
+                  entry={{ type: "work", id: previewWorkId }}
+                  preview
+                />
+              </div>
+            ) : !current ? (
+              <p className="p-5 text-sm text-muted-foreground">
+                Hover or focus work to preview it here. Click to pin.
+              </p>
+            ) : null}
           </aside>
         ) : null}
       </div>

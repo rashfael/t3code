@@ -53,7 +53,7 @@ describe("QuestStore", () => {
               expectedRevision: editedDoc.revision,
               change: {
                 type: "work",
-                work: { ...work, title: "Bounded saved work", documentIds: [doc.id] },
+                work: { ...work, title: "Bounded saved work", documentIds: [doc.id], focus: 4 },
               },
             },
             actor,
@@ -88,6 +88,12 @@ describe("QuestStore", () => {
           expect(recovered.work.find((item) => item.id === saved.work.id)?.documentIds).toEqual([
             saved.doc.id,
           ]);
+          expect(recovered.work.find((item) => item.id === saved.work.id)?.focus).toBe(4);
+          expect(recovered.history.find((entry) => entry.kind === "work")?.changes).toContainEqual({
+            label: "Planned focus",
+            before: null,
+            after: "4 of 5",
+          });
           const applied = yield* reopened.update(
             {
               expectedRevision: recovered.revision,
@@ -186,6 +192,19 @@ describe("QuestStore", () => {
             actor,
           );
           expect(unchanged).toEqual(reapplied);
+          const { focus: _focus, ...unfocused } = reapplied.work.find(
+            (item) => item.id === saved.work.id,
+          )!;
+          const cleared = yield* reopened.update(
+            { expectedRevision: reapplied.revision, change: { type: "work", work: unfocused } },
+            actor,
+          );
+          expect(cleared.work.find((item) => item.id === saved.work.id)).not.toHaveProperty(
+            "focus",
+          );
+          expect(cleared.history.at(-1)?.changes).toEqual([
+            { label: "Planned focus", before: "4 of 5", after: null },
+          ]);
         }).pipe(Effect.provide(layer));
       }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -283,6 +302,16 @@ describe("QuestStore", () => {
             )
             .pipe(Effect.flip);
           expect(cycle.reason).toBe("invalid");
+          const outOfRange = yield* store
+            .update(
+              {
+                expectedRevision: current.revision,
+                change: { type: "work", work: { ...first, focus: 2.5 } },
+              },
+              actor,
+            )
+            .pipe(Effect.flip);
+          expect(outOfRange.reason).toBe("invalid");
           expect(yield* store.get).toEqual(current);
         }).pipe(Effect.provide(layer));
       }).pipe(Effect.provide(NodeServices.layer)),

@@ -1,5 +1,5 @@
 import type { EnvironmentId, QuestState, QuestUpdateInput } from "@t3tools/contracts";
-import { createContext, use } from "react";
+import { createContext, use, type PointerEvent } from "react";
 
 export type QuestView = "overview" | "conversation" | "map" | "decisions" | "documents" | "history";
 
@@ -64,6 +64,9 @@ export interface QuestWorkspaceContext {
   readonly showView: (view: QuestView, extra?: Omit<QuestSearch, "view" | "env">) => void;
   /** Opens a document tab: beside the conversation when it is shown, else in Documents. */
   readonly openDocument: (tabId: string) => void;
+  /** Work shown in the details panel without pinning it; null restores the pinned panel. */
+  readonly previewWorkId: string | null;
+  readonly previewWork: (id: string | null) => void;
 }
 
 export const QuestWorkspace = createContext<QuestWorkspaceContext | null>(null);
@@ -72,4 +75,24 @@ export function useQuest(): QuestWorkspaceContext {
   const value = use(QuestWorkspace);
   if (!value) throw new Error("Quest views render inside a loaded Quest workspace.");
   return value;
+}
+
+/**
+ * Hover or keyboard focus previews work in the details panel, leaving restores the pinned panel and
+ * a click pins it. Touch skips the preview so a tap only pins.
+ */
+export function useWorkInspection() {
+  const { openPanel, previewWork } = useQuest();
+  return (id: string) => ({
+    onPointerEnter: (event: PointerEvent) => {
+      if (event.pointerType !== "touch") previewWork(id);
+    },
+    onPointerLeave: () => previewWork(null),
+    onFocus: () => previewWork(id),
+    onBlur: () => previewWork(null),
+    onClick: () => {
+      previewWork(null);
+      openPanel({ type: "work", id });
+    },
+  });
 }

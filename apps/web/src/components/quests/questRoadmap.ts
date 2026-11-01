@@ -2,20 +2,25 @@ import { questQuestionStatus, type QuestState, type QuestWork } from "@t3tools/c
 
 import { deliveryLeaves } from "./questModel";
 
-const ROADMAP_COLUMN = 280;
-/** Labels end well before the next column so forks and joins bend in clear space. */
-export const ROADMAP_LABEL = 220;
-const ROADMAP_ROW = 32;
-const PADDING_X = 16;
-const PADDING_Y = 20;
+const ROADMAP_COLUMN = 240;
+/** Room after the last column for its angled labels. */
+const ROADMAP_LABEL = 200;
+const PADDING_X = 24;
+const PADDING_Y = 12;
 
 export type RoadmapStopRole = "milestone" | "part" | "successor";
 
 export interface RoadmapStop {
   readonly work: QuestWork;
   readonly role: RoadmapStopRole;
+  readonly column: number;
+  readonly row: number;
+  /** Bar centre. */
   readonly x: number;
   readonly y: number;
+  /** Bar extent on each side; they differ when what enters and what leaves are not the same. */
+  readonly inHeight: number;
+  readonly outHeight: number;
   /** Open or recorded decisions, then attention work without one, inside this stop's scope. */
   readonly needs: ReadonlyArray<RoadmapNeed>;
   /** Delivery leaves in scope that await review; parents and attempts are not counted again. */
@@ -33,6 +38,10 @@ export interface RoadmapPath {
   readonly kind: "fork" | "follows";
   readonly source: string;
   readonly target: string;
+  readonly width: number;
+  /** Ribbon centre where it leaves the source bar and enters the target bar. */
+  readonly sourceY: number;
+  readonly targetY: number;
 }
 
 export interface Roadmap {
@@ -140,12 +149,6 @@ export function layoutRoadmap(state: QuestState): Roadmap | null {
   const nextColumn = maxRank + 1;
   for (const [id, sources] of successors) rows.set(id, placeRow(nextColumn, meanRow(sources)));
 
-  const allRows = [...rows.values()];
-  const minRow = Math.min(...allRows);
-  const maxRow = Math.max(...allRows);
-  const yOf = (row: number) => PADDING_Y + (row - minRow) * ROADMAP_ROW;
-  const xOf = (column: number) => PADDING_X + column * ROADMAP_COLUMN;
-
   const scopes = new Map<string, Array<QuestWork>>();
   for (const item of state.work) {
     const scope = scopeOf(item.id);
@@ -154,7 +157,7 @@ export function layoutRoadmap(state: QuestState): Roadmap | null {
     list.push(item);
     scopes.set(scope, list);
   }
-  const describe = (work: QuestWork, role: RoadmapStopRole, x: number, y: number): RoadmapStop => {
+  const describe = (work: QuestWork, role: RoadmapStopRole, column: number) => {
     // The milestone's parts are stops of their own, so the milestone covers only itself.
     const scope = role === "part" ? (scopes.get(work.id) ?? [work]) : [work];
     const scopeIds = new Set(scope.map((item) => item.id));
@@ -167,8 +170,8 @@ export function layoutRoadmap(state: QuestState): Roadmap | null {
     return {
       work,
       role,
-      x,
-      y,
+      column,
+      row: rows.get(work.id) ?? 0,
       needs: [
         ...waiting.map((question) => ({
           type: "question" as const,
@@ -185,17 +188,12 @@ export function layoutRoadmap(state: QuestState): Roadmap | null {
         .map((conversation) => conversation.threadId),
     };
   };
-
-  const stops: Array<RoadmapStop> = [
-    describe(milestone, "milestone", xOf(0), yOf(milestoneRow)),
-    ...parts.map((part) =>
-      describe(part, "part", xOf(1 + (ranks.get(part.id) ?? 0)), yOf(rows.get(part.id) ?? 0)),
-    ),
-    ...[...successors.keys()].map((id) =>
-      describe(byId.get(id)!, "successor", xOf(1 + nextColumn), yOf(rows.get(id) ?? 0)),
-    ),
+  const placed = [
+    describe(milestone, "milestone", 0),
+    ...parts.map((part) => describe(part, "part", 1 + (ranks.get(part.id) ?? 0))),
+    ...[...successors.keys()].map((id) => describe(byId.get(id)!, "successor", 1 + nextColumn)),
   ];
-  const paths: Array<RoadmapPath> = [
+  const links = [
     ...lanes.map((part) => ({
       id: `fork:${part.id}`,
       kind: "fork" as const,
@@ -211,30 +209,134 @@ export function layoutRoadmap(state: QuestState): Roadmap | null {
       })),
     ),
   ];
-  const columns = 2 + nextColumn;
+  return arrange(placed, links, 2 + nextColumn, milestoneRow, successors.size === 0);
+}
+
+/** Pixels per planned-focus step. */
+export const FOCUS_UNIT = 4;
+/** Drawing weight for work whose focus is not set: structural, deliberately not zero. */
+export const NEUTRAL_FOCUS = 3;
+export const ROADMAP_BAR = 6;
+const LABEL_ROOM = 44;
+
+function focusWeight(work: QuestWork): number {
+  return work.focus ?? NEUTRAL_FOCUS;
+}
+
+/**
+ * Each ribbon carries the planned focus of the work it leads into. A stop with several incoming
+ * ribbons divides its own focus among them, so a join never adds up to more than the work it
+ * enters. A stop's outgoing side shows the focus it leads on to, independent of its own: shared
+ * prerequisites neither multiply nor conserve investment, and bars show both sides when they differ.
+ */
+function arrange(
+  placed: ReadonlyArray<Omit<RoadmapStop, "x" | "y" | "inHeight" | "outHeight">>,
+  links: ReadonlyArray<Omit<RoadmapPath, "width" | "sourceY" | "targetY">>,
+  columns: number,
+  milestoneRow: number,
+  missingNext: boolean,
+): Roadmap {
+  const byId = new Map(placed.map((stop) => [stop.work.id, stop]));
+  const incomingCount = new Map<string, number>();
+  for (const link of links)
+    incomingCount.set(link.target, (incomingCount.get(link.target) ?? 0) + 1);
+  const linkWidth = (link: (typeof links)[number]) => {
+    const target = byId.get(link.target)!;
+    return (focusWeight(target.work) * FOCUS_UNIT) / (incomingCount.get(link.target) ?? 1);
+  };
+  const inHeight = new Map<string, number>();
+  const outHeight = new Map<string, number>();
+  for (const link of links) {
+    const width = linkWidth(link);
+    outHeight.set(link.source, (outHeight.get(link.source) ?? 0) + width);
+    inHeight.set(link.target, (inHeight.get(link.target) ?? 0) + width);
+  }
+  const barHeight = (id: string) => {
+    const own = focusWeight(byId.get(id)!.work) * FOCUS_UNIT;
+    return Math.max(inHeight.get(id) ?? 0, outHeight.get(id) ?? 0, own);
+  };
+  const pitch = Math.max(...placed.map((stop) => barHeight(stop.work.id))) + LABEL_ROOM;
+  const allRows = placed.map((stop) => stop.row);
+  const minRow = Math.min(...allRows, milestoneRow);
+  const maxRow = Math.max(...allRows, milestoneRow);
+  const top = LABEL_ROOM + pitch / 2;
+  const yOf = (row: number) => top + (row - minRow) * pitch;
+  const xOf = (column: number) => PADDING_X + column * ROADMAP_COLUMN;
+
+  const stops: Array<RoadmapStop> = placed.map((stop) => {
+    const own = focusWeight(stop.work) * FOCUS_UNIT;
+    return {
+      ...stop,
+      x: xOf(stop.column),
+      y: yOf(stop.row),
+      // A stop with nothing on one side still shows its own planned focus there.
+      inHeight: inHeight.get(stop.work.id) ?? own,
+      outHeight: outHeight.get(stop.work.id) ?? own,
+    };
+  });
+  const stopsById = new Map(stops.map((stop) => [stop.work.id, stop]));
+  // Ribbons stack on each side of a bar in the vertical order of their other ends.
+  const offsets = new Map<string, { sourceY: number; targetY: number; width: number }>();
+  const stackSide = (side: "source" | "target") => {
+    for (const stop of stops) {
+      const attached = links
+        .filter((link) => link[side] === stop.work.id)
+        .toSorted((a, b) => {
+          const other = side === "source" ? "target" : "source";
+          const ay = stopsById.get(a[other])!.y;
+          const by = stopsById.get(b[other])!.y;
+          return ay - by || a.id.localeCompare(b.id);
+        });
+      const height = side === "source" ? stop.outHeight : stop.inHeight;
+      let cursor = stop.y - height / 2;
+      for (const link of attached) {
+        const width = linkWidth(link);
+        const entry = offsets.get(link.id) ?? { sourceY: 0, targetY: 0, width };
+        if (side === "source") entry.sourceY = cursor + width / 2;
+        else entry.targetY = cursor + width / 2;
+        offsets.set(link.id, entry);
+        cursor += width;
+      }
+    }
+  };
+  stackSide("source");
+  stackSide("target");
+  const paths: Array<RoadmapPath> = links.map((link) => ({ ...link, ...offsets.get(link.id)! }));
+  const lowest = Math.max(...stops.map((stop) => stop.y + barHeight(stop.work.id) / 2));
   return {
-    milestone,
+    milestone: stops[0]!.work,
     stops,
     paths,
-    gap: successors.size === 0 ? { x: xOf(1 + nextColumn), y: yOf(milestoneRow) } : null,
+    gap: missingNext ? { x: xOf(columns - 1), y: yOf(milestoneRow) } : null,
     width: PADDING_X * 2 + (columns - 1) * ROADMAP_COLUMN + ROADMAP_LABEL,
-    height: PADDING_Y * 2 + (maxRow - minRow) * ROADMAP_ROW,
+    height: Math.max(lowest, yOf(maxRow)) + LABEL_ROOM + PADDING_Y,
   };
 }
 
-const BEND = 20;
-const bendStart = (source: RoadmapStop, target: RoadmapStop) =>
-  Math.max(source.x, target.x - BEND * 2);
+const SAMPLES = 24;
 
-/** A horizontal lane from `source` that bends into `target`'s row just before its column. */
-export function roadmapPathD(source: RoadmapStop, target: RoadmapStop): string {
-  if (source.y === target.y) return `M ${source.x} ${source.y} H ${target.x}`;
-  const start = bendStart(source, target);
-  const mid = (start + target.x) / 2;
-  return `M ${source.x} ${source.y} H ${start} C ${mid} ${source.y}, ${mid} ${target.y}, ${target.x} ${target.y}`;
-}
-
-/** The stretch a milestone's forks share before they bend apart. */
-export function roadmapTrunkD(milestone: RoadmapStop, firstPart: RoadmapStop): string {
-  return `M ${milestone.x} ${milestone.y} H ${bendStart(milestone, firstPart)}`;
+/**
+ * A ribbon of constant perpendicular width along a cubic centreline with horizontal end tangents,
+ * so it never narrows in the middle of a bend the way two offset curves do.
+ */
+export function ribbonD(x0: number, y0: number, x1: number, y1: number, width: number): string {
+  const dx = (x1 - x0) / 2;
+  const half = width / 2;
+  const upper: Array<string> = [];
+  const lower: Array<string> = [];
+  for (let index = 0; index <= SAMPLES; index += 1) {
+    const t = index / SAMPLES;
+    const u = 1 - t;
+    const x =
+      u * u * u * x0 + 3 * u * u * t * (x0 + dx) + 3 * u * t * t * (x1 - dx) + t * t * t * x1;
+    const y = u * u * u * y0 + 3 * u * u * t * y0 + 3 * u * t * t * y1 + t * t * t * y1;
+    const tx = 3 * dx * (u * u + t * t);
+    const ty = 6 * u * t * (y1 - y0);
+    const length = Math.hypot(tx, ty) || 1;
+    const nx = (-ty / length) * half;
+    const ny = (tx / length) * half;
+    upper.push(`${(x + nx).toFixed(2)} ${(y + ny).toFixed(2)}`);
+    lower.push(`${(x - nx).toFixed(2)} ${(y - ny).toFixed(2)}`);
+  }
+  return `M ${upper.join(" L ")} L ${lower.toReversed().join(" L ")} Z`;
 }

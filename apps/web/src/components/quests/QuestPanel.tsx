@@ -1,4 +1,5 @@
 import {
+  QUEST_FOCUS_LEVELS,
   questAppliedUnderstanding,
   questQuestionStatus,
   type QuestHistoryEntry,
@@ -51,32 +52,48 @@ function panelTitle(entry: PanelEntry): string {
 
 export function QuestPanel({
   entry,
-  canGoBack,
+  canGoBack = false,
   onBack,
   onClose,
+  preview = false,
 }: {
   entry: PanelEntry;
-  canGoBack: boolean;
-  onBack: () => void;
-  onClose: () => void;
+  canGoBack?: boolean;
+  onBack?: () => void;
+  onClose?: () => void;
+  /** A read-only look at hovered or focused work; the pinned panel and its drafts stay underneath. */
+  preview?: boolean;
 }) {
   return (
     <>
       <div className="flex shrink-0 items-center gap-1 border-b px-2 py-1.5">
-        {canGoBack ? (
+        {preview ? (
+          <span className="px-1 text-xs text-muted-foreground">Preview · click to pin</span>
+        ) : null}
+        {canGoBack && onBack ? (
           <Button size="icon-sm" variant="ghost" aria-label="Back" onClick={onBack}>
             <ArrowLeftIcon />
           </Button>
         ) : null}
-        <span className="px-1 text-xs font-medium text-muted-foreground">{panelTitle(entry)}</span>
-        <span className="ms-auto">
-          <Button size="icon-sm" variant="ghost" aria-label="Close details" onClick={onClose}>
-            <XIcon />
-          </Button>
-        </span>
+        {preview ? null : (
+          <span className="px-1 text-xs font-medium text-muted-foreground">
+            {panelTitle(entry)}
+          </span>
+        )}
+        {onClose ? (
+          <span className="ms-auto">
+            <Button size="icon-sm" variant="ghost" aria-label="Close details" onClick={onClose}>
+              <XIcon />
+            </Button>
+          </span>
+        ) : null}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        {entry.type === "work" ? <WorkInspector id={entry.id} /> : <QuestionView id={entry.id} />}
+        {entry.type === "work" ? (
+          <WorkInspector id={entry.id} preview={preview} />
+        ) : (
+          <QuestionView id={entry.id} />
+        )}
       </div>
     </>
   );
@@ -224,7 +241,7 @@ function ChangeText({ label, text }: { label: string; text: string | null }) {
   );
 }
 
-function WorkInspector({ id }: { id: string }) {
+function WorkInspector({ id, preview }: { id: string; preview: boolean }) {
   const { state, canWrite, pending, save, openPanel, showView, openDocument } = useQuest();
   const threads = useQuestConversationThreads();
   const edit = useEditorDraft("work", id);
@@ -257,10 +274,10 @@ function WorkInspector({ id }: { id: string }) {
     .toReversed();
   const title = (otherId: string) =>
     state.work.find((item) => item.id === otherId)?.title ?? otherId;
-  if (edit.draft) return <WorkEditor work={work} />;
-  if (handoff.draft) return <HandoffEditor work={work} />;
+  if (!preview && edit.draft) return <WorkEditor work={work} />;
+  if (!preview && handoff.draft) return <HandoffEditor work={work} />;
   return (
-    <article aria-label={work.title}>
+    <article aria-label={preview ? `Preview: ${work.title}` : work.title}>
       {path.length > 0 ? (
         <nav
           aria-label="Part of"
@@ -313,6 +330,8 @@ function WorkInspector({ id }: { id: string }) {
           </Button>
         ) : null}
       </div>
+
+      <PlannedFocus work={work} preview={preview} />
 
       <Block title="Current understanding">
         <p className="whitespace-pre-wrap text-sm">
@@ -509,6 +528,60 @@ function WorkInspector({ id }: { id: string }) {
         )}
       </Block>
     </article>
+  );
+}
+
+const focusLabels: Record<number, string> = {
+  1: "Light",
+  2: "Some",
+  3: "Moderate",
+  4: "Strong",
+  5: "Main",
+};
+
+/** An explicit relative plan for where to concentrate work; unset stays visibly unspecified. */
+function PlannedFocus({ work, preview }: { work: QuestWork; preview: boolean }) {
+  const { canWrite, pending, save } = useQuest();
+  const label =
+    work.focus === undefined
+      ? "Not set"
+      : `${work.focus} of 5 · ${focusLabels[work.focus] ?? "Unknown"}`;
+  const setFocus = (focus: number | null) => {
+    const { focus: _previous, ...rest } = work;
+    void save({ type: "work", work: focus === null ? rest : { ...rest, focus } });
+  };
+  return (
+    <section className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+      <span className="text-muted-foreground">Planned focus</span>
+      {canWrite && !preview ? (
+        <span role="group" aria-label="Planned focus" className="flex items-center gap-0.5">
+          {QUEST_FOCUS_LEVELS.map((level) => (
+            <Button
+              key={level}
+              size="xs"
+              variant={work.focus === level ? "secondary" : "ghost"}
+              aria-pressed={work.focus === level}
+              aria-label={`Planned focus ${level} of 5, ${focusLabels[level]}`}
+              disabled={pending || work.focus === level}
+              onClick={() => setFocus(level)}
+            >
+              {level}
+            </Button>
+          ))}
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={pending || work.focus === undefined}
+            onClick={() => setFocus(null)}
+          >
+            Clear
+          </Button>
+        </span>
+      ) : null}
+      <span className={work.focus === undefined ? "text-muted-foreground italic" : undefined}>
+        {label}
+      </span>
+    </section>
   );
 }
 

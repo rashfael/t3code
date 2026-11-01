@@ -7,6 +7,7 @@ import {
   QuestPendingWrite,
   QuestRevisionRecord,
   QuestState,
+  isQuestFocus,
   questAppliedUnderstanding,
   type ModelSelection,
   type QuestActor,
@@ -145,10 +146,12 @@ const WORK_FIELDS = [
   ["priorAttempts", "Previous attempts"],
   ["findings", "Unresolved findings"],
   ["handoff", "Prepared handoff"],
+  ["focus", "Planned focus"],
 ] as const satisfies ReadonlyArray<readonly [keyof QuestWork, string]>;
 
 function fieldText(value: QuestWork[keyof QuestWork]): string | null {
-  if (value === null) return null;
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return `${value} of 5`;
   return typeof value === "string" ? value : value.join(", ");
 }
 
@@ -207,6 +210,7 @@ function changeState(
         !existing ||
         work.kind !== existing.kind ||
         !work.title.trim() ||
+        (work.focus !== undefined && !isQuestFocus(work.focus)) ||
         work.documentIds.some((id) => !documentExists(current, id)) ||
         !validParent(current, work)
       )
