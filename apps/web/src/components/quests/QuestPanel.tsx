@@ -1,6 +1,8 @@
 import {
   QUEST_FOCUS_LEVELS,
   questQuestionStatus,
+  type QuestPhase,
+  type QuestWorkRole,
   type QuestHistoryEntry,
   type QuestWork,
 } from "@t3tools/contracts";
@@ -15,6 +17,7 @@ import { DocumentAssociations, HandoffEditor, useEditorDraft, WorkEditor } from 
 import { ReconstructRevision } from "./QuestDocuments";
 import {
   childrenOf,
+  phaseLabels,
   questionStatusLabels,
   workPath,
   workStateLabels,
@@ -269,6 +272,7 @@ function WorkInspector({ id, preview }: { id: string; preview: boolean }) {
         {work.kind === "attempt" ? <Badge variant="outline">Attempt</Badge> : null}
         <Badge variant={workStateVariants[work.state]}>{workStateLabels[work.state]}</Badge>
         {state.currentWorkId === work.id ? <Badge variant="info">Current milestone</Badge> : null}
+        {work.phase ? <Badge variant="outline">{phaseLabels[work.phase]}</Badge> : null}
       </div>
       <h2 className="mt-2 text-lg font-semibold">{work.title}</h2>
       <div className="mt-3 flex flex-wrap gap-1.5">
@@ -287,7 +291,11 @@ function WorkInspector({ id, preview }: { id: string; preview: boolean }) {
         <Button size="sm" variant="ghost" onClick={() => showView("map", { work: work.id })}>
           Show in map
         </Button>
-        {canWrite && work.kind === "work" && state.currentWorkId !== work.id && parts.length > 0 ? (
+        {canWrite &&
+        work.kind === "work" &&
+        work.role !== "workstream" &&
+        state.currentWorkId !== work.id &&
+        (parts.length > 0 || work.role === "milestone") ? (
           <Button
             size="sm"
             variant="ghost"
@@ -300,6 +308,7 @@ function WorkInspector({ id, preview }: { id: string; preview: boolean }) {
       </div>
 
       <PlannedFocus work={work} preview={preview} />
+      {work.kind === "work" ? <PlanRole work={work} preview={preview} /> : null}
 
       <Block title="Current understanding">
         <p className="whitespace-pre-wrap text-sm">
@@ -553,6 +562,116 @@ function PlannedFocus({ work, preview }: { work: QuestWork; preview: boolean }) 
       <span className={work.focus === undefined ? "text-muted-foreground italic" : undefined}>
         {label}
       </span>
+    </section>
+  );
+}
+
+const roleLabels: Record<QuestWorkRole | "work", string> = {
+  work: "Work",
+  milestone: "Milestone",
+  workstream: "Workstream",
+};
+
+/** What the work stands for in the plan, its phase and its workstreams; each change is a normal work edit. */
+function PlanRole({ work, preview }: { work: QuestWork; preview: boolean }) {
+  const { state, canWrite, pending, save } = useQuest();
+  const editable = canWrite && !preview;
+  const streams = state.work.filter((item) => item.role === "workstream" && item.id !== work.id);
+  const memberOf = new Set(work.workstreamIds ?? []);
+  const update = (patch: {
+    role?: QuestWorkRole | null;
+    phase?: QuestPhase | null;
+    workstreamIds?: ReadonlyArray<string>;
+  }) => {
+    const { role, phase, workstreamIds, ...rest } = { ...work, ...patch };
+    void save({
+      type: "work",
+      work: {
+        ...rest,
+        ...(role ? { role } : {}),
+        ...(phase ? { phase } : {}),
+        ...(workstreamIds && workstreamIds.length > 0 ? { workstreamIds } : {}),
+      },
+    });
+  };
+  const choice = <T extends string>(
+    label: string,
+    options: ReadonlyArray<readonly [T | null, string]>,
+    value: T | null,
+    onPick: (value: T | null) => void,
+  ) => (
+    <>
+      <span className="text-muted-foreground">{label}</span>
+      {editable ? (
+        <span role="group" aria-label={label} className="flex flex-wrap items-center gap-0.5">
+          {options.map(([option, text]) => (
+            <Button
+              key={text}
+              size="xs"
+              variant={value === option ? "secondary" : "ghost"}
+              aria-pressed={value === option}
+              disabled={pending || value === option}
+              onClick={() => onPick(option)}
+            >
+              {text}
+            </Button>
+          ))}
+        </span>
+      ) : (
+        <span className={value === null ? "text-muted-foreground italic" : undefined}>
+          {options.find(([option]) => option === value)?.[1] ?? "Not set"}
+        </span>
+      )}
+    </>
+  );
+  return (
+    <section className="mt-2 grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1 text-sm">
+      {choice<QuestWorkRole>(
+        "Role",
+        [
+          [null, roleLabels.work],
+          ["milestone", roleLabels.milestone],
+          ["workstream", roleLabels.workstream],
+        ],
+        work.role ?? null,
+        (role) => update({ role }),
+      )}
+      {choice<QuestPhase>(
+        "Phase",
+        [[null, "Not set"], ...(Object.entries(phaseLabels) as Array<[QuestPhase, string]>)],
+        work.phase ?? null,
+        (phase) => update({ phase }),
+      )}
+      {work.role !== "workstream" && streams.length > 0 ? (
+        <>
+          <span className="text-muted-foreground">Workstreams</span>
+          <span role="group" aria-label="Workstreams" className="flex flex-wrap gap-0.5">
+            {(editable ? streams : streams.filter((item) => memberOf.has(item.id))).map(
+              (stream) => (
+                <Button
+                  key={stream.id}
+                  size="xs"
+                  variant={memberOf.has(stream.id) ? "secondary" : "ghost"}
+                  aria-pressed={memberOf.has(stream.id)}
+                  disabled={!editable || pending}
+                  onClick={() =>
+                    update({
+                      workstreamIds: memberOf.has(stream.id)
+                        ? [...memberOf].filter((id) => id !== stream.id)
+                        : [...memberOf, stream.id],
+                    })
+                  }
+                >
+                  {stream.title}
+                </Button>
+              ),
+            )}
+            {!editable && memberOf.size === 0 ? (
+              <span className="text-muted-foreground italic">None</span>
+            ) : null}
+          </span>
+        </>
+      ) : null}
     </section>
   );
 }

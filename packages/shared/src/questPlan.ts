@@ -1,6 +1,15 @@
 import type { QuestDomain, QuestPlanEdit, QuestPlanWorkPatch, QuestWork } from "@t3tools/contracts";
 
-const PLAN_WORK_KEYS = ["title", "state", "parentId", "understanding", "focus"] as const;
+const PLAN_WORK_KEYS = [
+  "title",
+  "state",
+  "parentId",
+  "understanding",
+  "focus",
+  "role",
+  "workstreamIds",
+  "phase",
+] as const;
 type PlanWorkKey = (typeof PLAN_WORK_KEYS)[number];
 const PLAN_WORK_LABELS: Record<PlanWorkKey, string> = {
   title: "title",
@@ -8,10 +17,20 @@ const PLAN_WORK_LABELS: Record<PlanWorkKey, string> = {
   parentId: "parent",
   understanding: "understanding",
   focus: "planned focus",
+  role: "role",
+  workstreamIds: "workstreams",
+  phase: "phase",
 };
 
-function planWorkValue(work: QuestWork, key: PlanWorkKey): string | number | null {
-  return key === "focus" ? (work.focus ?? null) : work[key];
+type PlanWorkValue = string | number | null;
+
+/** One comparable value per key; workstream lists compare by their ordered ids. */
+function planValue(source: QuestWork | QuestPlanWorkPatch, key: PlanWorkKey): PlanWorkValue {
+  if (key === "workstreamIds") {
+    const ids = source.workstreamIds;
+    return ids && ids.length > 0 ? ids.join(", ") : null;
+  }
+  return source[key] ?? null;
 }
 
 function patchKeys(patch: QuestPlanWorkPatch): ReadonlyArray<PlanWorkKey> {
@@ -21,7 +40,10 @@ function patchKeys(patch: QuestPlanWorkPatch): ReadonlyArray<PlanWorkKey> {
 /** Captures the current values a patch replaces. */
 export function questPlanWorkBase(work: QuestWork, after: QuestPlanWorkPatch): QuestPlanWorkPatch {
   return Object.fromEntries(
-    patchKeys(after).map((key) => [key, planWorkValue(work, key)]),
+    patchKeys(after).map((key) => [
+      key,
+      key === "workstreamIds" ? (work.workstreamIds ?? []) : planValue(work, key),
+    ]),
   ) as QuestPlanWorkPatch;
 }
 
@@ -76,12 +98,12 @@ export function questPlanEditChecks(
             const work = state.work.find((item) => item.id === edit.workId);
             if (!work) return invalid("This work is no longer in the Quest.");
             const keys = patchKeys(edit.after);
-            if (keys.every((key) => planWorkValue(work, key) === (edit.after[key] ?? null)))
+            if (keys.every((key) => planValue(work, key) === planValue(edit.after, key)))
               return already;
             const moved = keys.filter((key) => {
-              const current = planWorkValue(work, key);
+              const current = planValue(work, key);
               return (
-                current !== (edit.before[key] ?? null) && current !== (edit.after[key] ?? null)
+                current !== planValue(edit.before, key) && current !== planValue(edit.after, key)
               );
             });
             if (moved.length > 0)
@@ -152,8 +174,13 @@ export function questPlanEditSummary(
       const show = (patch: QuestPlanWorkPatch) =>
         keys
           .map((key) => {
-            const value = patch[key] ?? null;
-            const text = key === "parentId" ? title(value as string | null) : value;
+            const value = planValue(patch, key);
+            const text =
+              key === "parentId"
+                ? title(value as string | null)
+                : key === "workstreamIds"
+                  ? (patch.workstreamIds ?? []).map((id) => title(id)).join(", ") || null
+                  : value;
             return `${PLAN_WORK_LABELS[key]}: ${text ?? "(none)"}`;
           })
           .join("\n");

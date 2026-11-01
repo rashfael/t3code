@@ -157,4 +157,80 @@ describe("layoutRoadmap", () => {
     expect(layoutRoadmap(withoutNext)!.gap).not.toBeNull();
     expect(layoutRoadmap({ ...state, currentWorkId: null })).toBeNull();
   });
+
+  it("draws every explicit milestone at any depth, ordered only by recorded dependencies", () => {
+    const milestone = (id: string, parentId: string | null, state: QuestWork["state"]) => ({
+      ...work(id, parentId, state),
+      role: "milestone" as const,
+    });
+    const plan = {
+      currentWorkId: "now-part",
+      work: [
+        { ...work("stream-a", null), role: "workstream" as const },
+        { ...work("stream-b", null), role: "workstream" as const },
+        { ...milestone("first", null, "done"), workstreamIds: ["stream-a"] },
+        milestone("journeys", null, "review"),
+        // Nested milestones lead into the milestone that contains them.
+        milestone("left", "journeys", "review"),
+        { ...milestone("right", "journeys", "review"), workstreamIds: ["stream-b"] },
+        work("right-task", "right", "review"),
+        milestone("now", null, "active"),
+        work("now-part", "now", "active"),
+        milestone("later-a", null, "planned"),
+        milestone("later-b", null, "planned"),
+        // Shares a workstream with "first" but nothing orders it: it stands alone.
+        { ...milestone("aside", null, "planned"), workstreamIds: ["stream-a"] },
+        work("setup", "now", "review"),
+      ],
+      relations: [
+        follows("left", "first"),
+        // Deeper work is lifted to the milestone holding it.
+        follows("right-task", "first"),
+        follows("now", "journeys"),
+        follows("later-a", "now-part"),
+        follows("later-b", "now"),
+      ],
+      questions: [question("q-setup", "setup"), question("q-right", "right-task")],
+      conversations: [],
+    } as unknown as QuestState;
+    const roadmap = layoutRoadmap(plan)!;
+    const stop = (id: string) => roadmap.stops.find((item) => item.work.id === id)!;
+    expect(roadmap.stops.map((item) => item.work.id).toSorted()).toEqual(
+      ["first", "journeys", "left", "right", "now", "later-a", "later-b", "aside"].toSorted(),
+    );
+    expect(roadmap.paths.map((path) => path.id).toSorted()).toEqual(
+      [
+        "follows:first:left",
+        "follows:first:right",
+        "within:left:journeys",
+        "within:right:journeys",
+        "follows:journeys:now",
+        "follows:now:later-a",
+        "follows:now:later-b",
+      ].toSorted(),
+    );
+    // Earlier, current and later sit in order; parallel branches share a column and converge.
+    expect(stop("left").x).toBe(stop("right").x);
+    expect(stop("first").x).toBeLessThan(stop("left").x);
+    expect(stop("journeys").x).toBeGreaterThan(stop("left").x);
+    expect(stop("now").x).toBeGreaterThan(stop("journeys").x);
+    expect(stop("later-a").x).toBe(stop("later-b").x);
+    expect(stop("aside").x).toBe(stop("first").x);
+    // The current work marks the milestone holding it; it does not become the only root.
+    expect(roadmap.stops.filter((item) => item.isCurrent).map((item) => item.work.id)).toEqual([
+      "now",
+    ]);
+    // Needs and reviews count once, at the nearest milestone.
+    expect(stop("now").needs.map((need) => need.id)).toEqual(["q-setup"]);
+    expect(stop("right").needs.map((need) => need.id)).toEqual(["q-right"]);
+    expect(stop("journeys").needs).toEqual([]);
+    expect(stop("right").reviewCount).toBe(1);
+    expect(stop("journeys").reviewCount).toBe(0);
+    expect(roadmap.gap).toBeNull();
+    const withoutLater = {
+      ...plan,
+      relations: plan.relations.filter((relation) => !relation.from.startsWith("later")),
+    };
+    expect(layoutRoadmap(withoutLater)!.gap).not.toBeNull();
+  });
 });

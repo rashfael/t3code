@@ -211,6 +211,35 @@ describe("QuestStore", () => {
           expect(cleared.history.at(-1)?.changes).toEqual([
             { label: "Planned focus", before: "4 of 5", after: null },
           ]);
+          // Plan roles, workstream membership and phase are recorded like any other field.
+          const stream = cleared.work.find((item) => item.id !== saved.work.id)!;
+          const streamed = yield* reopened.update(
+            {
+              expectedRevision: cleared.revision,
+              change: { type: "work", work: { ...stream, role: "workstream" } },
+            },
+            actor,
+          );
+          const semantic = yield* reopened.update(
+            {
+              expectedRevision: streamed.revision,
+              change: {
+                type: "work",
+                work: {
+                  ...unfocused,
+                  role: "milestone",
+                  workstreamIds: [stream.id],
+                  phase: "integration",
+                },
+              },
+            },
+            actor,
+          );
+          expect(semantic.history.at(-1)?.changes).toEqual([
+            { label: "Role", before: null, after: "milestone" },
+            { label: "Workstreams", before: null, after: stream.id },
+            { label: "Phase", before: null, after: "integration" },
+          ]);
         }).pipe(Effect.provide(layer));
       }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -318,6 +347,20 @@ describe("QuestStore", () => {
             )
             .pipe(Effect.flip);
           expect(outOfRange.reason).toBe("invalid");
+          // Membership names workstreams only; ordinary work is not one.
+          const notAStream = yield* store
+            .update(
+              {
+                expectedRevision: current.revision,
+                change: {
+                  type: "work",
+                  work: { ...first, workstreamIds: [current.work[1]!.id] },
+                },
+              },
+              actor,
+            )
+            .pipe(Effect.flip);
+          expect(notAStream.reason).toBe("invalid");
           expect(yield* store.get).toEqual(current);
         }).pipe(Effect.provide(layer));
       }).pipe(Effect.provide(NodeServices.layer)),
@@ -1668,6 +1711,8 @@ describe("QuestStore plan coordination", () => {
                       state: "planned",
                       understanding: "Reconcile parallel discussions into one plan.",
                       focus: 4,
+                      role: "milestone",
+                      phase: "integration",
                     },
                   },
                   { type: "add-follows", from: "two-discussions", to: "n1a-navigation" },
@@ -1678,6 +1723,7 @@ describe("QuestStore plan coordination", () => {
                     workId: "two-discussions",
                   },
                   { type: "change-work", workId: "a4-demonstration", after: { state: "deferred" } },
+                  { type: "change-work", workId: "milestone-a", after: { role: "milestone" } },
                 ],
               },
             },
@@ -1748,6 +1794,14 @@ describe("QuestStore plan coordination", () => {
           expect(state.work.find((item) => item.id === "two-discussions")).toMatchObject({
             parentId: "milestone-a",
             focus: 4,
+            role: "milestone",
+            phase: "integration",
+          });
+          expect(state.work.find((item) => item.id === "milestone-a")?.role).toBe("milestone");
+          expect(state.history.at(-1)?.changes).toContainEqual({
+            label: "“Milestone A · visible corpus and useful next work” · role",
+            before: "role: (none)",
+            after: "role: milestone",
           });
           expect(state.work.find((item) => item.id === a4.id)?.state).toBe("review");
           expect(state.currentWorkId).toBe("two-discussions");

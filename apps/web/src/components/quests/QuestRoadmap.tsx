@@ -6,7 +6,7 @@ import { cn } from "~/lib/utils";
 import { Badge } from "../ui/badge";
 import { useQuest, useWorkInspection } from "./questContext";
 import { conversationStatusLabel, useQuestConversationThreads } from "./QuestConversations";
-import { deliveryLeaves, describeCounts, workStateLabels } from "./questModel";
+import { deliveryLeaves, describeCounts, phaseLabels, workStateLabels } from "./questModel";
 import { layoutRoadmap, ribbonD, ROADMAP_BAR, type RoadmapStop } from "./questRoadmap";
 
 const ribbonClass: Record<QuestWork["state"], string> = {
@@ -19,9 +19,9 @@ const ribbonClass: Record<QuestWork["state"], string> = {
 };
 
 /**
- * Milestone overview as a Sankey: the current milestone fans out to its parts, recorded `follows`
- * relations join and continue, and ribbon width is the explicit planned focus of the work a ribbon
- * leads into. Work without a focus is drawn at a neutral width with a faded, dashed ribbon.
+ * Milestone overview as a Sankey: explicit milestones and the dependencies between them, or for
+ * older Quests the current work fanning out to its parts. Ribbon width is the explicit planned
+ * focus of the work a ribbon leads into; unset focus is a neutral width with a faded, dashed ribbon.
  */
 export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null }) {
   const { state, openPanel, previewWorkId } = useQuest();
@@ -81,6 +81,7 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
             {roadmap.stops.map((stop) => {
               const height = Math.max(stop.inHeight, stop.outHeight);
               const split = stop.inHeight !== stop.outHeight;
+              const bar = stop.isCurrent ? "fill-info" : "fill-foreground/70";
               return (
                 <g key={stop.work.id} className="cursor-pointer" {...inspect(stop.work.id)}>
                   {/* A wider transparent target keeps thin bars easy to hover and tap. */}
@@ -98,14 +99,14 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
                         y={stop.y - stop.inHeight / 2}
                         width={half}
                         height={stop.inHeight}
-                        className="fill-foreground/70"
+                        className={bar}
                       />
                       <rect
                         x={stop.x}
                         y={stop.y - stop.outHeight / 2}
                         width={half}
                         height={stop.outHeight}
-                        className="fill-foreground/70"
+                        className={bar}
                       />
                     </>
                   ) : (
@@ -114,7 +115,7 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
                       y={stop.y - height / 2}
                       width={ROADMAP_BAR}
                       height={height}
-                      className="fill-foreground/70"
+                      className={bar}
                     />
                   )}
                   {selectedWorkId === stop.work.id ? (
@@ -149,13 +150,14 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
               key={stop.work.id}
               stop={stop}
               below={
-                stop.role !== "milestone" &&
-                (columnSize.get(stop.column) ?? 0) > 1 &&
-                lowestInColumn.get(stop.column) === stop
+                (columnSize.get(stop.column) ?? 0) > 1 && lowestInColumn.get(stop.column) === stop
               }
               areaHeight={roadmap.height}
               working={working(stop)}
               isSelected={selectedWorkId === stop.work.id}
+              streams={(stop.work.workstreamIds ?? []).map(
+                (id) => state.work.find((item) => item.id === id)?.title ?? id,
+              )}
               inspection={inspect(stop.work.id)}
               onOpenNeed={() => {
                 const need = stop.needs.length === 1 ? stop.needs[0]! : null;
@@ -195,6 +197,7 @@ function RoadmapLabel({
   areaHeight,
   working,
   isSelected,
+  streams,
   summary,
   inspection,
   onOpenNeed,
@@ -204,6 +207,7 @@ function RoadmapLabel({
   areaHeight: number;
   working: number;
   isSelected: boolean;
+  streams: ReadonlyArray<string>;
   summary: string | null;
   inspection: ReturnType<ReturnType<typeof useWorkInspection>>;
   onOpenNeed: () => void;
@@ -212,8 +216,10 @@ function RoadmapLabel({
   const needs = stop.needs.length;
   const height = Math.max(stop.inHeight, stop.outHeight);
   const description = [
-    stop.role === "milestone" ? "Current milestone" : stop.role === "successor" ? "Follows" : null,
+    stop.isCurrent ? "Current milestone" : stop.role === "successor" ? "Follows" : null,
     workStateLabels[work.state],
+    work.phase ? phaseLabels[work.phase] : null,
+    streams.length > 0 ? streams.join(", ") : null,
     work.focus === undefined ? "Planned focus not set" : `Planned focus ${work.focus} of 5`,
     summary && summary !== "No parts recorded" ? summary : null,
   ]
@@ -240,7 +246,7 @@ function RoadmapLabel({
         {...inspection}
         className={cn(
           "min-w-0 cursor-pointer truncate rounded-sm px-0.5 text-xs outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-          stop.role === "milestone" ? "font-semibold" : "font-medium",
+          stop.isCurrent ? "font-semibold" : "font-medium",
           work.state === "planned" || work.state === "deferred"
             ? "text-muted-foreground"
             : "text-foreground",

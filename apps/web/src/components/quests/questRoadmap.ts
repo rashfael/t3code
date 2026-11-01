@@ -13,6 +13,8 @@ export type RoadmapStopRole = "milestone" | "part" | "successor";
 export interface RoadmapStop {
   readonly work: QuestWork;
   readonly role: RoadmapStopRole;
+  /** The current milestone, or the milestone holding the current work. */
+  readonly isCurrent: boolean;
   readonly column: number;
   readonly row: number;
   /** Bar centre. */
@@ -35,7 +37,8 @@ export type RoadmapNeed =
 
 export interface RoadmapPath {
   readonly id: string;
-  readonly kind: "fork" | "follows";
+  /** `within`: a milestone inside a larger one leads into it, as decomposition rather than order. */
+  readonly kind: "fork" | "follows" | "within";
   readonly source: string;
   readonly target: string;
   readonly width: number;
@@ -45,7 +48,6 @@ export interface RoadmapPath {
 }
 
 export interface Roadmap {
-  readonly milestone: QuestWork;
   readonly stops: ReadonlyArray<RoadmapStop>;
   readonly paths: ReadonlyArray<RoadmapPath>;
   /** Where the missing later milestone is shown when no recorded work follows this one. */
@@ -54,12 +56,225 @@ export interface Roadmap {
   readonly height: number;
 }
 
+type PlacedStop = Omit<RoadmapStop, "x" | "y" | "inHeight" | "outHeight">;
+type PlacedLink = Omit<RoadmapPath, "width" | "sourceY" | "targetY">;
+
 /**
- * The current milestone, its direct delivery parts and recorded work that follows it. Only
- * `follows` relations order parts; parts without one run side by side from the milestone.
- * Relations between deeper work are lifted to the parts that contain it.
+ * With explicit milestones, the whole plan's milestone network; otherwise the current work and
+ * its parts, so Quests recorded before milestones were explicit keep their view.
  */
 export function layoutRoadmap(state: QuestState): Roadmap | null {
+  return state.work.some((item) => item.kind === "work" && item.role === "milestone")
+    ? layoutMilestones(state)
+    : layoutCurrentWork(state);
+}
+
+/**
+ * Every milestone at any depth, past, current and planned. Order comes only from `follows`
+ * relations lifted to the nearest milestone holding each end, and from a milestone leading into
+ * the larger milestone that contains it. Milestones nothing relates to stand alone; workstream
+ * membership groups rows but never adds a path.
+ */
+function layoutMilestones(state: QuestState): Roadmap {
+  const byId = new Map(state.work.map((item) => [item.id, item]));
+  const milestones = state.work.filter((item) => item.kind === "work" && item.role === "milestone");
+  const milestoneIds = new Set(milestones.map((item) => item.id));
+  const milestoneOf = (id: string | null): string | null => {
+    const seen = new Set<string>();
+    let current = id === null ? undefined : byId.get(id);
+    while (current && !seen.has(current.id)) {
+      if (milestoneIds.has(current.id)) return current.id;
+      seen.add(current.id);
+      current = current.parentId === null ? undefined : byId.get(current.parentId);
+    }
+    return null;
+  };
+  const enclosing = (id: string) => milestoneOf(byId.get(id)?.parentId ?? null);
+  const contains = (outer: string, inner: string) => {
+    const seen = new Set<string>();
+    for (let at = enclosing(inner); at !== null && !seen.has(at); at = enclosing(at)) {
+      if (at === outer) return true;
+      seen.add(at);
+    }
+    return false;
+  };
+  const current = milestoneOf(state.currentWorkId);
+
+  const links = new Map<string, PlacedLink>();
+  const prerequisites = new Map<string, Set<string>>();
+  const link = (kind: "follows" | "within", source: string, target: string) => {
+    const id = `${kind}:${source}:${target}`;
+    if (links.has(id)) return;
+    links.set(id, { id, kind, source, target });
+    const set = prerequisites.get(target) ?? new Set();
+    set.add(source);
+    prerequisites.set(target, set);
+  };
+  for (const milestone of milestones) {
+    const outer = enclosing(milestone.id);
+    if (outer !== null) link("within", milestone.id, outer);
+  }
+  for (const relation of state.relations) {
+    if (relation.type !== "follows") continue;
+    const before = milestoneOf(relation.to);
+    const after = milestoneOf(relation.from);
+    if (before === null || after === null || before === after) continue;
+    if (contains(before, after) || contains(after, before)) continue;
+    link("follows", before, after);
+  }
+
+  const ranks = longestRanks(
+    milestones.map((item) => item.id),
+    prerequisites,
+  );
+
+  // Starting milestones of one workstream sit together; those that lead somewhere come first.
+  const streamOrder = new Map(
+    state.work.filter((item) => item.role === "workstream").map((item, index) => [item.id, index]),
+  );
+  const streamIndex = (work: QuestWork) =>
+    Math.min(
+      Number.MAX_SAFE_INTEGER,
+      ...(work.workstreamIds ?? []).map((id) => streamOrder.get(id) ?? Number.MAX_SAFE_INTEGER),
+    );
+  const leads = new Set([...links.values()].map((item) => item.source));
+  const starts = milestones
+    .filter((item) => ranks.get(item.id) === 0)
+    .toSorted(
+      (a, b) =>
+        Number(leads.has(b.id)) - Number(leads.has(a.id)) || streamIndex(a) - streamIndex(b),
+    );
+  const rows = new Map<string, number>();
+  starts.forEach((item, index) => rows.set(item.id, index));
+  const place = rowPlacer(rows);
+  const maxRank = Math.max(0, ...ranks.values());
+  for (let rank = 1; rank <= maxRank; rank += 1)
+    for (const milestone of milestones)
+      if (ranks.get(milestone.id) === rank)
+        rows.set(milestone.id, place.at(rank, place.mean(prerequisites.get(milestone.id) ?? [])));
+
+  const scope = new Map<string, Array<QuestWork>>();
+  for (const item of state.work) {
+    const owner = milestoneOf(item.id);
+    if (owner === null) continue;
+    const list = scope.get(owner) ?? [];
+    list.push(item);
+    scope.set(owner, list);
+  }
+  const placed = milestones.map((milestone) => {
+    const own = scope.get(milestone.id) ?? [milestone];
+    return describeStop(state, milestone, "milestone", ranks.get(milestone.id) ?? 0, {
+      row: rows.get(milestone.id) ?? 0,
+      isCurrent: milestone.id === current,
+      scope: own,
+      leaves: deliveryLeaves(state, milestone.id).filter(
+        (leaf) => milestoneOf(leaf.id) === milestone.id,
+      ),
+    });
+  });
+  const hasNext = current !== null && [...links.values()].some((item) => item.source === current);
+  const gap =
+    current === null || hasNext
+      ? null
+      : { column: (ranks.get(current) ?? 0) + 1, row: rows.get(current) ?? 0 };
+  return arrange(placed, [...links.values()], Math.max(maxRank, gap?.column ?? 0) + 1, gap);
+}
+
+/** Column of each id: one past its latest prerequisite. A cycle is cut where it is found. */
+function longestRanks(
+  ids: ReadonlyArray<string>,
+  prerequisites: ReadonlyMap<string, ReadonlySet<string>>,
+): ReadonlyMap<string, number> {
+  const ranks = new Map<string, number>();
+  const rankOf = (id: string, visiting: Set<string>): number => {
+    const known = ranks.get(id);
+    if (known !== undefined) return known;
+    if (visiting.has(id)) return 0;
+    visiting.add(id);
+    let rank = 0;
+    for (const before of prerequisites.get(id) ?? [])
+      rank = Math.max(rank, rankOf(before, visiting) + 1);
+    visiting.delete(id);
+    ranks.set(id, rank);
+    return rank;
+  };
+  for (const id of ids) rankOf(id, new Set());
+  return ranks;
+}
+
+/** Places rows in a column without overlap, starting from the wanted row. */
+function rowPlacer(rows: ReadonlyMap<string, number>) {
+  const columnRows = new Map<number, Array<number>>();
+  return {
+    at(column: number, wanted: number) {
+      const taken = columnRows.get(column) ?? [];
+      let row = wanted;
+      for (let step = 1; taken.some((other) => Math.abs(other - row) < 1); step += 1)
+        row = wanted + (step % 2 === 1 ? Math.ceil(step / 2) : -step / 2);
+      taken.push(row);
+      columnRows.set(column, taken);
+      return row;
+    },
+    mean(ids: Iterable<string>) {
+      const values = [...ids].map((id) => rows.get(id)).filter((row) => row !== undefined);
+      return values.length > 0 ? values.reduce((sum, row) => sum + row, 0) / values.length : 0;
+    },
+  };
+}
+
+/** Open or recorded decisions, then attention work without one, and reviews and threads in scope. */
+function describeStop(
+  state: QuestState,
+  work: QuestWork,
+  role: RoadmapStopRole,
+  column: number,
+  {
+    row,
+    isCurrent,
+    scope,
+    leaves,
+  }: {
+    row: number;
+    isCurrent: boolean;
+    scope: ReadonlyArray<QuestWork>;
+    leaves: ReadonlyArray<QuestWork>;
+  },
+): PlacedStop {
+  const scopeIds = new Set(scope.map((item) => item.id));
+  const waiting = state.questions.filter((question) => {
+    const status = questQuestionStatus(question);
+    return scopeIds.has(question.workId) && (status === "open" || status === "recorded");
+  });
+  const waitingWork = new Set(waiting.map((question) => question.workId));
+  return {
+    work,
+    role,
+    isCurrent,
+    column,
+    row,
+    needs: [
+      ...waiting.map((question) => ({
+        type: "question" as const,
+        id: question.id,
+        title: question.title,
+      })),
+      ...scope
+        .filter((item) => item.state === "attention" && !waitingWork.has(item.id))
+        .map((item) => ({ type: "work" as const, id: item.id, title: item.title })),
+    ],
+    reviewCount: leaves.filter((leaf) => leaf.state === "review").length,
+    threadIds: state.conversations
+      .filter((conversation) => conversation.workId !== null && scopeIds.has(conversation.workId))
+      .map((conversation) => conversation.threadId),
+  };
+}
+
+/**
+ * The current work, its direct delivery parts and recorded work that follows it. Only `follows`
+ * relations order parts; parts without one run side by side from the current work. Relations
+ * between deeper work are lifted to the parts that contain it.
+ */
+function layoutCurrentWork(state: QuestState): Roadmap | null {
   const milestone = state.work.find((item) => item.id === state.currentWorkId);
   if (!milestone) return null;
   const byId = new Map(state.work.map((item) => [item.id, item]));
@@ -99,20 +314,10 @@ export function layoutRoadmap(state: QuestState): Roadmap | null {
     prerequisites.set(after, set);
   }
 
-  const ranks = new Map<string, number>();
-  const rankOf = (id: string, visiting: Set<string>): number => {
-    const known = ranks.get(id);
-    if (known !== undefined) return known;
-    if (visiting.has(id)) return 0;
-    visiting.add(id);
-    let rank = 0;
-    for (const before of prerequisites.get(id) ?? [])
-      rank = Math.max(rank, rankOf(before, visiting) + 1);
-    visiting.delete(id);
-    ranks.set(id, rank);
-    return rank;
-  };
-  for (const part of parts) rankOf(part.id, new Set());
+  const ranks = longestRanks(
+    parts.map((part) => part.id),
+    prerequisites,
+  );
 
   const hasDependents = new Set([...prerequisites.values()].flatMap((set) => [...set]));
   for (const set of successors.values()) for (const id of set) hasDependents.add(id);
@@ -124,30 +329,17 @@ export function layoutRoadmap(state: QuestState): Roadmap | null {
   const rows = new Map<string, number>();
   lanes.forEach((part, index) => rows.set(part.id, index));
   const maxRank = Math.max(0, ...ranks.values());
-  const columnRows = new Map<number, Array<number>>();
-  const placeRow = (column: number, wanted: number) => {
-    const taken = columnRows.get(column) ?? [];
-    let row = wanted;
-    for (let step = 1; taken.some((other) => Math.abs(other - row) < 1); step += 1)
-      row = wanted + (step % 2 === 1 ? Math.ceil(step / 2) : -step / 2);
-    taken.push(row);
-    columnRows.set(column, taken);
-    return row;
-  };
-  const meanRow = (ids: Iterable<string>) => {
-    const values = [...ids].map((id) => rows.get(id)).filter((row) => row !== undefined);
-    return values.length > 0 ? values.reduce((sum, row) => sum + row, 0) / values.length : 0;
-  };
+  const place = rowPlacer(rows);
   for (let rank = 1; rank <= maxRank; rank += 1) {
     for (const part of parts) {
       if (ranks.get(part.id) !== rank) continue;
-      rows.set(part.id, placeRow(rank, meanRow(prerequisites.get(part.id) ?? [])));
+      rows.set(part.id, place.at(rank, place.mean(prerequisites.get(part.id) ?? [])));
     }
   }
   const milestoneRow = lanes.length > 0 ? (lanes.length - 1) / 2 : 0;
   rows.set(milestone.id, milestoneRow);
   const nextColumn = maxRank + 1;
-  for (const [id, sources] of successors) rows.set(id, placeRow(nextColumn, meanRow(sources)));
+  for (const [id, sources] of successors) rows.set(id, place.at(nextColumn, place.mean(sources)));
 
   const scopes = new Map<string, Array<QuestWork>>();
   for (const item of state.work) {
@@ -157,37 +349,14 @@ export function layoutRoadmap(state: QuestState): Roadmap | null {
     list.push(item);
     scopes.set(scope, list);
   }
-  const describe = (work: QuestWork, role: RoadmapStopRole, column: number) => {
-    // The milestone's parts are stops of their own, so the milestone covers only itself.
-    const scope = role === "part" ? (scopes.get(work.id) ?? [work]) : [work];
-    const scopeIds = new Set(scope.map((item) => item.id));
-    const waiting = state.questions.filter((question) => {
-      const status = questQuestionStatus(question);
-      return scopeIds.has(question.workId) && (status === "open" || status === "recorded");
-    });
-    const waitingWork = new Set(waiting.map((question) => question.workId));
-    const leaves = role === "part" ? deliveryLeaves(state, work.id) : [];
-    return {
-      work,
-      role,
-      column,
+  const describe = (work: QuestWork, role: RoadmapStopRole, column: number) =>
+    describeStop(state, work, role, column, {
       row: rows.get(work.id) ?? 0,
-      needs: [
-        ...waiting.map((question) => ({
-          type: "question" as const,
-          id: question.id,
-          title: question.title,
-        })),
-        ...scope
-          .filter((item) => item.state === "attention" && !waitingWork.has(item.id))
-          .map((item) => ({ type: "work" as const, id: item.id, title: item.title })),
-      ],
-      reviewCount: leaves.filter((leaf) => leaf.state === "review").length,
-      threadIds: state.conversations
-        .filter((conversation) => conversation.workId !== null && scopeIds.has(conversation.workId))
-        .map((conversation) => conversation.threadId),
-    };
-  };
+      isCurrent: role === "milestone",
+      // The milestone's parts are stops of their own, so the milestone covers only itself.
+      scope: role === "part" ? (scopes.get(work.id) ?? [work]) : [work],
+      leaves: role === "part" ? deliveryLeaves(state, work.id) : [],
+    });
   const placed = [
     describe(milestone, "milestone", 0),
     ...parts.map((part) => describe(part, "part", 1 + (ranks.get(part.id) ?? 0))),
@@ -209,7 +378,12 @@ export function layoutRoadmap(state: QuestState): Roadmap | null {
       })),
     ),
   ];
-  return arrange(placed, links, 2 + nextColumn, milestoneRow, successors.size === 0);
+  return arrange(
+    placed,
+    links,
+    2 + nextColumn,
+    successors.size === 0 ? { column: 1 + nextColumn, row: milestoneRow } : null,
+  );
 }
 
 /** Pixels per planned-focus step. */
@@ -230,11 +404,11 @@ function focusWeight(work: QuestWork): number {
  * prerequisites neither multiply nor conserve investment, and bars show both sides when they differ.
  */
 function arrange(
-  placed: ReadonlyArray<Omit<RoadmapStop, "x" | "y" | "inHeight" | "outHeight">>,
-  links: ReadonlyArray<Omit<RoadmapPath, "width" | "sourceY" | "targetY">>,
+  placed: ReadonlyArray<PlacedStop>,
+  links: ReadonlyArray<PlacedLink>,
   columns: number,
-  milestoneRow: number,
-  missingNext: boolean,
+  /** Where the missing later milestone is shown, if it is. */
+  gap: { readonly column: number; readonly row: number } | null,
 ): Roadmap {
   const byId = new Map(placed.map((stop) => [stop.work.id, stop]));
   const incomingCount = new Map<string, number>();
@@ -257,8 +431,8 @@ function arrange(
   };
   const pitch = Math.max(...placed.map((stop) => barHeight(stop.work.id))) + LABEL_ROOM;
   const allRows = placed.map((stop) => stop.row);
-  const minRow = Math.min(...allRows, milestoneRow);
-  const maxRow = Math.max(...allRows, milestoneRow);
+  const minRow = Math.min(...allRows, gap?.row ?? Infinity);
+  const maxRow = Math.max(...allRows, gap?.row ?? -Infinity);
   const top = LABEL_ROOM + pitch / 2;
   const yOf = (row: number) => top + (row - minRow) * pitch;
   const xOf = (column: number) => PADDING_X + column * ROADMAP_COLUMN;
@@ -304,10 +478,9 @@ function arrange(
   const paths: Array<RoadmapPath> = links.map((link) => ({ ...link, ...offsets.get(link.id)! }));
   const lowest = Math.max(...stops.map((stop) => stop.y + barHeight(stop.work.id) / 2));
   return {
-    milestone: stops[0]!.work,
     stops,
     paths,
-    gap: missingNext ? { x: xOf(columns - 1), y: yOf(milestoneRow) } : null,
+    gap: gap ? { x: xOf(gap.column), y: yOf(gap.row) } : null,
     width: PADDING_X * 2 + (columns - 1) * ROADMAP_COLUMN + ROADMAP_LABEL,
     height: Math.max(lowest, yOf(maxRow)) + LABEL_ROOM + PADDING_Y,
   };

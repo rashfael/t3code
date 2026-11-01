@@ -194,6 +194,9 @@ const WORK_FIELDS = [
   ["findings", "Unresolved findings"],
   ["handoff", "Prepared handoff"],
   ["focus", "Planned focus"],
+  ["role", "Role"],
+  ["workstreamIds", "Workstreams"],
+  ["phase", "Phase"],
 ] as const satisfies ReadonlyArray<readonly [keyof QuestWork, string]>;
 
 function fieldText(value: QuestWork[keyof QuestWork]): string | null {
@@ -213,6 +216,21 @@ function validParent(current: QuestState, work: QuestWork): boolean {
     parent = item.parentId;
   }
   return true;
+}
+
+/** Each listed workstream is another record whose role is workstream; `added` holds work proposed alongside. */
+function validWorkstreams(
+  work: ReadonlyArray<QuestWork>,
+  id: string,
+  workstreamIds: ReadonlyArray<string> | undefined,
+  added: ReadonlySet<string> = new Set(),
+): boolean {
+  return (workstreamIds ?? []).every(
+    (streamId) =>
+      streamId !== id &&
+      (added.has(streamId) ||
+        work.some((item) => item.id === streamId && item.role === "workstream")),
+  );
 }
 
 function documentExists(state: QuestState, id: string): boolean {
@@ -262,6 +280,7 @@ function proposeEdits(
   drafts: Extract<Change, { type: "plan-propose" }>["proposal"]["edits"],
 ): ReadonlyArray<QuestPlanEdit> | Refused {
   const added = new Set<string>();
+  const streams = new Set<string>();
   const exists = (id: string) => added.has(id) || current.work.some((item) => item.id === id);
   const edits: Array<QuestPlanEdit> = [];
   for (const [index, draft] of drafts.entries()) {
@@ -278,7 +297,10 @@ function proposeEdits(
           return refuse("planned focus is 1 to 5.");
         if (work.parentId !== null && !exists(work.parentId))
           return refuse(`parent “${work.parentId}” is not in the plan.`);
+        if (!validWorkstreams(current.work, work.id, work.workstreamIds, streams))
+          return refuse("workstreams must be existing workstream records.");
         added.add(work.id);
+        if (work.role === "workstream") streams.add(work.id);
         edits.push({ id, type: "add-work", work: { ...work, title: work.title.trim() } });
         break;
       }
@@ -293,6 +315,8 @@ function proposeEdits(
           if (after.parentId === work.id || !exists(after.parentId))
             return refuse(`parent “${after.parentId}” is not valid here.`);
         }
+        if (!validWorkstreams(current.work, work.id, after.workstreamIds, streams))
+          return refuse("workstreams must be existing workstream records.");
         const before = questPlanWorkBase(work, after);
         if (Object.keys(before).length === 0 || JSON.stringify(before) === JSON.stringify(after))
           return refuse(`nothing would change on “${work.title}”.`);
@@ -342,6 +366,24 @@ function proposeEdits(
   return edits;
 }
 
+/** Plan patches clear optional fields with null or an empty list; stored work omits them instead. */
+function withoutUnset(
+  work: Omit<QuestWork, "focus" | "role" | "phase"> & {
+    readonly focus?: number | null;
+    readonly role?: QuestWork["role"] | null;
+    readonly phase?: QuestWork["phase"] | null;
+  },
+): QuestWork {
+  const { focus, role, phase, workstreamIds, ...rest } = work;
+  return {
+    ...rest,
+    ...(focus === null || focus === undefined ? {} : { focus }),
+    ...(role === null || role === undefined ? {} : { role }),
+    ...(phase === null || phase === undefined ? {} : { phase }),
+    ...(workstreamIds === undefined || workstreamIds.length === 0 ? {} : { workstreamIds }),
+  };
+}
+
 /** Applies checked edits in proposal order. Business validation already ran. */
 function applyEdits(
   state: QuestState,
@@ -355,26 +397,23 @@ function applyEdits(
   for (const edit of edits) {
     switch (edit.type) {
       case "add-work": {
-        const { focus, ...added } = edit.work;
-        work.push({
-          ...added,
-          kind: "work",
-          owner: "",
-          agent: "",
-          documentIds: [],
-          priorAttempts: "",
-          findings: "",
-          handoff: "",
-          ...(focus === null ? {} : { focus }),
-        });
+        work.push(
+          withoutUnset({
+            ...edit.work,
+            kind: "work",
+            owner: "",
+            agent: "",
+            documentIds: [],
+            priorAttempts: "",
+            findings: "",
+            handoff: "",
+          }),
+        );
         break;
       }
       case "change-work": {
         const index = work.findIndex((item) => item.id === edit.workId);
-        const { focus, ...patch } = edit.after;
-        const { focus: previous, ...rest } = { ...work[index]!, ...patch };
-        const next = focus === undefined ? previous : focus;
-        work[index] = next === null || next === undefined ? rest : { ...rest, focus: next };
+        work[index] = withoutUnset({ ...work[index]!, ...edit.after });
         break;
       }
       case "add-follows": {
@@ -695,6 +734,7 @@ function changeState(
         work.kind !== existing.kind ||
         !work.title.trim() ||
         (work.focus !== undefined && !isQuestFocus(work.focus)) ||
+        !validWorkstreams(current.work, work.id, work.workstreamIds) ||
         work.documentIds.some((id) => !documentExists(current, id)) ||
         !validParent(current, work)
       )
@@ -720,6 +760,7 @@ function changeState(
         current.work.some((item) => item.id === work.id) ||
         !work.title.trim() ||
         (work.focus !== undefined && !isQuestFocus(work.focus)) ||
+        !validWorkstreams(current.work, work.id, work.workstreamIds) ||
         work.documentIds.some((id) => !documentExists(current, id)) ||
         !validParent(current, work)
       )

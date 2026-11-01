@@ -14,6 +14,20 @@ export const QuestWorkState = Schema.Literals([
 ]);
 export type QuestWorkState = typeof QuestWorkState.Type;
 
+/**
+ * What a work record stands for in the plan. `workstream`: a continuing stream of work, never itself
+ * an outcome. `milestone`: a significant outcome checkpoint, at any depth. Absent: ordinary work.
+ */
+export const QuestWorkRole = Schema.Literals(["workstream", "milestone"]);
+export type QuestWorkRole = typeof QuestWorkRole.Type;
+
+/**
+ * The activity a scope is in, chosen per scope rather than as a global pipeline. It says what done
+ * means there; it is neither the work's state nor anyone's acceptance.
+ */
+export const QuestPhase = Schema.Literals(["exploration", "prototype", "integration", "hardening"]);
+export type QuestPhase = typeof QuestPhase.Type;
+
 export const QuestWork = Schema.Struct({
   id: Schema.String,
   parentId: Schema.NullOr(Schema.String),
@@ -33,6 +47,10 @@ export const QuestWork = Schema.Struct({
    * not zero. It is a plan, not measured effort, agent count, completion or confidence.
    */
   focus: Schema.optionalKey(Schema.Number),
+  role: Schema.optionalKey(QuestWorkRole),
+  /** Workstreams this work belongs to. Membership groups work; it is not a dependency. */
+  workstreamIds: Schema.optionalKey(Schema.Array(Schema.String)),
+  phase: Schema.optionalKey(QuestPhase),
 });
 export type QuestWork = typeof QuestWork.Type;
 
@@ -296,6 +314,9 @@ const QuestPlanWorkPatch = Schema.Struct({
   parentId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   understanding: Schema.optionalKey(Schema.String),
   focus: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  role: Schema.optionalKey(Schema.NullOr(QuestWorkRole)),
+  workstreamIds: Schema.optionalKey(Schema.Array(Schema.String)),
+  phase: Schema.optionalKey(Schema.NullOr(QuestPhase)),
 });
 export type QuestPlanWorkPatch = typeof QuestPlanWorkPatch.Type;
 
@@ -306,6 +327,9 @@ const QuestPlanNewWork = Schema.Struct({
   state: QuestWorkState,
   understanding: Schema.String,
   focus: Schema.NullOr(Schema.Number),
+  role: Schema.optionalKey(QuestWorkRole),
+  workstreamIds: Schema.optionalKey(Schema.Array(Schema.String)),
+  phase: Schema.optionalKey(QuestPhase),
 });
 
 /** A plan edit as proposed. The server adds the base values each edit replaces. */

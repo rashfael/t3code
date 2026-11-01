@@ -1,10 +1,9 @@
 import type { QuestState, QuestWork } from "@t3tools/contracts";
 
-/** Fixed drawing field; the SVG scales it to the available width. */
-export const FIELD_WIDTH = 1000;
-export const FIELD_HEIGHT = 620;
-const COLUMNS = 40;
-const ROWS = 25;
+import type { MapEffect } from "./questMapEffects";
+
+const SPACING = 26;
+const RINGS = 20;
 const SEED = 73031;
 
 export interface Point {
@@ -12,52 +11,81 @@ export interface Point {
   readonly y: number;
 }
 
-export interface Cell {
-  readonly index: number;
-  readonly site: Point;
-  readonly polygon: ReadonlyArray<Point>;
+interface Site extends Point {
+  readonly q: number;
+  readonly r: number;
 }
 
+const DIRECTIONS = [
+  [1, 0],
+  [1, -1],
+  [0, -1],
+  [-1, 0],
+  [-1, 1],
+  [0, 1],
+] as const;
+
 /**
- * One seeded Voronoi partition of the field, built once per page load. Sites are a jittered grid,
- * so every cell only needs its two rings of neighbours; this is not a general Voronoi solver.
+ * One seeded field of jittered hexagonal sites, built once per page load. It has no edge anyone
+ * sees: only claimed cells are drawn, so the map's outline is the union of its regions.
  */
-function buildCells(): ReadonlyArray<Cell> {
+function buildSites() {
   let seed = SEED;
   const random = () => {
     seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
     return seed / 4294967296;
   };
-  const cw = FIELD_WIDTH / COLUMNS;
-  const ch = FIELD_HEIGHT / ROWS;
-  const sites: Array<Point> = [];
-  for (let row = 0; row < ROWS; row += 1)
-    for (let column = 0; column < COLUMNS; column += 1)
+  const sites: Array<Site> = [];
+  const index = new Map<string, number>();
+  for (let q = -RINGS; q <= RINGS; q += 1)
+    for (let r = Math.max(-RINGS, -q - RINGS); r <= Math.min(RINGS, -q + RINGS); r += 1) {
+      index.set(`${q},${r}`, sites.length);
       sites.push({
-        x: (column + 0.5 + (random() - 0.5) * 0.8) * cw,
-        y: (row + 0.5 + (random() - 0.5) * 0.8) * ch,
+        q,
+        r,
+        x: SPACING * (q + r / 2) + (random() - 0.5) * SPACING * 0.5,
+        y: ((SPACING * Math.sqrt(3)) / 2) * r + (random() - 0.5) * SPACING * 0.5,
       });
-  return sites.map((site, index) => {
-    const row = Math.floor(index / COLUMNS);
-    const column = index % COLUMNS;
-    let polygon: Array<Point> = [
-      { x: 0, y: 0 },
-      { x: FIELD_WIDTH, y: 0 },
-      { x: FIELD_WIDTH, y: FIELD_HEIGHT },
-      { x: 0, y: FIELD_HEIGHT },
-    ];
-    for (let r = Math.max(0, row - 2); r <= Math.min(ROWS - 1, row + 2); r += 1)
-      for (let c = Math.max(0, column - 2); c <= Math.min(COLUMNS - 1, column + 2); c += 1) {
-        const other = sites[r * COLUMNS + c]!;
-        if (other === site) continue;
-        // Keep the half-plane closer to `site`: a·p <= k on the bisector.
-        const a = other.x - site.x;
-        const b = other.y - site.y;
-        const k = (other.x * other.x + other.y * other.y - site.x * site.x - site.y * site.y) / 2;
-        polygon = clip(polygon, a, b, k);
-      }
-    return { index, site, polygon };
+    }
+  const neighbours = sites.map((site) =>
+    DIRECTIONS.map(([dq, dr]) => index.get(`${site.q + dq},${site.r + dr}`)).filter(
+      (other) => other !== undefined,
+    ),
+  );
+  const centre = index.get("0,0")!;
+  return { sites, index, neighbours, centre };
+}
+
+let cachedField: ReturnType<typeof buildSites> | null = null;
+function field() {
+  cachedField ??= buildSites();
+  return cachedField;
+}
+
+const polygons = new Map<number, ReadonlyArray<Point>>();
+/** A site's Voronoi cell: a large hexagon clipped by the bisectors of its two rings of neighbours. */
+function polygonOf(cell: number): ReadonlyArray<Point> {
+  const known = polygons.get(cell);
+  if (known) return known;
+  const { sites, index } = field();
+  const site = sites[cell]!;
+  let polygon: Array<Point> = Array.from({ length: 6 }, (_, corner) => {
+    const angle = (Math.PI / 3) * corner + Math.PI / 6;
+    return { x: site.x + 2 * SPACING * Math.cos(angle), y: site.y + 2 * SPACING * Math.sin(angle) };
   });
+  for (let dq = -2; dq <= 2; dq += 1)
+    for (let dr = Math.max(-2, -dq - 2); dr <= Math.min(2, -dq + 2); dr += 1) {
+      const other = index.get(`${site.q + dq},${site.r + dr}`);
+      if (other === undefined || other === cell) continue;
+      const o = sites[other]!;
+      // Keep the half-plane closer to `site`: a·p <= k on the bisector.
+      const a = o.x - site.x;
+      const b = o.y - site.y;
+      const k = (o.x * o.x + o.y * o.y - site.x * site.x - site.y * site.y) / 2;
+      polygon = clip(polygon, a, b, k);
+    }
+  polygons.set(cell, polygon);
+  return polygon;
 }
 
 function clip(polygon: ReadonlyArray<Point>, a: number, b: number, k: number): Array<Point> {
@@ -76,10 +104,12 @@ function clip(polygon: ReadonlyArray<Point>, a: number, b: number, k: number): A
   return out;
 }
 
-let cachedCells: ReadonlyArray<Cell> | null = null;
-function territoryCells(): ReadonlyArray<Cell> {
-  cachedCells ??= buildCells();
-  return cachedCells;
+export function sitePoint(cell: number): Point {
+  return field().sites[cell]!;
+}
+
+export function areNeighbours(a: number, b: number): boolean {
+  return field().neighbours[a]!.includes(b);
 }
 
 export interface Region {
@@ -89,6 +119,8 @@ export interface Region {
   /** Drawn subdivided into its parts. */
   readonly expanded: boolean;
   readonly childCount: number;
+  /** Where the region started growing; its results fill outward from here. */
+  readonly seed: Point;
   /** Inside the region, nearest its middle: where its name goes. */
   readonly anchor: Point;
   /** Approximate width available for a label at the anchor. */
@@ -97,93 +129,242 @@ export interface Region {
   readonly crest: Point;
 }
 
+/**
+ * What one cell shows. `effect`: one result effect. `aggregate`: several effects of one coarse
+ * result, shown together while their scope is folded. `reference`: an effect whose filled cell is
+ * elsewhere (or is carried by finer effects) but which also touches this scope.
+ */
+export interface PlacedUnit {
+  /** Derived from semantic ids and scope, so a pin or hover survives relayout. */
+  readonly key: string;
+  readonly kind: "effect" | "aggregate" | "reference";
+  readonly cell: number;
+  readonly workId: string;
+  readonly effects: ReadonlyArray<MapEffect>;
+  readonly planned: boolean;
+}
+
 export interface Territory {
   readonly regions: ReadonlyArray<Region>;
-  /** Visible work that got no cell because its region was already too small; Outline lists it. */
+  readonly units: ReadonlyArray<PlacedUnit>;
+  /** Visible work that got no cell; Outline lists it. */
   readonly undrawn: ReadonlyArray<QuestWork>;
   /** Work in the scope that no parent chain reaches (missing or cyclic parents). */
   readonly unreachable: ReadonlyArray<QuestWork>;
+  /** Effects whose work is not in this scope or names no work. */
+  readonly unplaced: ReadonlyArray<MapEffect>;
+  readonly bounds: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  };
 }
 
-interface Item {
+interface UnitDraft {
+  readonly key: string;
+  readonly kind: PlacedUnit["kind"];
+  readonly effects: ReadonlyArray<MapEffect>;
+  readonly planned: boolean;
+}
+
+interface Node {
   readonly work: QuestWork;
-  readonly weight: number;
+  readonly depth: number;
+  readonly parts: ReadonlyArray<Node>;
+  readonly open: boolean;
+  readonly childCount: number;
+  /** Units drawn in this node's own ground: all of its subtree's when folded, its own when open. */
+  readonly units: ReadonlyArray<UnitDraft>;
+  readonly quota: number;
 }
 
 /**
- * Nested regions below `rootIds`: each item's cells split among its parts by halving along the
- * longer side, prerequisites first. Size follows subtree record count, never effort, and the same
- * inputs always give the same regions.
+ * Nested regions below `rootIds`, grown on the shared field. A region's size follows the effects
+ * and rough planned scope it shows, never effort; a folded region contracts to one cell per coarse
+ * result. The same inputs always give the same regions.
  */
 export function layoutTerritory(
   state: QuestState,
+  effects: ReadonlyArray<MapEffect>,
   expanded: ReadonlySet<string>,
   rootIds: ReadonlyArray<string>,
 ): Territory {
-  const cells = territoryCells();
   const byId = new Map(state.work.map((item) => [item.id, item]));
   const children = new Map<string, Array<QuestWork>>();
   for (const item of state.work) {
     if (item.parentId === null || !byId.has(item.parentId)) continue;
-    const list = children.get(item.parentId) ?? [];
-    list.push(item);
-    children.set(item.parentId, list);
+    children.set(item.parentId, [...(children.get(item.parentId) ?? []), item]);
   }
-  const sizes = new Map<string, number>();
-  const sizeOf = (id: string, seen: Set<string>): number => {
-    const known = sizes.get(id);
-    if (known !== undefined) return known;
-    if (seen.has(id)) return 1;
-    seen.add(id);
-    const size = 1 + (children.get(id) ?? []).reduce((sum, part) => sum + sizeOf(part.id, seen), 0);
-    sizes.set(id, size);
-    return size;
-  };
-
-  const regions: Array<Region> = [];
-  const undrawn: Array<QuestWork> = [];
-  const placed = new Set<string>();
-
-  const assign = (items: ReadonlyArray<Item>, pool: ReadonlyArray<number>, depth: number) => {
-    const shares = split(items, pool, cells);
-    items.forEach((item, index) => {
-      const share = shares[index]!;
-      placed.add(item.work.id);
-      if (share.length === 0) {
-        undrawn.push(item.work);
-        markUndrawn(item.work.id);
-        return;
-      }
-      const parts = (children.get(item.work.id) ?? []).filter((part) => !placed.has(part.id));
-      const isOpen = parts.length > 0 && expanded.has(item.work.id);
-      regions.push(describeRegion(item.work, depth, share, isOpen, parts.length, cells));
-      if (isOpen)
-        assign(
-          orderSiblings(state, parts, byId).map((part) => ({
-            work: part,
-            weight: sizeOf(part.id, new Set()),
-          })),
-          share,
-          depth + 1,
-        );
-    });
-  };
-  // Hidden descendants are accounted for by their collapsed ancestor, not listed as undrawn.
-  const markUndrawn = (id: string) => {
-    for (const part of children.get(id) ?? []) {
-      if (placed.has(part.id)) continue;
-      placed.add(part.id);
-      if (expanded.has(id)) undrawn.push(part);
-      markUndrawn(part.id);
+  const effectById = new Map(effects.map((effect) => [effect.id, effect]));
+  const rootEffect = (effect: MapEffect) => {
+    let current = effect;
+    const seen = new Set([current.id]);
+    while (current.parentId) {
+      const parent = effectById.get(current.parentId);
+      if (!parent || seen.has(parent.id)) break;
+      seen.add(parent.id);
+      current = parent;
     }
+    return current;
+  };
+  const homed = new Map<string, Array<MapEffect>>();
+  const referenced = new Map<string, Array<MapEffect>>();
+  for (const effect of effects) {
+    if (effect.homeWorkId === null) continue;
+    // A refined result is carried by its finer effects; it only marks where it applies.
+    const carried = effect.childIds.length > 0;
+    if (!carried) homed.set(effect.homeWorkId, [...(homed.get(effect.homeWorkId) ?? []), effect]);
+    for (const id of carried ? [effect.homeWorkId, ...effect.alsoWorkIds] : effect.alsoWorkIds)
+      referenced.set(id, [...(referenced.get(id) ?? []), effect]);
+  }
+
+  const placed = new Set<string>();
+  const shownEffects = new Set<string>();
+  const build = (work: QuestWork, depth: number): Node => {
+    placed.add(work.id);
+    const parts = (children.get(work.id) ?? []).filter((part) => !placed.has(part.id));
+    const open = parts.length > 0 && expanded.has(work.id);
+    if (open) {
+      const nodes = orderSiblings(state, parts, byId).map((part) => build(part, depth + 1));
+      const units = unitsFor(work, [work.id], false);
+      return {
+        work,
+        depth,
+        parts: nodes,
+        open,
+        childCount: parts.length,
+        units,
+        quota: units.length + nodes.reduce((sum, node) => sum + node.quota, 0),
+      };
+    }
+    // Hidden descendants are accounted for by their folded ancestor and show their results there.
+    const subtree = [work.id];
+    const collect = (id: string) => {
+      for (const part of children.get(id) ?? []) {
+        if (placed.has(part.id)) continue;
+        placed.add(part.id);
+        subtree.push(part.id);
+        collect(part.id);
+      }
+    };
+    collect(work.id);
+    const units = unitsFor(work, subtree, parts.length > 0);
+    const reserve =
+      units.some((unit) => unit.kind !== "reference") || work.state === "done"
+        ? work.state === "done"
+          ? 0
+          : 2
+        : 3;
+    return {
+      work,
+      depth,
+      parts: [],
+      open,
+      childCount: parts.length,
+      units,
+      quota: Math.max(1, units.length + reserve),
+    };
+  };
+  const unitsFor = (work: QuestWork, ids: ReadonlyArray<string>, folded: boolean) => {
+    const own = ids.flatMap((id) => homed.get(id) ?? []);
+    for (const effect of own) shownEffects.add(effect.id);
+    const drafts: Array<UnitDraft> = [];
+    if (folded) {
+      const groups = new Map<string, Array<MapEffect>>();
+      for (const effect of own) {
+        const key = `${effect.planned ? "planned:" : ""}${rootEffect(effect).id}`;
+        groups.set(key, [...(groups.get(key) ?? []), effect]);
+      }
+      for (const [key, members] of groups)
+        drafts.push(
+          members.length === 1
+            ? {
+                key: members[0]!.id,
+                kind: "effect",
+                effects: members,
+                planned: members[0]!.planned,
+              }
+            : {
+                key: `group:${work.id}:${key}`,
+                kind: "aggregate",
+                effects: members,
+                planned: members.every((member) => member.planned),
+              },
+        );
+    } else {
+      for (const effect of own)
+        drafts.push({ key: effect.id, kind: "effect", effects: [effect], planned: effect.planned });
+    }
+    // Delivered results first, so they fill the region's core and planned scope its outer edge.
+    drafts.sort((a, b) => Number(a.planned) - Number(b.planned));
+    const ownIds = new Set(own.map((effect) => effect.id));
+    const references = new Map<string, MapEffect>();
+    for (const id of ids)
+      for (const effect of referenced.get(id) ?? []) {
+        if (ownIds.has(effect.id) || effect.childIds.some((child) => ownIds.has(child))) continue;
+        references.set(effect.id, effect);
+      }
+    for (const effect of references.values())
+      drafts.push({
+        key: `ref:${work.id}:${effect.id}`,
+        kind: "reference",
+        effects: [effect],
+        planned: effect.planned,
+      });
+    return drafts;
   };
 
   const roots = rootIds.map((id) => byId.get(id)).filter((item) => item !== undefined);
-  assign(
-    orderSiblings(state, roots, byId).map((work) => ({ work, weight: sizeOf(work.id, new Set()) })),
-    cells.map((cell) => cell.index),
-    0,
+  const tree = orderSiblings(state, roots, byId).map((root) => build(root, 0));
+
+  const { sites, centre } = field();
+  const regions: Array<Region> = [];
+  const units: Array<PlacedUnit> = [];
+  const undrawn: Array<QuestWork> = [];
+  const place = (node: Node, cells: ReadonlyArray<number>, seed: number) => {
+    if (cells.length === 0) {
+      undrawn.push(node.work);
+      return;
+    }
+    regions.push(describeRegion(node, cells, seed));
+    let ownCells = cells;
+    if (node.open) {
+      const shares = grow(
+        [
+          ...node.parts.map((part) => ({ key: part.work.id, quota: part.quota })),
+          ...(node.units.length > 0 ? [{ key: "#own", quota: node.units.length }] : []),
+        ],
+        prerequisites(state, node.parts, byId),
+        new Set(cells),
+        sites[seed]!,
+      );
+      for (const part of node.parts) {
+        const share = shares.get(part.work.id);
+        place(part, share?.cells ?? [], share?.seed ?? seed);
+      }
+      ownCells = shares.get("#own")?.cells ?? [];
+    }
+    const origin = sites[seed]!;
+    const ordered = ownCells.toSorted(
+      (a, b) => distance(sites[a]!, origin) - distance(sites[b]!, origin) || a - b,
+    );
+    node.units.forEach((unit, index) => {
+      const cell = ordered[index];
+      if (cell === undefined) return;
+      units.push({ ...unit, cell, workId: node.work.id });
+    });
+  };
+  const top = grow(
+    tree.map((node) => ({ key: node.work.id, quota: node.quota })),
+    prerequisites(state, tree, byId),
+    null,
+    sites[centre]!,
   );
+  for (const node of tree) {
+    const share = top.get(node.work.id);
+    place(node, share?.cells ?? [], share?.seed ?? centre);
+  }
 
   // Everything under the scope, whether shown, folded or undrawn, is reachable from its roots.
   const reachable = new Set<string>();
@@ -195,11 +376,208 @@ export function layoutTerritory(
   for (const root of roots) visit(root.id);
   const wholeQuest =
     roots.length > 0 && roots.every((root) => root.parentId === null || !byId.has(root.parentId));
+  const drawnCells = regions.flatMap((region) => (region.depth === 0 ? region.cells : []));
+  const points = drawnCells.flatMap((cell) => polygonOf(cell));
+  const minX = Math.min(...points.map((p) => p.x));
+  const minY = Math.min(...points.map((p) => p.y));
+  const maxX = Math.max(...points.map((p) => p.x));
+  const maxY = Math.max(...points.map((p) => p.y));
+  const pad = SPACING;
   return {
     regions,
+    units,
     undrawn,
     unreachable: wholeQuest ? state.work.filter((item) => !reachable.has(item.id)) : [],
+    unplaced: effects.filter(
+      (effect) => effect.childIds.length === 0 && !shownEffects.has(effect.id),
+    ),
+    bounds:
+      points.length === 0
+        ? { x: -100, y: -60, width: 200, height: 120 }
+        : {
+            x: minX - pad,
+            y: minY - pad,
+            width: maxX - minX + 2 * pad,
+            height: maxY - minY + 2 * pad,
+          },
   };
+}
+
+function distance(a: Point, b: Point) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+/** For each sibling, the earlier siblings it follows through recorded `follows` relations. */
+function prerequisites(
+  state: QuestState,
+  nodes: ReadonlyArray<Node>,
+  byId: ReadonlyMap<string, QuestWork>,
+): ReadonlyMap<string, ReadonlyArray<string>> {
+  const ids = new Set(nodes.map((node) => node.work.id));
+  const siblingOf = (id: string): string | null => {
+    const seen = new Set<string>();
+    let current = byId.get(id);
+    while (current && !seen.has(current.id)) {
+      if (ids.has(current.id)) return current.id;
+      seen.add(current.id);
+      current = current.parentId === null ? undefined : byId.get(current.parentId);
+    }
+    return null;
+  };
+  const order = nodes.map((node) => node.work.id);
+  const before = new Map<string, Array<string>>();
+  for (const relation of state.relations) {
+    if (relation.type !== "follows") continue;
+    const later = siblingOf(relation.from);
+    const earlier = siblingOf(relation.to);
+    if (later === null || earlier === null || later === earlier) continue;
+    // orderSiblings put prerequisites first; a cycle keeps saved order and ignores the back edge.
+    if (order.indexOf(earlier) > order.indexOf(later)) continue;
+    const list = before.get(later) ?? [];
+    if (!list.includes(earlier)) list.push(earlier);
+    before.set(later, list);
+  }
+  return before;
+}
+
+interface Share {
+  readonly cells: ReadonlyArray<number>;
+  readonly seed: number;
+}
+
+/**
+ * Grows each group to its quota, one cell at a time, the least-grown group first. Independent
+ * groups start around `origin`; a group that follows others starts on their outer edge, so
+ * dependent scope lies further out. `pool` confines growth to a parent's ground.
+ */
+function grow(
+  groups: ReadonlyArray<{ readonly key: string; readonly quota: number }>,
+  after: ReadonlyMap<string, ReadonlyArray<string>>,
+  pool: ReadonlySet<number> | null,
+  origin: Point,
+): Map<string, Share> {
+  const { sites, neighbours } = field();
+  const claimed = new Set<number>();
+  const result = new Map<string, { cells: Array<number>; seed: number; sum: Point }>();
+  const free = (cell: number) => !claimed.has(cell) && (pool === null || pool.has(cell));
+  const candidates = pool ? [...pool] : sites.map((_, index) => index);
+  const nearestFree = (point: Point) => {
+    let best = -1;
+    let bestDistance = Infinity;
+    for (const cell of candidates) {
+      if (!free(cell)) continue;
+      const d = distance(sites[cell]!, point);
+      if (d < bestDistance - 1e-9) {
+        best = cell;
+        bestDistance = d;
+      }
+    }
+    return best;
+  };
+  const claim = (key: string, cell: number) => {
+    claimed.add(cell);
+    const entry = result.get(key);
+    const site = sites[cell]!;
+    if (entry) {
+      entry.cells.push(cell);
+      entry.sum = { x: entry.sum.x + site.x, y: entry.sum.y + site.y };
+    } else result.set(key, { cells: [cell], seed: cell, sum: { x: site.x, y: site.y } });
+  };
+  const waves = new Map<string, number>();
+  const waveOf = (key: string, seen: Set<string>): number => {
+    const known = waves.get(key);
+    if (known !== undefined) return known;
+    if (seen.has(key)) return 0;
+    seen.add(key);
+    const wave = Math.max(-1, ...(after.get(key) ?? []).map((id) => waveOf(id, seen))) + 1;
+    waves.set(key, wave);
+    return wave;
+  };
+  const active = groups.filter((group) => group.quota > 0);
+  const maxWave = Math.max(0, ...active.map((group) => waveOf(group.key, new Set())));
+  for (let wave = 0; wave <= maxWave; wave += 1) {
+    const members = active.filter((group) => waveOf(group.key, new Set()) === wave);
+    const independent = members.filter((group) => (after.get(group.key) ?? []).length === 0);
+    // Independent groups seed around the origin; inside a parent, as far apart as its ground allows.
+    independent.forEach((group, index) => {
+      let seed: number;
+      if (pool === null) {
+        const angle = -Math.PI / 2 + (2 * Math.PI * index) / independent.length;
+        const radius = independent.length > 1 ? SPACING * 1.6 : 0;
+        seed = nearestFree({
+          x: origin.x + radius * Math.cos(angle),
+          y: origin.y + radius * Math.sin(angle),
+        });
+      } else if (index === 0 && result.size === 0) seed = nearestFree(origin);
+      else {
+        const seeds = [...result.values()].map((entry) => sites[entry.seed]!);
+        let best = -1;
+        let bestScore = -Infinity;
+        for (const cell of candidates) {
+          if (!free(cell)) continue;
+          const score = Math.min(...seeds.map((point) => distance(point, sites[cell]!)));
+          if (score > bestScore + 1e-9) {
+            best = cell;
+            bestScore = score;
+          }
+        }
+        seed = best;
+      }
+      if (seed >= 0) claim(group.key, seed);
+    });
+    for (const group of members) {
+      if (result.has(group.key)) continue;
+      // Start on the prerequisites' edge, as far from the origin as that edge reaches.
+      let best = -1;
+      let bestScore = -Infinity;
+      for (const earlier of after.get(group.key) ?? [])
+        for (const cell of result.get(earlier)?.cells ?? [])
+          for (const next of neighbours[cell]!) {
+            if (!free(next)) continue;
+            const score = distance(sites[next]!, origin);
+            if (score > bestScore + 1e-9) {
+              best = next;
+              bestScore = score;
+            }
+          }
+      if (best < 0) best = nearestFree(origin);
+      if (best >= 0) claim(group.key, best);
+    }
+    for (;;) {
+      const growing = members
+        .filter((group) => {
+          const entry = result.get(group.key);
+          return entry !== undefined && entry.cells.length < group.quota;
+        })
+        .toSorted(
+          (a, b) =>
+            result.get(a.key)!.cells.length / a.quota - result.get(b.key)!.cells.length / b.quota,
+        );
+      const group = growing[0];
+      if (!group) break;
+      const entry = result.get(group.key)!;
+      const centroid = { x: entry.sum.x / entry.cells.length, y: entry.sum.y / entry.cells.length };
+      let best = -1;
+      let bestScore = Infinity;
+      for (const cell of entry.cells)
+        for (const next of neighbours[cell]!) {
+          if (!free(next)) continue;
+          // Compact around its own middle, and pulled toward the origin so the whole stays dense.
+          const score =
+            distance(sites[next]!, centroid) + 0.6 * distance(sites[next]!, origin) + next * 1e-9;
+          if (score < bestScore) {
+            best = next;
+            bestScore = score;
+          }
+        }
+      if (best < 0) best = nearestFree(centroid);
+      if (best < 0) break;
+      claim(group.key, best);
+    }
+  }
+  return new Map(
+    [...result].map(([key, entry]) => [key, { cells: entry.cells, seed: entry.seed }]),
+  );
 }
 
 /** Siblings ordered by the longest chain of recorded `follows` among them, then saved order. */
@@ -248,106 +626,52 @@ function orderSiblings(
     .map(({ item }) => item);
 }
 
-/** Splits `pool` among `items` in order, by weight, halving along the longer side each time. */
-function split(
-  items: ReadonlyArray<Item>,
-  pool: ReadonlyArray<number>,
-  cells: ReadonlyArray<Cell>,
-): Array<ReadonlyArray<number>> {
-  if (items.length === 0) return [];
-  if (items.length === 1) return [pool];
-  if (pool.length < items.length) {
-    // Too small to give everyone a cell: the first items get one each, the rest none.
-    return items.map((_, index) => (index < pool.length ? [pool[index]!] : []));
-  }
-  const total = items.reduce((sum, item) => sum + item.weight, 0);
-  let cut = 1;
-  let best = Infinity;
-  let running = 0;
-  for (let index = 0; index < items.length - 1; index += 1) {
-    running += items[index]!.weight;
-    const distance = Math.abs(running - total / 2);
-    if (distance < best) {
-      best = distance;
-      cut = index + 1;
-    }
-  }
-  const first = items.slice(0, cut);
-  const rest = items.slice(cut);
-  const firstWeight = first.reduce((sum, item) => sum + item.weight, 0);
-  const xs = pool.map((index) => cells[index]!.site.x);
-  const ys = pool.map((index) => cells[index]!.site.y);
-  const alongX = Math.max(...xs) - Math.min(...xs) >= Math.max(...ys) - Math.min(...ys);
-  const ordered = pool.toSorted((a, b) => {
-    const pa = cells[a]!.site;
-    const pb = cells[b]!.site;
-    return (alongX ? pa.x - pb.x || pa.y - pb.y : pa.y - pb.y || pa.x - pb.x) || a - b;
-  });
-  const count = Math.min(
-    pool.length - rest.length,
-    Math.max(first.length, Math.round((pool.length * firstWeight) / total)),
-  );
-  return [
-    ...split(first, ordered.slice(0, count), cells),
-    ...split(rest, ordered.slice(count), cells),
-  ];
-}
-
-function describeRegion(
-  work: QuestWork,
-  depth: number,
-  share: ReadonlyArray<number>,
-  expanded: boolean,
-  childCount: number,
-  cells: ReadonlyArray<Cell>,
-): Region {
-  const sites = share.map((index) => cells[index]!.site);
+function describeRegion(node: Node, cells: ReadonlyArray<number>, seedCell: number): Region {
+  const { sites } = field();
+  const points = cells.map((index) => sites[index]!);
   const mean = {
-    x: sites.reduce((sum, site) => sum + site.x, 0) / sites.length,
-    y: sites.reduce((sum, site) => sum + site.y, 0) / sites.length,
+    x: points.reduce((sum, site) => sum + site.x, 0) / points.length,
+    y: points.reduce((sum, site) => sum + site.y, 0) / points.length,
   };
   // The site nearest the mean always lies inside the region, unlike the mean of a curved region.
-  const anchor = sites.reduce((best, site) =>
-    Math.hypot(site.x - mean.x, site.y - mean.y) < Math.hypot(best.x - mean.x, best.y - mean.y)
-      ? site
-      : best,
+  const anchor = points.reduce((best, site) =>
+    distance(site, mean) < distance(best, mean) ? site : best,
   );
-  const row = sites.filter((site) => Math.abs(site.y - anchor.y) < FIELD_HEIGHT / ROWS);
+  const row = points.filter((site) => Math.abs(site.y - anchor.y) < SPACING * 0.6);
   const span = Math.max(...row.map((site) => site.x)) - Math.min(...row.map((site) => site.x));
-  const topY = Math.min(...sites.map((site) => site.y));
-  const crest = sites
-    .filter((site) => site.y - topY < FIELD_HEIGHT / ROWS)
+  const topY = Math.min(...points.map((site) => site.y));
+  const crest = points
+    .filter((site) => site.y - topY < SPACING * 0.8)
     .reduce((best, site) => (Math.abs(site.x - mean.x) < Math.abs(best.x - mean.x) ? site : best));
   return {
-    crest,
-    work,
-    depth,
-    cells: share,
-    expanded,
-    childCount,
+    work: node.work,
+    depth: node.depth,
+    cells,
+    expanded: node.open,
+    childCount: node.childCount,
+    seed: sites[seedCell]!,
     anchor,
-    span: span + FIELD_WIDTH / COLUMNS,
+    span: span + SPACING,
+    crest,
   };
 }
 
-/** SVG path data filling every cell of a region. */
-export function cellsPath(share: ReadonlyArray<number>): string {
-  const cells = territoryCells();
-  return share
-    .map((index) => {
-      const polygon = cells[index]!.polygon;
-      return `M ${polygon.map((p) => `${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" L ")} Z`;
-    })
-    .join(" ");
+function polygonPath(cell: number) {
+  const polygon = polygonOf(cell);
+  return `M ${polygon.map((p) => `${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" L ")} Z`;
 }
 
-/** SVG path data for a region's outer boundary: cell edges not shared by two of its cells. */
-export function boundaryPath(share: ReadonlyArray<number>): string {
-  const cells = territoryCells();
+/** SVG path data filling every listed cell. */
+export function cellsPath(cells: ReadonlyArray<number>): string {
+  return cells.map(polygonPath).join(" ");
+}
+
+/** SVG path data for the outer boundary of a set of cells: edges not shared by two of them. */
+export function boundaryPath(cells: ReadonlyArray<number>): string {
   const edges = new Map<string, readonly [Point, Point]>();
   const key = (p: Point) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
-  for (const index of share) {
-    const polygon = cells[index]!.polygon;
+  for (const index of cells) {
+    const polygon = polygonOf(index);
     for (let i = 0; i < polygon.length; i += 1) {
       const a = polygon[i]!;
       const b = polygon[(i + 1) % polygon.length]!;
@@ -359,6 +683,17 @@ export function boundaryPath(share: ReadonlyArray<number>): string {
   return [...edges.values()]
     .map(([a, b]) => `M ${a.x.toFixed(1)} ${a.y.toFixed(1)} L ${b.x.toFixed(1)} ${b.y.toFixed(1)}`)
     .join(" ");
+}
+
+/** A cell's outline pulled slightly toward its site, so neighbouring results stay distinguishable. */
+export function insetCellPath(cell: number, inset = 2.5): string {
+  const site = sitePoint(cell);
+  const polygon = polygonOf(cell).map((p) => {
+    const d = distance(p, site);
+    const t = d > inset ? (d - inset) / d : 0;
+    return { x: site.x + (p.x - site.x) * t, y: site.y + (p.y - site.y) * t };
+  });
+  return `M ${polygon.map((p) => `${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" L ")} Z`;
 }
 
 export interface TerritoryLink {

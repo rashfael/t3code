@@ -1,5 +1,6 @@
 import {
   questQuestionStatus,
+  type QuestPhase,
   type QuestQuestion,
   type QuestQuestionStatus,
   type QuestState,
@@ -14,6 +15,13 @@ export const workStateLabels: Record<QuestWorkState, string> = {
   review: "Awaiting review",
   deferred: "Deferred",
   done: "Recorded outcome",
+};
+
+export const phaseLabels: Record<QuestPhase, string> = {
+  exploration: "Exploration",
+  prototype: "Prototype",
+  integration: "Integration and use",
+  hardening: "Hardening",
 };
 
 export const workStateVariants = {
