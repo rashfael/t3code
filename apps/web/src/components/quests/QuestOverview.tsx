@@ -222,7 +222,7 @@ export function QuestOverview({ selectedWorkId }: { selectedWorkId: string | nul
               decisionCounts.length > 0 ? (
                 <button
                   type="button"
-                  onClick={() => openPanel({ type: "decisions" })}
+                  onClick={() => showView("decisions")}
                   className="text-xs text-muted-foreground hover:text-foreground hover:underline"
                 >
                   {decisionCounts
@@ -293,7 +293,7 @@ export function QuestOverview({ selectedWorkId }: { selectedWorkId: string | nul
           title="Recent changes"
           className="mt-6"
           aside={
-            <Button size="xs" variant="ghost" onClick={() => openPanel({ type: "history" })}>
+            <Button size="xs" variant="ghost" onClick={() => showView("history")}>
               All history
             </Button>
           }

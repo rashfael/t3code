@@ -927,7 +927,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   } = useSidebarLookups();
   const delegatedThreads = useDelegatedUnderParent();
   const questMembership = useQuestMembership();
-  // A thread its Quest owns has one canonical row, under the Quest.
+  // A thread its Quest owns has one canonical place: inside its Quest.
   const delegatedUnderParent =
     questMembership.hiddenKeys.size === 0
       ? delegatedThreads
@@ -3302,8 +3302,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         section: SidebarSection,
                         // The tree row of the project folder this row sits in.
                         folderRow?: string,
-                        // A Quest's rows keep the full row but sit under the Quest's tree row.
-                        questRow?: { readonly parent: string; readonly isActive: boolean },
                       ) => {
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
@@ -3332,7 +3330,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             variant={rowVariant}
                             navigationParent={
                               folderRow ??
-                              questRow?.parent ??
                               (section === "working" ||
                               section === "snoozed" ||
                               section === "settled"
@@ -3369,7 +3366,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 : null
                             }
                             wokeAt={threadWokeAt(thread, { now: snoozeNow })}
-                            isActive={questRow?.isActive ?? routeRowThreadKey === threadKey}
+                            isActive={routeRowThreadKey === threadKey}
                             revealRef={
                               routeRowThreadKey === threadKey ? revealActiveRow : undefined
                             }
@@ -3438,14 +3435,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             treeNavigation
                             threads={threads}
                             environmentLabelById={environmentLabelById}
-                            renderThreadRow={(thread, questRow) =>
-                              renderThreadRow(
-                                thread,
-                                thread.settledOverride === "settled" ? "settled" : "active",
-                                undefined,
-                                questRow,
-                              )
-                            }
                           />
                         </li>
                       );

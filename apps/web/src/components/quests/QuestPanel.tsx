@@ -20,7 +20,6 @@ import {
 } from "./QuestConversations";
 import {
   DocumentAssociations,
-  DocumentEditor,
   Field,
   HandoffEditor,
   QuestionEditor,
@@ -28,8 +27,7 @@ import {
   WorkEditor,
 } from "./QuestEditors";
 import { draftText, useQuestDraft } from "./questDraftStore";
-import { DocumentsList, FileDocumentView, ReconstructRevision } from "./QuestDocuments";
-import { QuestMarkdown } from "./QuestMarkdown";
+import { ReconstructRevision } from "./QuestDocuments";
 import {
   childrenOf,
   questionStatusLabels,
@@ -46,16 +44,8 @@ function panelTitle(entry: PanelEntry): string {
   switch (entry.type) {
     case "work":
       return "Work";
-    case "document":
-      return "Document";
     case "question":
       return "Decision";
-    case "decisions":
-      return "Decisions";
-    case "documents":
-      return "Documents";
-    case "history":
-      return "History";
   }
 }
 
@@ -86,19 +76,7 @@ export function QuestPanel({
         </span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        {entry.type === "work" ? (
-          <WorkInspector id={entry.id} />
-        ) : entry.type === "document" ? (
-          <DocumentView id={entry.id} />
-        ) : entry.type === "question" ? (
-          <QuestionView id={entry.id} />
-        ) : entry.type === "decisions" ? (
-          <DecisionList />
-        ) : entry.type === "documents" ? (
-          <DocumentsList />
-        ) : (
-          <HistoryList />
-        )}
+        {entry.type === "work" ? <WorkInspector id={entry.id} /> : <QuestionView id={entry.id} />}
       </div>
     </>
   );
@@ -156,14 +134,14 @@ function Missing({ what }: { what: string }) {
   return <p className="text-sm text-muted-foreground">This {what} is no longer in the Quest.</p>;
 }
 
-function historyTarget(entry: QuestHistoryEntry): PanelEntry | null {
+function historyTarget(entry: QuestHistoryEntry): PanelEntry | "document" | null {
   if (!entry.targetId) return null;
   switch (entry.kind) {
     case "work":
     case "current":
       return { type: "work", id: entry.targetId };
     case "document":
-      return { type: "document", id: entry.targetId };
+      return "document";
     case "answer":
     case "defer":
     case "apply":
@@ -181,7 +159,7 @@ export function HistoryEntryRow({
   entry: QuestHistoryEntry;
   inPanel?: boolean;
 }) {
-  const { openPanel } = useQuest();
+  const { openPanel, openDocument } = useQuest();
   const target = historyTarget(entry);
   return (
     <li className="border-b py-2.5 text-sm last:border-b-0">
@@ -203,7 +181,11 @@ export function HistoryEntryRow({
           <Button
             size="xs"
             variant="ghost"
-            onClick={() => openPanel(target, inPanel ? "push" : "replace")}
+            onClick={() =>
+              target === "document"
+                ? openDocument(entry.targetId!)
+                : openPanel(target, inPanel ? "push" : "replace")
+            }
           >
             Open
           </Button>
@@ -243,7 +225,7 @@ function ChangeText({ label, text }: { label: string; text: string | null }) {
 }
 
 function WorkInspector({ id }: { id: string }) {
-  const { state, canWrite, pending, save, openPanel, showView } = useQuest();
+  const { state, canWrite, pending, save, openPanel, showView, openDocument } = useQuest();
   const threads = useQuestConversationThreads();
   const edit = useEditorDraft("work", id);
   const handoff = useEditorDraft("handoff", id);
@@ -416,7 +398,7 @@ function WorkInspector({ id }: { id: string }) {
                         <button
                           type="button"
                           className="underline"
-                          onClick={() => openPanel({ type: "document", id: source.id }, "push")}
+                          onClick={() => openDocument(source.id)}
                         >
                           {source.title}
                         </button>
@@ -503,11 +485,7 @@ function WorkInspector({ id }: { id: string }) {
         ) : documents.length > 0 ? (
           <ul>
             {documents.map((doc) => (
-              <LinkRow
-                key={doc.id}
-                detail={doc.detail}
-                onClick={() => openPanel({ type: "document", id: doc.id }, "push")}
-              >
+              <LinkRow key={doc.id} detail={doc.detail} onClick={() => openDocument(doc.id)}>
                 {doc.title}
               </LinkRow>
             ))}
@@ -534,68 +512,13 @@ function WorkInspector({ id }: { id: string }) {
   );
 }
 
-function DocumentView({ id }: { id: string }) {
-  const { state, canWrite, pending, openPanel } = useQuest();
-  const editor = useEditorDraft("document", id);
-  const document = state.documents.find((item) => item.id === id);
-  const file = state.files.find((item) => item.id === id);
-  if (file) return <FileDocumentView file={file} />;
-  if (!document) return <Missing what="document" />;
-  if (editor.draft) return <DocumentEditor document={document} />;
-  const users = state.work.filter((item) => item.documentIds.includes(document.id));
-  return (
-    <article aria-label={document.title}>
-      <div className="flex items-center gap-2">
-        {document.kind === "evidence" ? (
-          <Badge variant="outline">Evidence · read only</Badge>
-        ) : (
-          <Badge variant="info">Quest note</Badge>
-        )}
-        {document.kind === "living" && canWrite ? (
-          <span className="ms-auto">
-            <Button size="xs" variant="outline" disabled={pending} onClick={() => editor.update()}>
-              Edit
-            </Button>
-          </span>
-        ) : null}
-      </div>
-      <h2 className="mt-2 text-lg font-semibold">{document.title}</h2>
-      <p className="mt-1 break-all text-xs text-muted-foreground">
-        {document.source}
-        {document.sha256 ? (
-          <>
-            <br />
-            Retained content SHA-256: {document.sha256}
-          </>
-        ) : null}
-      </p>
-      <div className="mt-4">
-        <QuestMarkdown text={document.body} />
-      </div>
-      {users.length > 0 ? (
-        <Block title="Used by">
-          <ul>
-            {users.map((item) => (
-              <LinkRow
-                key={item.id}
-                onClick={() => openPanel({ type: "work", id: item.id }, "push")}
-              >
-                {item.title}
-              </LinkRow>
-            ))}
-          </ul>
-        </Block>
-      ) : null}
-    </article>
-  );
-}
-
 function addedText(before: string, after: string): string {
   return after.startsWith(before) ? after.slice(before.length).trim() : after;
 }
 
 function QuestionView({ id }: { id: string }) {
-  const { environmentId, state, canWrite, pending, save, openPanel, showView } = useQuest();
+  const { environmentId, state, canWrite, pending, save, openPanel, showView, openDocument } =
+    useQuest();
   const question = state.questions.find((item) => item.id === id);
   const draft = useQuestDraft(environmentId, `question:${id}`);
   const [editing, setEditing] = useState(false);
@@ -694,7 +617,7 @@ function QuestionView({ id }: { id: string }) {
                       ? "Markdown file"
                       : "Quest note"
                 }
-                onClick={() => openPanel({ type: "document", id: doc.id }, "push")}
+                onClick={() => openDocument(doc.id)}
               >
                 {doc.title}
               </LinkRow>
@@ -875,7 +798,7 @@ function QuestionView({ id }: { id: string }) {
   );
 }
 
-function DecisionList() {
+export function DecisionList() {
   const { state, canWrite, openPanel } = useQuest();
   const [preparing, setPreparing] = useState(false);
   const groups = questionsByStatus(state.questions);
@@ -902,7 +825,7 @@ function DecisionList() {
                 <LinkRow
                   key={question.id}
                   detail={`${state.work.find((item: QuestWork) => item.id === question.workId)?.title ?? "Missing work"}${question.proposal ? " · Proposed" : ""}`}
-                  onClick={() => openPanel({ type: "question", id: question.id }, "push")}
+                  onClick={() => openPanel({ type: "question", id: question.id })}
                 >
                   {question.title}
                 </LinkRow>
@@ -917,7 +840,7 @@ function DecisionList() {
   );
 }
 
-function HistoryList() {
+export function HistoryList() {
   const { state } = useQuest();
   return (
     <div>
@@ -925,7 +848,7 @@ function HistoryList() {
       <ReconstructRevision />
       <ul className="mt-3">
         {state.history.toReversed().map((entry) => (
-          <HistoryEntryRow key={entry.id} entry={entry} inPanel />
+          <HistoryEntryRow key={entry.id} entry={entry} />
         ))}
       </ul>
     </div>

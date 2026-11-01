@@ -16,10 +16,10 @@ import {
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
-import { CompassIcon, GitForkIcon, MessageSquareIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { CompassIcon, GitForkIcon, MessageSquareIcon, PlusIcon } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { randomUUID } from "~/lib/utils";
+import { cn, randomUUID } from "~/lib/utils";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { resolveProjectDefaultProviderModelSelection } from "~/providerInstances";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
@@ -35,10 +35,12 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { toastManager } from "../ui/toast";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useQuest } from "./questContext";
 import { rememberQuestConversation, useQuestDraftStore } from "./questDraftStore";
 import { questEnvironment } from "./questEnvironment";
 import { QuestChat } from "./QuestChat";
+import { pinnedTabId } from "./QuestDocuments";
 
 export function useQuestConversationThreads(): ReadonlyMap<string, EnvironmentThreadShell> {
   const { environmentId, state } = useQuest();
@@ -118,12 +120,12 @@ interface Subject {
   readonly purposeKind: QuestPurposeKind;
 }
 
-/** `about` value for a new side discussion, the Quest's next conversation when nothing narrower applies. */
-const DIGRESSION = "digression";
+/** `about` value for a new open discussion, the Quest's next conversation when nothing narrower applies. */
+const OPEN_DISCUSSION = "discussion";
 
 function parseSubject(state: QuestState, about: string | null): Subject | null {
-  if (about === DIGRESSION)
-    return { workId: null, questionId: null, title: "A side question", purposeKind: "digress" };
+  if (about === OPEN_DISCUSSION)
+    return { workId: null, questionId: null, title: "New discussion", purposeKind: "digress" };
   const [kind, id] = about?.split(":") ?? [];
   const work = kind === "work" ? state.work.find((item) => item.id === id) : undefined;
   if (work)
@@ -144,14 +146,14 @@ const purposeLabels: Record<QuestPurposeKind, string> = {
   "discuss-work": "Discuss",
   decide: "Decide",
   intervene: "Intervene",
-  digress: "Digression",
+  digress: "Discussion",
   linked: "Linked",
 };
 
 function defaultPurpose(subject: Subject): string {
   if (subject.purposeKind === "decide") return `Decide: ${subject.title}`;
   if (subject.purposeKind === "intervene") return `Unblock ${subject.title}`;
-  if (subject.purposeKind === "digress") return "Explore a side question";
+  if (subject.purposeKind === "digress") return "New discussion";
   return `Discuss ${subject.title}`;
 }
 
@@ -256,9 +258,12 @@ function useOpenQuestConversation() {
 export function QuestConversations({
   about,
   thread,
+  beside,
 }: {
   about: string | null;
   thread: string | null;
+  /** Shown next to the chat column, so a resizable panel there measures only the chat. */
+  beside?: ReactNode;
 }) {
   const { environmentId, state, canWrite, save, showView } = useQuest();
   const threads = useQuestConversationThreads();
@@ -287,7 +292,7 @@ export function QuestConversations({
           ? `question:${selected.questionId}`
           : selected?.workId
             ? `work:${selected.workId}`
-            : DIGRESSION,
+            : OPEN_DISCUSSION,
       });
       return true;
     },
@@ -322,83 +327,86 @@ export function QuestConversations({
   };
 
   return (
-    <div className="flex min-h-0 flex-1">
-      <ConversationRail selectedId={selectedId} threads={threads} />
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {subject && !thread ? (
-          <StartDiscussion
-            key={about}
-            subject={subject}
-            busy={busy}
-            canWrite={canWrite}
-            onStart={(purpose, resume) =>
-              void openConversation({
-                role: "focused",
-                purposeKind: subject.purposeKind,
-                purpose,
-                workId: subject.workId,
-                questionId: subject.questionId,
-                resume,
-              })
-            }
-          />
-        ) : selected ? (
-          <>
-            <ConversationHeader
-              conversation={selected}
-              thread={threads.get(selected.threadId) ?? null}
+    <div className="flex min-h-0 min-w-0 flex-1">
+      <ConversationRail selectedId={selectedId} threads={threads} compact={Boolean(beside)} />
+      <div className="flex min-h-0 min-w-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {subject && !thread ? (
+            <StartDiscussion
+              key={about}
+              subject={subject}
+              busy={busy}
+              canWrite={canWrite}
+              onStart={(purpose, resume) =>
+                void openConversation({
+                  role: "focused",
+                  purposeKind: subject.purposeKind,
+                  purpose,
+                  workId: subject.workId,
+                  questionId: subject.questionId,
+                  resume,
+                })
+              }
             />
-            {selected.creation?.status === "reserved" ? (
-              <div className="flex flex-col items-start gap-3 p-6 text-sm">
-                <p role="status">
-                  This conversation is reserved but not created yet. Nothing has been sent.
-                </p>
-                {canWrite ? (
-                  <Button
-                    size="sm"
-                    disabled={busy}
-                    onClick={() =>
-                      void openConversation({
-                        role: selected.role === "core" ? "core" : "focused",
-                        purposeKind: selected.purposeKind,
-                        purpose: selected.purpose,
-                        workId: selected.workId,
-                        questionId: selected.questionId,
-                        resume: true,
-                        threadId: selected.threadId,
-                      })
-                    }
-                  >
-                    Create it now
-                  </Button>
-                ) : null}
-              </div>
-            ) : (
-              <div className="flex min-h-0 flex-1 flex-col">
-                <QuestChat
-                  key={selected.threadId}
-                  environmentId={environmentId}
-                  threadId={selected.threadId}
-                  embedding={embedding}
-                />
-              </div>
-            )}
-          </>
-        ) : thread ? (
-          <div className="flex flex-col items-start gap-3 p-6 text-sm">
-            <p role="alert">This conversation is no longer part of the Quest.</p>
-            <Button size="sm" variant="outline" onClick={() => showView("conversation")}>
-              Show the Quest's conversations
-            </Button>
-          </div>
-        ) : (
-          <div className="p-6 text-sm text-muted-foreground">
-            <p>
-              Start the core conversation, or discuss a work item or decision from the overview.
-            </p>
-            {canWrite ? null : <p className="mt-1">Read only</p>}
-          </div>
-        )}
+          ) : selected ? (
+            <>
+              <ConversationHeader
+                conversation={selected}
+                thread={threads.get(selected.threadId) ?? null}
+              />
+              {selected.creation?.status === "reserved" ? (
+                <div className="flex flex-col items-start gap-3 p-6 text-sm">
+                  <p role="status">
+                    This conversation is reserved but not created yet. Nothing has been sent.
+                  </p>
+                  {canWrite ? (
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      onClick={() =>
+                        void openConversation({
+                          role: selected.role === "core" ? "core" : "focused",
+                          purposeKind: selected.purposeKind,
+                          purpose: selected.purpose,
+                          workId: selected.workId,
+                          questionId: selected.questionId,
+                          resume: true,
+                          threadId: selected.threadId,
+                        })
+                      }
+                    >
+                      Create it now
+                    </Button>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="flex min-h-0 flex-1 flex-col">
+                  <QuestChat
+                    key={selected.threadId}
+                    environmentId={environmentId}
+                    threadId={selected.threadId}
+                    embedding={embedding}
+                  />
+                </div>
+              )}
+            </>
+          ) : thread ? (
+            <div className="flex flex-col items-start gap-3 p-6 text-sm">
+              <p role="alert">This conversation is no longer part of the Quest.</p>
+              <Button size="sm" variant="outline" onClick={() => showView("conversation")}>
+                Show the Quest's conversations
+              </Button>
+            </div>
+          ) : (
+            <div className="p-6 text-sm text-muted-foreground">
+              <p>
+                Start the core conversation, or discuss a work item or decision from the overview.
+              </p>
+              {canWrite ? null : <p className="mt-1">Read only</p>}
+            </div>
+          )}
+        </div>
+        {beside}
       </div>
     </div>
   );
@@ -482,9 +490,12 @@ function StartDiscussion({
 function ConversationRail({
   selectedId,
   threads,
+  compact,
 }: {
   selectedId: string | null;
   threads: ReadonlyMap<string, EnvironmentThreadShell>;
+  /** Documents share the row; below xl the rail yields its width to the chat. */
+  compact: boolean;
 }) {
   const { environmentId, state, canWrite, showView } = useQuest();
   const { openConversation, busy } = useOpenQuestConversation();
@@ -514,7 +525,10 @@ function ConversationRail({
   return (
     <nav
       aria-label="Quest conversations"
-      className="flex w-64 shrink-0 flex-col gap-4 overflow-y-auto border-r p-3"
+      className={cn(
+        "flex w-64 shrink-0 flex-col gap-4 overflow-y-auto border-r p-3",
+        compact && "max-xl:hidden",
+      )}
     >
       <section aria-label="Core conversation">
         <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -575,24 +589,31 @@ function ConversationRail({
             Discussions
           </h3>
           {canWrite && core && !coreMissing ? (
-            <Button
-              size="xs"
-              variant="ghost"
-              disabled={busy}
-              title="A new discussion with prepared context; not a fork of the core"
-              onClick={() =>
-                void openConversation({
-                  role: "focused",
-                  purposeKind: "digress",
-                  purpose: "Explore a side question",
-                  workId: null,
-                  questionId: null,
-                  resume: false,
-                })
-              }
-            >
-              New digression
-            </Button>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label="New discussion"
+                    disabled={busy}
+                    onClick={() =>
+                      void openConversation({
+                        role: "focused",
+                        purposeKind: "digress",
+                        purpose: "New discussion",
+                        workId: null,
+                        questionId: null,
+                        resume: false,
+                      })
+                    }
+                  />
+                }
+              >
+                <PlusIcon aria-hidden />
+              </TooltipTrigger>
+              <TooltipPopup>New discussion</TooltipPopup>
+            </Tooltip>
           ) : null}
         </div>
         {active.length > 0 ? (
@@ -841,7 +862,7 @@ function ConversationHeader({
 }
 
 function PinRow({ pin }: { pin: QuestConversation["sources"][number] }) {
-  const { environmentId, state, openPanel } = useQuest();
+  const { environmentId, state, openDocument } = useQuest();
   const isFile = state.files.some((file) => file.id === pin.documentId);
   const canReadFiles = useEnvironmentScope(environmentId, AuthFilesystemReadScope);
   const current = useEnvironmentQuery(
@@ -856,16 +877,18 @@ function PinRow({ pin }: { pin: QuestConversation["sources"][number] }) {
   const changed = isFile && current?.sha256 && pin.sha256 && current.sha256 !== pin.sha256;
   return (
     <li>
-      <button
-        type="button"
-        className="underline"
-        onClick={() => openPanel({ type: "document", id: pin.documentId }, "push")}
-      >
+      <button type="button" className="underline" onClick={() => openDocument(pin.documentId)}>
         {title}
       </button>{" "}
       {pin.sha256 ? (
         <span className="text-muted-foreground">
-          pinned {pin.sha256.slice(0, 10)}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => openDocument(pinnedTabId(pin.documentId, pin.sha256!))}
+          >
+            pinned {pin.sha256.slice(0, 10)}
+          </button>
           {changed ? ` · file now ${current.sha256!.slice(0, 10)}` : ""}
         </span>
       ) : (

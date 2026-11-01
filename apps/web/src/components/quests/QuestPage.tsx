@@ -2,19 +2,14 @@ import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, QuestState, QuestUpdateInput } from "@t3tools/contracts";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import {
-  CompassIcon,
-  FileTextIcon,
-  HistoryIcon,
-  ListChecksIcon,
-  RotateCcwIcon,
-} from "lucide-react";
-import { useRef, useState } from "react";
+import { Columns2Icon, CompassIcon, RotateCcwIcon } from "lucide-react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { cn, randomUUID } from "~/lib/utils";
+import { FileSurfaceAction, FileSurfaceLoading } from "../files/fileSurfaceChrome";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -27,19 +22,47 @@ import {
   type QuestSearch,
   type QuestView,
 } from "./questContext";
-import { clearQuestDrafts, readQuestPanel, rememberQuestPanel } from "./questDraftStore";
+import {
+  clearQuestDrafts,
+  openQuestDocumentTab,
+  readQuestPanel,
+  readQuestView,
+  rememberQuestPanel,
+  rememberQuestView,
+  showQuestDocumentsBeside,
+  useQuestDocumentTabs,
+} from "./questDraftStore";
 import { questEnvironment } from "./questEnvironment";
 import { QUEST_TITLE, questionsByStatus } from "./questModel";
 import { QuestConversations } from "./QuestConversations";
 import { QuestOverview } from "./QuestOverview";
-import { QuestPanel } from "./QuestPanel";
+import { DecisionList, HistoryList, QuestPanel } from "./QuestPanel";
 import { QuestWorkMap } from "./QuestWorkMap";
+
+// The document workspace loads with the first Documents view or split.
+const QuestDocumentsView = lazy(() =>
+  import("./QuestDocumentWorkspace").then((module) => ({ default: module.QuestDocumentsView })),
+);
+const QuestDocumentsBeside = lazy(() =>
+  import("./QuestDocumentWorkspace").then((module) => ({ default: module.QuestDocumentsBeside })),
+);
 
 const VIEWS: ReadonlyArray<{ value: QuestView; label: string }> = [
   { value: "overview", label: "Overview" },
   { value: "conversation", label: "Conversation" },
   { value: "map", label: "Work map" },
+  { value: "decisions", label: "Decisions" },
+  { value: "documents", label: "Documents" },
+  { value: "history", label: "History" },
 ];
+
+/** The view a route shows: its own, else the remembered one when it names nothing else. */
+function resolveView(environmentId: EnvironmentId, search: QuestSearch): QuestView {
+  if (search.view) return search.view;
+  const { env: _env, ...rest } = search;
+  if (Object.keys(rest).length > 0) return "overview";
+  return readQuestView(environmentId) ?? "overview";
+}
 
 function useQuestSearch(): QuestSearch {
   return parseQuestSearch(useSearch({ strict: false }) as Record<string, unknown>);
@@ -139,7 +162,8 @@ function QuestWorkspaceView({
 }) {
   const search = useQuestSearch();
   const navigate = useNavigate();
-  const view = search.view ?? "overview";
+  const view = resolveView(environmentId, search);
+  const documentTabs = useQuestDocumentTabs(environmentId);
   const [state, setState] = useState(initial);
   const [panel, setPanelState] = useState(() => initialPanel(environmentId, search));
   const [pending, setPending] = useState(false);
@@ -149,6 +173,9 @@ function QuestWorkspaceView({
   const canWrite = useAtomValue(questEnvironment.update.permissionAtom(environmentId));
   const update = useAtomCommand(questEnvironment.update, { reportFailure: false });
   const read = useAtomCommand(questEnvironment.read, { reportFailure: false });
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- records the shown view in the Quest store so returning to the bare Quest route reopens it
+  useEffect(() => rememberQuestView(environmentId, view), [environmentId, view]);
 
   function setPanel(next: ReadonlyArray<PanelEntry>) {
     setPanelState(next);
@@ -212,12 +239,28 @@ function QuestWorkspaceView({
     setPanel(mode === "push" ? [...panel, entry] : [entry]);
   }
 
+  function openDocument(tabId: string) {
+    if (view === "conversation") return openQuestDocumentTab(environmentId, tabId, true);
+    openQuestDocumentTab(environmentId, tabId, false);
+    if (view !== "documents") showView("documents");
+  }
+
   const decisions = questionsByStatus(state.questions);
   const waitingDecisions = decisions.open.length + decisions.recorded.length;
   const current = panel.at(-1) ?? null;
   return (
     <QuestWorkspace
-      value={{ environmentId, state, canWrite, pending, save, adopt, openPanel, showView }}
+      value={{
+        environmentId,
+        state,
+        canWrite,
+        pending,
+        save,
+        adopt,
+        openPanel,
+        showView,
+        openDocument,
+      }}
     >
       <header className="border-b px-4 pt-3">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -228,40 +271,6 @@ function QuestWorkspaceView({
           <h1 className="text-base font-semibold">{QUEST_TITLE}</h1>
           <Badge variant="outline">Historical example</Badge>
           <div className="ms-auto flex flex-wrap items-center gap-1.5">
-            <Button
-              size="sm"
-              variant={current?.type === "decisions" ? "secondary" : "ghost"}
-              onClick={() => openPanel({ type: "decisions" })}
-            >
-              <ListChecksIcon aria-hidden />
-              Decisions
-              {waitingDecisions > 0 ? (
-                <Badge variant="warning" size="sm">
-                  {waitingDecisions}
-                </Badge>
-              ) : null}
-            </Button>
-            <Button
-              size="sm"
-              variant={current?.type === "documents" ? "secondary" : "ghost"}
-              onClick={() => openPanel({ type: "documents" })}
-            >
-              <FileTextIcon aria-hidden />
-              Documents
-              {state.pendingWrites.length > 0 ? (
-                <Badge variant="warning" size="sm">
-                  {state.pendingWrites.length}
-                </Badge>
-              ) : null}
-            </Button>
-            <Button
-              size="sm"
-              variant={current?.type === "history" ? "secondary" : "ghost"}
-              onClick={() => openPanel({ type: "history" })}
-            >
-              <HistoryIcon aria-hidden />
-              History
-            </Button>
             {environmentPicker}
             <Button
               size="sm"
@@ -275,29 +284,52 @@ function QuestWorkspaceView({
             </Button>
           </div>
         </div>
-        <nav className="mt-2 flex gap-1" aria-label="Quest views">
-          {VIEWS.map((item) => (
-            <button
-              key={item.value}
-              type="button"
-              aria-current={view === item.value ? "page" : undefined}
-              onClick={() => showView(item.value)}
-              className={cn(
-                "-mb-px border-b-2 px-3 pb-2 text-sm",
-                view === item.value
-                  ? "border-primary font-medium text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {item.label}
-              {item.value === "conversation" && state.conversations.length > 0 ? (
-                <span className="ms-1.5 text-xs tabular-nums text-muted-foreground">
-                  {state.conversations.length}
-                </span>
-              ) : null}
-            </button>
-          ))}
-        </nav>
+        <div className="mt-2 flex items-end gap-2">
+          <nav className="flex min-w-0 flex-1 gap-1 overflow-x-auto" aria-label="Quest views">
+            {VIEWS.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                aria-current={view === item.value ? "page" : undefined}
+                onClick={() => showView(item.value)}
+                className={cn(
+                  "-mb-px shrink-0 border-b-2 px-3 pb-2 text-sm",
+                  view === item.value
+                    ? "border-primary font-medium text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {item.label}
+                {item.value === "conversation" && state.conversations.length > 0 ? (
+                  <span className="ms-1.5 text-xs tabular-nums text-muted-foreground">
+                    {state.conversations.length}
+                  </span>
+                ) : null}
+                {item.value === "decisions" && waitingDecisions > 0 ? (
+                  <Badge className="ms-1.5" variant="warning" size="sm">
+                    {waitingDecisions}
+                  </Badge>
+                ) : null}
+                {item.value === "documents" && state.pendingWrites.length > 0 ? (
+                  <Badge className="ms-1.5" variant="warning" size="sm">
+                    {state.pendingWrites.length}
+                  </Badge>
+                ) : null}
+              </button>
+            ))}
+          </nav>
+          {view === "conversation" ? (
+            <span className="mb-1">
+              <FileSurfaceAction
+                label="Documents beside the conversation"
+                pressed={documentTabs.beside}
+                onPress={() => showQuestDocumentsBeside(environmentId, !documentTabs.beside)}
+              >
+                <Columns2Icon className="size-3.5" />
+              </FileSurfaceAction>
+            </span>
+          ) : null}
+        </div>
       </header>
       <div className="relative flex min-h-0 flex-1">
         <div
@@ -318,7 +350,33 @@ function QuestWorkspaceView({
               initialFocus={search.work ?? null}
             />
           ) : view === "conversation" ? (
-            <QuestConversations about={search.about ?? null} thread={search.thread ?? null} />
+            <QuestConversations
+              about={search.about ?? null}
+              thread={search.thread ?? null}
+              beside={
+                documentTabs.beside ? (
+                  <Suspense fallback={null}>
+                    <QuestDocumentsBeside />
+                  </Suspense>
+                ) : null
+              }
+            />
+          ) : view === "documents" ? (
+            <Suspense fallback={<FileSurfaceLoading />}>
+              <QuestDocumentsView />
+            </Suspense>
+          ) : view === "decisions" ? (
+            <div className="scrollbar-gutter-both overflow-y-auto">
+              <div className="mx-auto max-w-3xl px-6 py-5">
+                <DecisionList />
+              </div>
+            </div>
+          ) : view === "history" ? (
+            <div className="scrollbar-gutter-both overflow-y-auto">
+              <div className="mx-auto max-w-3xl px-6 py-5">
+                <HistoryList />
+              </div>
+            </div>
           ) : (
             <QuestOverview selectedWorkId={current?.type === "work" ? current.id : null} />
           )}

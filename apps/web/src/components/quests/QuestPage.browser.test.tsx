@@ -16,6 +16,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser";
 
 import { render } from "../../../test/render";
 import "../../index.css";
@@ -158,6 +159,10 @@ vi.mock(
       ),
     }) as never,
 );
+// ChatMarkdown's own tests cover rendering; here only the Quest text matters.
+vi.mock(import("../ChatMarkdown"), () => ({
+  default: (({ text }: { text: string }) => <div>{text}</div>) as never,
+}));
 vi.mock(import("~/hooks/useHandleNewThread"), () => ({
   useNewThreadHandler: (() => harness.newThread) as never,
 }));
@@ -201,7 +206,13 @@ function setup() {
   harness.details = {};
   harness.links = {};
   harness.environments = [{ environmentId: "example-environment", label: "Isolated example" }];
-  useQuestDraftStore.setState({ drafts: {}, panels: {}, conversations: {} });
+  useQuestDraftStore.setState({
+    drafts: {},
+    panels: {},
+    conversations: {},
+    views: {},
+    documents: {},
+  });
   const initial: QuestState = {
     schemaVersion: 3,
     revision: 0,
@@ -378,7 +389,7 @@ it("records, previews, applies and reopens a decision without losing its earlier
   await using screen = await renderQuest();
   await screen.getByRole("button", { name: /^Decisions/ }).click();
   const details = screen.getByRole("complementary", { name: "Quest details" });
-  await details.getByRole("button", { name: /Which summary\?/ }).click();
+  await screen.getByRole("button", { name: /Which summary\?/ }).click();
   await expect.element(details.getByText("Proposed", { exact: true })).toBeVisible();
   await expect
     .element(screen.getByRole("button", { name: "Apply recorded answer to work" }))
@@ -449,11 +460,13 @@ it("reads evidence beside the work that referenced it on a read-only connection"
     .element(details.getByRole("button", { name: "Edit", exact: true }))
     .not.toBeInTheDocument();
   await details.getByRole("button", { name: /^Retained source Evidence/ }).click();
-  await expect
-    .element(details.getByText("A captured source account", { exact: true }))
-    .toBeVisible();
-  await expect.element(details.getByText("Evidence · read only")).toBeVisible();
-  await details.getByRole("button", { name: "Back" }).click();
+  // Documents open in the Documents view, not in the narrow details panel beside it.
+  const evidence = screen
+    .getByRole("region", { name: "Open documents" })
+    .getByRole("article", { name: "Retained source" });
+  await expect.element(evidence.getByText("A captured source account")).toBeVisible();
+  await expect.element(evidence.getByText("Evidence · read only")).toBeVisible();
+  await expect.element(evidence.getByRole("button", { name: "Edit" })).not.toBeInTheDocument();
   await expect.element(details.getByRole("heading", { name: "Part A" })).toBeVisible();
   await details.getByRole("button", { name: "Close details" }).click();
   await expect
@@ -691,12 +704,11 @@ it.each([
     });
     await using screen = await renderQuest();
     await screen.getByRole("button", { name: /^Decisions/ }).click();
-    const details = screen.getByRole("complementary", { name: "Quest details" });
-    await details.getByRole("button", { name: /Which summary\?/ }).click();
+    await screen.getByRole("button", { name: /Which summary\?/ }).click();
     await screen.getByRole("textbox", { name: "Rationale (optional)" }).fill("Second reason");
     if (pick) {
       await screen.getByRole("combobox", { name: "Answer from conversation" }).click();
-      await screen.getByRole("option", { name: "Newer discussion" }).click();
+      await page.getByRole("option", { name: "Newer discussion" }).click();
     }
     await screen
       .getByRole("button", { name: answer === null ? "Defer" : "Record answer", exact: true })
@@ -755,9 +767,9 @@ it("keeps a fork made in the Quest chat in the Quest with its origin, and starts
         name: "Purpose",
       }),
     )
-    .toHaveValue("Explore a side question");
+    .toHaveValue("New discussion");
   expect(router.state.location.pathname).toBe("/quests");
-  expect(router.state.location.search).toMatchObject({ about: "digression" });
+  expect(router.state.location.search).toMatchObject({ about: "discussion" });
   expect(harness.newThread).not.toHaveBeenCalled();
 });
 
@@ -916,7 +928,7 @@ it("returns from a thread to the Quest of that thread's environment", async () =
   await using _screen = screen;
   await expect.element(screen.getByRole("heading", { name: "Example milestone" })).toBeVisible();
   await screen.getByRole("combobox", { name: "Environment" }).click();
-  await screen.getByRole("option", { name: "Second" }).click();
+  await page.getByRole("option", { name: "Second" }).click();
   await expect.element(screen.getByRole("heading", { name: "Second milestone" })).toBeVisible();
   await router.navigate({
     to: "/$environmentId/$threadId",
@@ -946,10 +958,7 @@ it("keeps unsaved answers and edits while evidence, other panels or a thread are
   await details.getByRole("textbox", { name: "Answer" }).fill("A drafted answer");
   await details.getByRole("textbox", { name: "Rationale (optional)" }).fill("Drafted reason");
   await details.getByRole("button", { name: /^Retained source/ }).click();
-  await expect
-    .element(details.getByText("A captured source account", { exact: true }))
-    .toBeVisible();
-  await details.getByRole("button", { name: "Back" }).click();
+  await expect.element(screen.getByText("A captured source account")).toBeVisible();
   await expect
     .element(details.getByRole("textbox", { name: "Answer" }))
     .toHaveValue("A drafted answer");
@@ -966,12 +975,19 @@ it("keeps unsaved answers and edits while evidence, other panels or a thread are
     params: { environmentId: "example-environment", threadId: "thread-1" },
   });
   await router.navigate({ to: "/quests" });
-  await expect.element(screen.getByRole("heading", { name: "History", exact: true })).toBeVisible();
+  const views = screen.getByRole("navigation", { name: "Quest views" });
+  await expect
+    .element(views.getByRole("button", { name: "History", exact: true }))
+    .toHaveAttribute("aria-current", "page");
   await router.navigate({
     to: "/$environmentId/$threadId",
     params: { environmentId: "example-environment", threadId: "thread-1" },
   });
+  // A deep link overrides the remembered view.
   await router.navigate({ to: "/quests", search: { work: "part-a" } });
+  await expect
+    .element(views.getByRole("button", { name: "Overview", exact: true }))
+    .toHaveAttribute("aria-current", "page");
   await expect
     .element(screen.getByRole("textbox", { name: "Work title" }))
     .toHaveValue("A drafted title");
@@ -981,7 +997,7 @@ it("keeps unsaved answers and edits while evidence, other panels or a thread are
   expect(harness.run).not.toHaveBeenCalled();
 });
 
-it("lists each environment's Quest with full rows, keeps settled discussions in the Quest and shows attention when collapsed", async () => {
+it("lists each environment's Quest as one row with its attention and reopens its last view", async () => {
   const initial = setup();
   harness.environments.push({ environmentId: "second-environment", label: "Second" });
   harness.quests["example-environment"] = {
@@ -992,10 +1008,7 @@ it("lists each environment's Quest with full rows, keeps settled discussions in 
       conversation("settled-b", "Conversation B"),
     ],
   };
-  const member = (environmentId: string, threadId: string, role: string) => [
-    `${environmentId}:${threadId}`,
-    { threadId, role, title: threadId, environmentId },
-  ];
+  harness.quests["second-environment"] = initial;
   const quest = (members: ReadonlyArray<readonly [string, string]>) => ({
     questId: "market-tracking",
     title: "Market tracking",
@@ -1013,7 +1026,6 @@ it("lists each environment's Quest with full rows, keeps settled discussions in 
         ]),
       },
       // The same thread id on another environment belongs to that environment's Quest.
-      // Its core is settled beyond the trimmed shell list, so it has no shell here.
       {
         environmentId: "second-environment",
         quest: quest([
@@ -1022,17 +1034,10 @@ it("lists each environment's Quest with full rows, keeps settled discussions in 
         ]),
       },
     ],
-    members: new Map([
-      member("example-environment", "core-1", "core"),
-      member("example-environment", "focused-a", "focused"),
-      member("example-environment", "settled-b", "focused"),
-      member("second-environment", "core-2", "core"),
-      member("second-environment", "focused-a", "focused"),
-    ] as never),
+    members: new Map(),
     hiddenKeys: new Set(),
   };
   const threads = [
-    // A settled core stays listed; a settled discussion moves to the Quest view.
     shell("core-1", { settledOverride: "settled" }),
     shell("focused-a", { hasPendingApprovals: true }),
     shell("settled-b", { settledOverride: "settled" }),
@@ -1054,13 +1059,6 @@ it("lists each environment's Quest with full rows, keeps settled discussions in 
           <SidebarQuests
             threads={threads as never}
             environmentLabelById={new Map([["second-environment" as EnvironmentId, "Second"]])}
-            renderThreadRow={(thread, row) => (
-              <li key={`${thread.environmentId}:${thread.id}`} data-parent={row.parent}>
-                <a href="#row" aria-current={row.isActive ? "page" : undefined}>
-                  {`Row ${thread.environmentId}/${thread.id}`}
-                </a>
-              </li>
-            )}
           />
         </aside>
         <Outlet />
@@ -1084,37 +1082,82 @@ it("lists each environment's Quest with full rows, keeps settled discussions in 
   await using screen = await render(<RouterProvider router={router} />, {
     router: false, // This scenario supplies the routes whose navigation it exercises.
   });
-  const first = screen.getByRole("list", { name: "Market tracking conversations" }).first();
+  const [first, second] = [
+    screen.getByRole("link", { name: "Market tracking" }).first(),
+    screen.getByRole("link", { name: "Market tracking" }).last(),
+  ];
+  // Conversations are chosen inside the Quest; the row keeps their attention visible.
   await expect
-    .element(first.getByRole("link").first())
-    .toHaveTextContent("Row example-environment/core-1");
-  await expect.element(first.getByText("Row example-environment/focused-a")).toBeVisible();
-  await expect
-    .element(first.getByText("Row example-environment/settled-b"))
+    .element(screen.getByText("Row example-environment/focused-a"))
     .not.toBeInTheDocument();
-  await expect.element(first.getByRole("link", { name: "1 settled in the Quest" })).toBeVisible();
-  await expect.element(screen.getByText("Row second-environment/focused-a")).toBeVisible();
-  const unlistedCore = screen.getByRole("link", { name: "core-2", exact: true });
-  await expect.element(unlistedCore).toBeVisible();
-  await expect
-    .element(unlistedCore)
-    .toHaveAttribute("href", expect.stringContaining("thread=core-2"));
-
+  await expect.element(first).toMatchTextContent(/1 waiting/);
+  await expect.element(second).toMatchTextContent(/1 working/);
   const toggle = screen.getByRole("button", { name: /^Quests/ });
   await toggle.click();
   await expect.element(toggle.getByText("1 waiting · 1 working")).toBeVisible();
   await toggle.click();
-  await screen.getByRole("link", { name: "Market tracking" }).first().click();
-  await expect.element(screen.getByRole("main", { name: "Quest workspace" })).toBeVisible();
-  expect(router.state.location.pathname).toBe("/quests");
+
   await router.navigate({
     to: "/quests",
     search: { env: "example-environment", view: "conversation", thread: "focused-a" },
   });
+  const chat = screen.getByRole("region", { name: "Embedded chat" });
+  await expect.element(chat).toHaveTextContent("example-environment/focused-a");
+  await router.navigate({ to: "/" });
+  await first.click();
+  expect(router.state.location.search).toEqual({ env: "example-environment" });
+  await expect.element(first).toHaveAttribute("aria-current", "page");
+  const views = screen.getByRole("navigation", { name: "Quest views" });
   await expect
-    .element(screen.getByRole("link", { name: "Row example-environment/focused-a" }))
+    .element(views.getByRole("button", { name: /^Conversation/ }))
     .toHaveAttribute("aria-current", "page");
+  await expect.element(chat).toHaveTextContent("example-environment/focused-a");
+  // Each environment's Quest keeps its own view.
+  await second.click();
   await expect
-    .element(screen.getByRole("link", { name: "Row second-environment/focused-a" }))
-    .not.toHaveAttribute("aria-current");
+    .element(views.getByRole("button", { name: "Overview", exact: true }))
+    .toHaveAttribute("aria-current", "page");
+});
+
+it("opens documents as tabs, beside the conversation, and keeps them across views", async () => {
+  const initial = setup();
+  harness.quests["example-environment"] = {
+    ...initial,
+    conversations: [conversation("core-1", "Core", { role: "core", purposeKind: "coordinate" })],
+  };
+  harness.shells = [shell("core-1")];
+  // Wide enough for the inline split; narrow layouts use a sheet.
+  await page.viewport(1400, 900);
+  await using _viewport = { [Symbol.asyncDispose]: () => page.viewport(414, 896) };
+  const { screen, router } = await renderRoutes("/quests?view=documents");
+  await using _screen = screen;
+  const browser = screen.getByRole("navigation", { name: "Quest documents" });
+  await browser.getByRole("button", { name: "Retained source" }).click();
+  await browser.getByRole("button", { name: "Working note" }).click();
+  const open = screen.getByRole("region", { name: "Open documents" });
+  await expect.element(open.getByRole("article", { name: "Working note" })).toBeVisible();
+  await open.getByRole("button", { name: "Retained source", exact: true }).click();
+  await expect
+    .element(open.getByRole("article", { name: "Retained source" }))
+    .toMatchTextContent("Evidence · read only");
+  await expect.element(open.getByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+
+  await open.getByRole("button", { name: "Open beside the conversation" }).click();
+  expect(router.state.location.search).toMatchObject({ view: "conversation" });
+  const beside = screen.getByRole("region", { name: "Documents beside the conversation" });
+  await expect.element(screen.getByRole("region", { name: "Embedded chat" })).toBeVisible();
+  await beside.getByRole("button", { name: "Close Retained source" }).click();
+  await expect.element(beside.getByRole("article", { name: "Working note" })).toBeVisible();
+
+  await router.navigate({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "example-environment", threadId: "core-1" },
+  });
+  await router.navigate({ to: "/quests" });
+  await expect.element(beside.getByRole("article", { name: "Working note" })).toBeVisible();
+  await expect
+    .element(beside.getByRole("button", { name: "Close Retained source" }))
+    .not.toBeInTheDocument();
+  await beside.getByRole("button", { name: "Close documents" }).click();
+  await expect.element(beside).not.toBeInTheDocument();
 });

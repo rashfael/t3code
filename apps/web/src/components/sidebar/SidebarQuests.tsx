@@ -4,13 +4,11 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { Link, useLocation } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { CompassIcon } from "lucide-react";
-import type { ReactNode } from "react";
 
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { CollapsibleSectionHeader } from "~/components/ui/collapsible-section-header";
 import { useSidebar } from "~/components/ui/sidebar";
 import { parseQuestSearch } from "~/components/quests/questContext";
-import { useQuestDraftStore } from "~/components/quests/questDraftStore";
 import { useQuestMembership } from "~/components/quests/questMembership";
 import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
@@ -20,11 +18,6 @@ import {
   resolveThreadLastVisitedAt,
 } from "../Sidebar.logic";
 import { sidebarRowStyles } from "./sidebarRowStyles";
-
-type RenderQuestRow = (
-  thread: EnvironmentThreadShell,
-  questRow: { readonly parent: string; readonly isActive: boolean },
-) => ReactNode;
 
 interface Attention {
   readonly working: number;
@@ -60,19 +53,18 @@ function attentionText(attention: Attention): string | null {
 }
 
 /**
- * Each environment's Quest with its conversations as full thread rows. Membership comes from the
- * same source that hides those threads from the ordinary shelves, and stays loaded when collapsed.
+ * Each environment's Quest as one row with its conversations' aggregate attention; conversations
+ * are chosen inside the Quest. Membership comes from the same source that hides those threads from
+ * the ordinary shelves, and stays loaded when collapsed.
  */
 export function SidebarQuests({
   treeNavigation = false,
   threads,
   environmentLabelById,
-  renderThreadRow,
 }: {
   treeNavigation?: boolean;
   threads: ReadonlyArray<EnvironmentThreadShell>;
   environmentLabelById: ReadonlyMap<EnvironmentId, string>;
-  renderThreadRow: RenderQuestRow;
 }) {
   const [expanded, setExpanded] = useLocalStorage(
     "t3code:quests-shelf-expanded",
@@ -86,12 +78,6 @@ export function SidebarQuests({
   const search = parseQuestSearch(
     useLocation({ select: (location) => location.search }) as Record<string, unknown>,
   );
-  const remembered = useQuestDraftStore((store) =>
-    search.env ? store.conversations[search.env] : undefined,
-  );
-  const shownConversation = !onQuest
-    ? null
-    : (search.thread ?? (search.view === "conversation" ? remembered : null) ?? null);
   const shellByKey = new Map(
     threads.map((thread) => [
       scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
@@ -103,20 +89,13 @@ export function SidebarQuests({
       const shell = shellByKey.get(
         scopedThreadKey(scopeThreadRef(environmentId, member.threadId as ThreadId)),
       );
-      return shell ? [{ member, shell }] : [];
+      return shell ? [shell] : [];
     });
-    // The shell list omits older settled threads; the core keeps its row without one.
-    const unlistedCore =
-      quest.members.find(
-        (member) =>
-          member.role === "core" &&
-          !members.some((item) => item.member.threadId === member.threadId),
-      ) ?? null;
-    return { environmentId, quest, members, unlistedCore };
+    return { environmentId, quest, members };
   });
   const attention = attentionText(
     attentionOf(
-      quests.flatMap((quest) => quest.members.map((item) => item.shell)),
+      quests.flatMap((quest) => quest.members),
       lastVisitedByKey,
     ),
   );
@@ -146,26 +125,17 @@ export function SidebarQuests({
               Loading Quests…
             </li>
           ) : null}
-          {quests.map(({ environmentId, quest, members, unlistedCore }) => {
+          {quests.map(({ environmentId, quest, members }) => {
             const rowId = `quest:${environmentId}:${quest.questId}`;
             const isHere = onQuest && (search.env ?? quests[0]?.environmentId) === environmentId;
-            // The core stays reachable when settled; settled discussions live in the Quest view.
-            const listed = members.filter(
-              ({ member, shell }) => member.role === "core" || shell.settledOverride !== "settled",
-            );
-            const settled = members.length - listed.length;
-            const questAttention = attentionText(
-              attentionOf(
-                members.map((item) => item.shell),
-                lastVisitedByKey,
-              ),
-            );
+            const questAttention = attentionText(attentionOf(members, lastVisitedByKey));
             return (
               <li key={rowId} className="list-none py-0.5">
                 <Link
                   to="/quests"
                   search={{ env: environmentId }}
                   aria-label={quest.title}
+                  aria-current={isHere ? "page" : undefined}
                   role={treeNavigation ? "treeitem" : undefined}
                   tabIndex={treeNavigation ? -1 : undefined}
                   data-sidebar-row={treeNavigation ? rowId : undefined}
@@ -173,7 +143,7 @@ export function SidebarQuests({
                   className={cn(
                     "block",
                     sidebarRowStyles.surface,
-                    isHere && !shownConversation ? sidebarRowStyles.active : sidebarRowStyles.idle,
+                    isHere ? sidebarRowStyles.active : sidebarRowStyles.idle,
                   )}
                   onClick={closeMobile}
                 >
@@ -194,59 +164,6 @@ export function SidebarQuests({
                     </div>
                   </div>
                 </Link>
-                {listed.length > 0 || settled > 0 || unlistedCore ? (
-                  <ul
-                    aria-label={`${quest.title} conversations`}
-                    role={treeNavigation ? "group" : undefined}
-                    className="ps-3"
-                  >
-                    {unlistedCore ? (
-                      <li className="list-none">
-                        <Link
-                          to="/quests"
-                          search={{
-                            env: environmentId,
-                            view: "conversation",
-                            thread: unlistedCore.threadId,
-                          }}
-                          aria-current={
-                            isHere && shownConversation === unlistedCore.threadId
-                              ? "page"
-                              : undefined
-                          }
-                          className="block truncate px-(--sidebar-row-content-inset) py-1 text-sm text-muted-foreground hover:text-foreground"
-                          onClick={closeMobile}
-                        >
-                          {unlistedCore.title}
-                        </Link>
-                      </li>
-                    ) : null}
-                    {listed
-                      .toSorted(
-                        (left, right) =>
-                          Number(right.member.role === "core") -
-                          Number(left.member.role === "core"),
-                      )
-                      .map(({ shell }) =>
-                        renderThreadRow(shell, {
-                          parent: rowId,
-                          isActive: isHere && shownConversation === shell.id,
-                        }),
-                      )}
-                    {settled > 0 ? (
-                      <li className="list-none">
-                        <Link
-                          to="/quests"
-                          search={{ env: environmentId, view: "conversation" }}
-                          className="block px-(--sidebar-row-content-inset) py-1 text-xs text-muted-foreground hover:text-foreground"
-                          onClick={closeMobile}
-                        >
-                          {settled} settled in the Quest
-                        </Link>
-                      </li>
-                    ) : null}
-                  </ul>
-                ) : null}
               </li>
             );
           })}

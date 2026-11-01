@@ -1,22 +1,9 @@
-import ReactMarkdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
+import ChatMarkdown from "../ChatMarkdown";
 
-const components: Components = {
-  // Captured links point into the original repository, which this environment does not hold.
-  a: ({ children }) => <span className="underline decoration-dotted">{children}</span>,
-  table: ({ children }) => (
-    <div className="chat-markdown-table-container">
-      <table>{children}</table>
-    </div>
-  ),
-};
-
-export function QuestMarkdown({ text }: { text: string }) {
-  return (
-    <div className="chat-markdown w-full min-w-0 text-sm [overflow-wrap:anywhere]">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {text}
-      </ReactMarkdown>
-    </div>
-  );
+/**
+ * Quest prose through T3's Markdown renderer. No workspace or thread is passed, so links to files
+ * stay inert instead of opening a project's file panel for paths outside it.
+ */
+export function QuestMarkdown({ text, className }: { text: string; className?: string }) {
+  return <ChatMarkdown text={text} cwd={undefined} className={className ?? "text-sm"} />;
 }

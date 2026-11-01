@@ -1,7 +1,7 @@
 import type { EnvironmentId, QuestState, QuestUpdateInput } from "@t3tools/contracts";
 import { createContext, use } from "react";
 
-export type QuestView = "overview" | "conversation" | "map";
+export type QuestView = "overview" | "conversation" | "map" | "decisions" | "documents" | "history";
 
 export interface QuestSearch {
   /** The environment whose Quest is shown; without it, the primary environment's. */
@@ -15,7 +15,14 @@ export interface QuestSearch {
   readonly thread?: string;
 }
 
-const VIEWS: ReadonlyArray<QuestView> = ["overview", "conversation", "map"];
+const VIEWS: ReadonlyArray<QuestView> = [
+  "overview",
+  "conversation",
+  "map",
+  "decisions",
+  "documents",
+  "history",
+];
 
 function searchText(value: unknown) {
   return typeof value === "string" && value.length > 0 && value.length <= 200 ? value : undefined;
@@ -40,11 +47,7 @@ export function parseQuestSearch(raw: Record<string, unknown>): QuestSearch {
 
 export type PanelEntry =
   | { readonly type: "work"; readonly id: string }
-  | { readonly type: "document"; readonly id: string }
-  | { readonly type: "question"; readonly id: string }
-  | { readonly type: "decisions" }
-  | { readonly type: "documents" }
-  | { readonly type: "history" };
+  | { readonly type: "question"; readonly id: string };
 
 export type QuestChange = QuestUpdateInput["change"];
 
@@ -59,6 +62,8 @@ export interface QuestWorkspaceContext {
   /** `push` keeps the current panel one Back step away; `replace` starts a new panel trail. */
   readonly openPanel: (entry: PanelEntry, mode?: "push" | "replace") => void;
   readonly showView: (view: QuestView, extra?: Omit<QuestSearch, "view" | "env">) => void;
+  /** Opens a document tab: beside the conversation when it is shown, else in Documents. */
+  readonly openDocument: (tabId: string) => void;
 }
 
 export const QuestWorkspace = createContext<QuestWorkspaceContext | null>(null);
