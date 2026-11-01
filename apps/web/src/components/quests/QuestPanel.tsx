@@ -607,8 +607,8 @@ function QuestionView({ id }: { id: string }) {
   );
   const answer = draftText(draft.draft, "answer", question.answer ?? "");
   const rationale = draftText(draft.draft, "rationale", question.rationale ?? "");
-  // An existing answer keeps its saved source, even a detached one; only a new answer gets a suggestion.
-  const savedSource = question.answer !== null ? question.answerSource : null;
+  // A saved source stays, even a detached one or on a deferral; only an unsourced new answer gets a suggestion.
+  const savedSource = question.answerSource;
   const source = draftText(
     draft.draft,
     "source",

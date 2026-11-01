@@ -77,10 +77,13 @@ export function isAtThreadNavigationTarget(
 ): boolean {
   const target = threadNavigationTarget(ref);
   if (target.to !== "/quests") return isThreadRoutePathname(location.pathname, ref);
+  // Only the canonical conversation URL counts: an omitted env means the primary environment and an
+  // omitted view means the overview, so those locations navigate to the canonical one first.
   const search = (location.search ?? {}) as Record<string, unknown>;
   return (
     location.pathname.replace(/\/$/, "") === "/quests" &&
-    search.thread === ref.threadId &&
-    (search.env === undefined || search.env === ref.environmentId)
+    search.view === target.search.view &&
+    search.env === target.search.env &&
+    search.thread === target.search.thread
   );
 }

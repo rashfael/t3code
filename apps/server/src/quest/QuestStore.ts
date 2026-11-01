@@ -42,6 +42,7 @@ import { diffQuestDomain, questDomain, replayQuestRecord } from "./questArchive.
 import { QUEST_ID, QUEST_TITLE, questContextPacket, questSourceIds } from "./questContext.ts";
 import {
   normalizeQuestFilePath,
+  requireQuestRoot,
   resolveQuestFile,
   sha256,
   validateQuestWorkspace,
@@ -973,6 +974,7 @@ const make = Effect.gen(function* () {
   const workspaceFiles = Effect.gen(function* () {
     const { state } = yield* load();
     if (!state.workspace) return { root: null, paths: [], truncated: false };
+    yield* requireQuestRoot(fs, state.workspace.root);
     const listed = yield* fs.readDirectory(state.workspace.root, { recursive: true }).pipe(
       Effect.mapError(
         () =>
@@ -997,6 +999,74 @@ const make = Effect.gen(function* () {
     };
   }).pipe(Effect.withSpan("QuestStore.workspaceFiles"));
 
+  /**
+   * The file a save is bound to, while the registered root and document still resolve to it. Saves
+   * recorded without a target are refused before any workspace access.
+   */
+  const confirmTarget = Effect.fn("QuestStore.confirmTarget")(function* (
+    state: QuestState,
+    write: QuestPendingWrite,
+  ) {
+    const target = write.target;
+    if (target === undefined)
+      return yield* new QuestError({
+        reason: "unavailable",
+        detail: `This save of ${write.path} was recorded before T3 Code kept its file target, so it is not finished automatically. Its versions stay retained; discard it and save again.`,
+      });
+    const file = state.files.find((item) => item.id === write.documentId);
+    if (!file || file.path !== write.path || state.workspace?.root !== target.root)
+      return yield* new QuestError({
+        reason: "unavailable",
+        detail: `${write.path} is no longer registered where this save started.`,
+      });
+    const resolved = yield* resolveQuestFile(fs, path, target.root, write.path);
+    if (resolved.real !== target.real)
+      return yield* new QuestError({
+        reason: "unavailable",
+        detail: `${write.path} no longer leads to the file this save started with.`,
+      });
+    return target.real;
+  });
+
+  const readBound = Effect.fn("QuestStore.readBound")(function* (
+    state: QuestState,
+    write: QuestPendingWrite,
+  ) {
+    const real = yield* confirmTarget(state, write);
+    const bytes = yield* fs
+      .readFile(real)
+      .pipe(
+        Effect.mapError(
+          () =>
+            new QuestError({ reason: "unavailable", detail: `${write.path} could not be read.` }),
+        ),
+      );
+    return { real, bytes, sha: sha256(bytes) };
+  });
+
+  /**
+   * Replaces the bound file only while it still holds the expected bytes. The binding is checked
+   * again right before the rename; changes by other writers within that last window are not
+   * excluded atomically.
+   */
+  const replaceFile = Effect.fn("QuestStore.replaceFile")(function* (
+    state: QuestState,
+    write: QuestPendingWrite,
+    bytes: Uint8Array,
+  ) {
+    const current = yield* readBound(state, write);
+    if (current.sha !== write.expectedSha256)
+      return { replaced: false as const, actual: current.bytes };
+    const { real } = current;
+    const temporary = `${real}.quest-${write.id}.tmp`;
+    yield* fs.writeFile(temporary, bytes);
+    yield* confirmTarget(state, write).pipe(
+      Effect.andThen(fs.rename(temporary, real)),
+      Effect.tapError(() => fs.remove(temporary).pipe(Effect.ignore)),
+    );
+    return { replaced: true as const, actual: bytes };
+  });
+
   /** A save's current outcome from the state and its archive, for retries and repeated recovery. */
   const writeOutcome = Effect.fn("QuestStore.writeOutcome")(function* (
     loaded: Loaded,
@@ -1020,7 +1090,15 @@ const make = Effect.gen(function* () {
     if (!write) return yield* invalid("That save is no longer pending.");
     if (!open && removal?.record.operation === "write-discard")
       return yield* invalid("That save was discarded. Its versions stay retained.");
-    const file = yield* readDocument(write.documentId);
+    // An unresolved save only reports the file it is bound to; a finished one reports the current file.
+    const file = open
+      ? yield* readBound(loaded.state, open).pipe(
+          Effect.map((read) => fileContent(open.documentId, open.path, read.bytes, null)),
+          Effect.catch((error) =>
+            Effect.succeed(fileContent(open.documentId, open.path, null, error.message)),
+          ),
+        )
+      : yield* readDocument(write.documentId);
     return {
       state: loaded.state,
       outcome: open ? open.status : "saved",
@@ -1035,48 +1113,9 @@ const make = Effect.gen(function* () {
     source: null,
   });
 
-  /** Fails unless `relative` still resolves inside the workspace to the file the save started with. */
-  const confirmTarget = Effect.fn("QuestStore.confirmTarget")(function* (
-    root: string,
-    relative: string,
-    real: string,
-  ) {
-    const resolved = yield* resolveQuestFile(fs, path, root, relative);
-    if (resolved.real !== real)
-      return yield* new QuestError({
-        reason: "unavailable",
-        detail: `${relative} no longer leads to the file this save started with.`,
-      });
-  });
-
-  /**
-   * Replaces the file only while it still holds `expectedSha` and still resolves inside the
-   * workspace. Containment is checked again right before the rename; content and path changes by
-   * other writers within the last check-to-rename window are not excluded atomically.
-   */
-  const replaceFile = Effect.fn("QuestStore.replaceFile")(function* (
-    root: string,
-    relative: string,
-    real: string,
-    writeId: string,
-    expectedSha: string,
-    bytes: Uint8Array,
-  ) {
-    yield* confirmTarget(root, relative, real);
-    const current = sha256(yield* fs.readFile(real));
-    if (current !== expectedSha) return { replaced: false as const, actual: current };
-    const temporary = `${real}.quest-${writeId}.tmp`;
-    yield* fs.writeFile(temporary, bytes);
-    yield* confirmTarget(root, relative, real).pipe(
-      Effect.andThen(fs.rename(temporary, real)),
-      Effect.tapError(() => fs.remove(temporary).pipe(Effect.ignore)),
-    );
-    return { replaced: true as const, actual: sha256(bytes) };
-  });
-
   const recordConflict = Effect.fn("QuestStore.recordConflict")(function* (
     loaded: Loaded,
-    write: QuestState["pendingWrites"][number],
+    write: QuestPendingWrite,
     actualSha: string,
     meta: Meta,
   ) {
@@ -1108,9 +1147,10 @@ const make = Effect.gen(function* () {
 
   const finalizeWrite = Effect.fn("QuestStore.finalizeWrite")(function* (
     loaded: Loaded,
-    write: QuestState["pendingWrites"][number],
+    write: QuestPendingWrite,
     meta: Meta,
   ) {
+    yield* confirmTarget(loaded.state, write);
     return yield* commit(
       loaded,
       {
@@ -1132,20 +1172,11 @@ const make = Effect.gen(function* () {
   /** Writes the file then finalizes; a failure between them leaves the durable intent pending. */
   const completeWrite = Effect.fn("QuestStore.completeWrite")(function* (
     loaded: Loaded,
-    write: QuestState["pendingWrites"][number],
-    target: { readonly root: string; readonly real: string },
+    write: QuestPendingWrite,
     bytes: Uint8Array,
     meta: Meta,
   ) {
-    const { real } = target;
-    const replaced = yield* replaceFile(
-      target.root,
-      write.path,
-      real,
-      write.id,
-      write.expectedSha256,
-      bytes,
-    ).pipe(
+    const replaced = yield* replaceFile(loaded.state, write, bytes).pipe(
       Effect.map((result) => ({ ...result, failed: null })),
       Effect.catch((cause) =>
         Effect.succeed({ replaced: false as const, actual: null, failed: cause }),
@@ -1163,13 +1194,12 @@ const make = Effect.gen(function* () {
         ),
       };
     if (!replaced.replaced) {
-      const actualBytes = yield* fs.readFile(real).pipe(Effect.mapError(storageError));
-      yield* writeBlob(actualBytes);
-      const state = yield* recordConflict(loaded, write, sha256(actualBytes), meta);
+      yield* writeBlob(replaced.actual);
+      const state = yield* recordConflict(loaded, write, sha256(replaced.actual), meta);
       return {
         state,
         outcome: "conflict" as const,
-        file: fileContent(write.documentId, write.path, actualBytes, null),
+        file: fileContent(write.documentId, write.path, replaced.actual, null),
       };
     }
     const state = yield* finalizeWrite(loaded, write, meta);
@@ -1208,16 +1238,17 @@ const make = Effect.gen(function* () {
     const proposed = new TextEncoder().encode(input.content);
     const desiredSha = yield* writeBlob(proposed);
     yield* writeBlob(observed.bytes);
-    const write = {
+    const write: QuestPendingWrite = {
       id: `write-${NodeCrypto.randomUUID()}`,
       documentId: input.documentId,
       path: target.file.path,
       expectedSha256: input.expectedSha256,
       desiredSha256: desiredSha,
       actualSha256: null,
-      status: "pending" as const,
+      status: "pending",
       createdAt: yield* now,
       detail: "Saving.",
+      target: { root: target.root, real: observed.real },
     };
     if (observed.sha !== input.expectedSha256) {
       const state = yield* recordConflict(
@@ -1252,13 +1283,7 @@ const make = Effect.gen(function* () {
     const afterIntent = yield* load();
     if (afterIntent.state.revision !== intent.revision)
       return yield* storageError("The Quest changed during a save.");
-    return yield* completeWrite(
-      afterIntent,
-      write,
-      { root: target.root, real: observed.real },
-      proposed,
-      meta,
-    );
+    return yield* completeWrite(afterIntent, write, proposed, meta);
   }, mutex.withPermits(1));
 
   const recoverWrite = Effect.fn("QuestStore.recoverWrite")(function* (
@@ -1268,10 +1293,8 @@ const make = Effect.gen(function* () {
     const loaded = yield* load();
     const write = loaded.state.pendingWrites.find((item) => item.id === input.writeId);
     if (!write) return yield* writeOutcome(loaded, input.writeId);
-    const target = fileFor(loaded.state, write.documentId);
-    if (!target) return yield* invalid("That document is not registered in this Quest.");
     const meta = writeMeta(input.operationId, "document-write-recover", actor);
-    const actual = yield* readFileBytes(target.root, target.file.path);
+    const actual = yield* readBound(loaded.state, write);
     if (actual.sha === write.desiredSha256) {
       const state = yield* finalizeWrite(loaded, write, meta);
       return {
@@ -1284,13 +1307,7 @@ const make = Effect.gen(function* () {
       const proposed = yield* retained(write.desiredSha256);
       if (proposed.content === null)
         return yield* invalid("The proposed version is no longer retained.");
-      return yield* completeWrite(
-        loaded,
-        write,
-        { root: target.root, real: actual.real },
-        new TextEncoder().encode(proposed.content),
-        meta,
-      );
+      return yield* completeWrite(loaded, write, new TextEncoder().encode(proposed.content), meta);
     }
     yield* writeBlob(actual.bytes);
     if (write.status === "conflict" && write.actualSha256 === actual.sha)

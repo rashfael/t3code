@@ -1164,6 +1164,9 @@ describe("QuestStore documents", () => {
         const unchanged = yield* store.get;
         yield* store.readDocument(file.id);
         expect(yield* store.get).toEqual(unchanged);
+        // An editor's temp-file rename onto the same path keeps the save's target.
+        yield* fs.writeFileString(`${plan}.editor`, read.content!);
+        yield* fs.rename(`${plan}.editor`, plan);
         const retried = yield* store.recoverWrite(
           { operationId: "a-recover", writeId: interrupted.state.pendingWrites[0]!.id },
           actor,
@@ -1237,6 +1240,266 @@ describe("QuestStore documents", () => {
           (yield* store.retained(conflict.state.pendingWrites[0]!.actualSha256!)).content,
         ).toBe("Someone else\n");
       }).pipe(Effect.provide(flaky), Effect.provideService(WorkspaceRoot, { plan }));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+  // A filesystem that records workspace reads and can fail document replacement on demand.
+  const observedFs = (control: {
+    failRenameTo: string | null;
+    reads: Array<string>;
+    afterRead: (path: string) => Effect.Effect<void>;
+  }) =>
+    Layer.effect(
+      FileSystem.FileSystem,
+      Effect.gen(function* () {
+        const real = yield* FileSystem.FileSystem;
+        return {
+          ...real,
+          readFile: (target: string) =>
+            Effect.sync(() => control.reads.push(target)).pipe(
+              Effect.andThen(real.readFile(target)),
+              Effect.tap(() => control.afterRead(target)),
+            ),
+          rename: (from: string, to: string) =>
+            to === control.failRenameTo
+              ? Effect.fail(
+                  PlatformError.systemError({
+                    _tag: "PermissionDenied",
+                    module: "FileSystem",
+                    method: "rename",
+                  }),
+                )
+              : real.rename(from, to),
+        };
+      }),
+    );
+
+  it.effect.each(
+    (["root", "inside"] as const).flatMap((swap) =>
+      (["expected", "desired"] as const).flatMap((found) =>
+        (["before recovery", "after recovery reads"] as const).map((when) => ({
+          swap,
+          found,
+          when,
+        })),
+      ),
+    ),
+  )(
+    "binds a pending save to its target: $swap swapped $when, $found bytes",
+    ({ swap, found, when }) =>
+      Effect.gen(function* () {
+        const { config, plan, statePath, workspace, outside } = yield* workspaceHarness;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const notes = path.join(workspace, "notes");
+        const first = path.join(workspace, "first");
+        const second = path.join(workspace, "second");
+        const moved = `${workspace}-moved`;
+        if (swap === "inside") {
+          yield* fs.rename(notes, first);
+          yield* fs.makeDirectory(second);
+          yield* fs.symlink(first, notes);
+        }
+        const original = yield* fs.realPath(plan);
+        const replacement =
+          swap === "root" ? path.join(outside, "notes", "plan.md") : path.join(second, "plan.md");
+        const control = {
+          failRenameTo: null as string | null,
+          reads: [] as Array<string>,
+          afterRead: (_: string) => Effect.void,
+        };
+        const retarget = Effect.gen(function* () {
+          if (swap === "root") {
+            yield* fs.rename(workspace, moved);
+            yield* fs.symlink(outside, workspace);
+          } else {
+            yield* fs.remove(notes);
+            yield* fs.symlink(second, notes);
+          }
+        });
+        const restore = Effect.gen(function* () {
+          yield* fs.remove(swap === "root" ? workspace : notes);
+          if (swap === "root") yield* fs.rename(moved, workspace);
+          else yield* fs.symlink(first, notes);
+        });
+        const store = <A, E, R>(body: Effect.Effect<A, E, R>) =>
+          body.pipe(
+            Effect.provide(
+              QuestStore.layer.pipe(Layer.provide(config), Layer.provide(observedFs(control))),
+            ),
+          );
+        let writeId = "";
+        let documentId = "";
+        let baseline = "";
+        yield* store(
+          Effect.gen(function* () {
+            const { store, file, read } = yield* setupFile;
+            yield* fs.makeDirectory(path.dirname(replacement), { recursive: true });
+            yield* fs.writeFileString(
+              replacement,
+              found === "expected" ? read.content! : "Desired\n",
+            );
+            control.failRenameTo = original;
+            const interrupted = yield* store.writeDocument(
+              {
+                operationId: "bound",
+                documentId: file.id,
+                expectedSha256: read.sha256!,
+                content: "Desired\n",
+              },
+              actor,
+            );
+            control.failRenameTo = null;
+            expect(interrupted.outcome).toBe("pending");
+            const write = interrupted.state.pendingWrites[0]!;
+            writeId = write.id;
+            documentId = file.id;
+            baseline = read.content!;
+            expect(write.target).toEqual({
+              root: yield* fs.realPath(workspace),
+              real: original,
+            });
+          }).pipe(Effect.provideService(WorkspaceRoot, { plan })),
+        );
+        // The binding is durable, so a restarted store recovers against the same target.
+        const persisted = yield* fs.readFileString(statePath);
+        expect(persisted).toContain(original);
+        if (when === "before recovery") yield* retarget;
+        else
+          control.afterRead = (target) =>
+            target === original
+              ? Effect.sync(() => {
+                  control.afterRead = () => Effect.void;
+                }).pipe(Effect.andThen(retarget), Effect.orDie)
+              : Effect.void;
+        control.reads = [];
+        yield* store(
+          Effect.gen(function* () {
+            const store = yield* QuestStore.QuestStore;
+            const recovered = yield* store
+              .recoverWrite({ operationId: "bound-recover", writeId }, actor)
+              .pipe(Effect.result);
+            // Whatever the replacement holds, it is never read, written or accepted as saved.
+            expect(control.reads).not.toContain(replacement);
+            expect(yield* fs.readFileString(replacement)).toBe(
+              found === "expected" ? baseline : "Desired\n",
+            );
+            if (recovered._tag === "Success") expect(recovered.success.outcome).toBe("pending");
+            else expect(recovered.failure).toMatchObject({ reason: "unavailable" });
+            expect(yield* fs.readFileString(statePath)).toBe(persisted);
+            // Retrying the original save reports it unresolved without reading elsewhere.
+            const retried = yield* store.writeDocument(
+              { operationId: "bound", documentId, expectedSha256: "", content: "" },
+              actor,
+            );
+            expect(retried.outcome).toBe("pending");
+            expect(retried.file).toMatchObject({ content: null, sha256: null });
+            if (swap === "root") {
+              expect((yield* store.readDocument(documentId)).content).toBeNull();
+              expect((yield* Effect.flip(store.workspaceFiles)).reason).toBe("unavailable");
+            }
+            expect(control.reads).not.toContain(replacement);
+            yield* restore;
+            const after = yield* store.recoverWrite(
+              { operationId: "bound-recover-2", writeId },
+              actor,
+            );
+            expect(after.outcome).toBe("saved");
+            expect(yield* fs.readFileString(original)).toBe("Desired\n");
+            expect(yield* fs.readFileString(replacement)).toBe(
+              found === "expected" ? baseline : "Desired\n",
+            );
+          }),
+        );
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+  it.effect("refuses to finish a save recorded without its target and keeps every version", () =>
+    Effect.gen(function* () {
+      const { config, plan, statePath } = yield* workspaceHarness;
+      const fs = yield* FileSystem.FileSystem;
+      const control = {
+        failRenameTo: null as string | null,
+        reads: [] as Array<string>,
+        afterRead: (_: string) => Effect.void,
+      };
+      const layer = QuestStore.layer.pipe(
+        Layer.provide(config),
+        Layer.provide(observedFs(control)),
+      );
+      const real = yield* fs.realPath(plan);
+      const { file, read, write } = yield* Effect.gen(function* () {
+        const { store, file, read } = yield* setupFile;
+        control.failRenameTo = real;
+        const interrupted = yield* store.writeDocument(
+          {
+            operationId: "legacy",
+            documentId: file.id,
+            expectedSha256: read.sha256!,
+            content: "Desired\n",
+          },
+          actor,
+        );
+        control.failRenameTo = null;
+        return { file, read, write: interrupted.state.pendingWrites[0]! };
+      }).pipe(Effect.provide(layer), Effect.provideService(WorkspaceRoot, { plan }));
+      // Rewrite the store as a pre-binding server left it: same records, no target anywhere.
+      const unbind = (value: unknown): unknown =>
+        Array.isArray(value)
+          ? value.map(unbind)
+          : typeof value === "object" && value !== null
+            ? Object.fromEntries(
+                Object.entries(value)
+                  .filter(([key]) => !(key === "target" && "desiredSha256" in value))
+                  .map(([key, item]) => [key, unbind(item)]),
+              )
+            : value;
+      yield* fs.writeFileString(
+        statePath,
+        JSON.stringify(unbind(JSON.parse(yield* fs.readFileString(statePath)))),
+      );
+      const legacy = yield* fs.readFileString(statePath);
+      expect(legacy).not.toContain(real);
+      yield* Effect.gen(function* () {
+        const store = yield* QuestStore.QuestStore;
+        const { target: _, ...unbound } = write;
+        control.reads = [];
+        for (const content of [read.content!, "Desired\n", "Someone else\n"]) {
+          yield* fs.writeFileString(plan, content);
+          const refused = yield* store
+            .recoverWrite(
+              { operationId: `legacy-recover-${content.length}`, writeId: write.id },
+              actor,
+            )
+            .pipe(Effect.flip);
+          expect(refused.reason).toBe("unavailable");
+          const retried = yield* store.writeDocument(
+            { operationId: "legacy", documentId: file.id, expectedSha256: "", content: "" },
+            actor,
+          );
+          expect(retried).toMatchObject({ outcome: "pending", file: { content: null } });
+        }
+        expect(control.reads).toEqual([]);
+        expect(yield* fs.readFileString(statePath)).toBe(legacy);
+        const state = yield* store.get;
+        expect(state.pendingWrites).toEqual([unbound]);
+        expect((yield* store.retained(write.desiredSha256)).content).toBe("Desired\n");
+        const history = yield* store.reconstruct(state.revision);
+        expect(history.domain.pendingWrites).toEqual([unbound]);
+        // Discarding stays the owner's way out; the versions remain retained.
+        const discarded = yield* store.update(
+          {
+            expectedRevision: state.revision,
+            change: { type: "write-discard", writeId: write.id },
+          },
+          actor,
+        );
+        expect(discarded.pendingWrites).toEqual([]);
+        expect((yield* store.retained(write.desiredSha256)).content).toBe("Desired\n");
+        expect(
+          (yield* store
+            .recoverWrite({ operationId: "legacy-recover-after", writeId: write.id }, actor)
+            .pipe(Effect.flip)).reason,
+        ).toBe("invalid");
+      }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

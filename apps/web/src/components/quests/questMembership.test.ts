@@ -94,6 +94,13 @@ describe("questMembershipAtom", () => {
         member,
       ),
     ).toBe(false);
+    // Accepted but noncanonical Quest URLs show another view or the primary environment, not this composer.
+    for (const search of [
+      { env: "env-a", view: "overview", thread: "shared-id" },
+      { env: "env-a", thread: "shared-id" },
+      { view: "conversation", thread: "shared-id" },
+    ])
+      expect(isAtThreadNavigationTarget({ pathname: "/quests", search }, member)).toBe(false);
     expect(isAtThreadNavigationTarget(inQuest, sameIdElsewhere)).toBe(false);
     expect(
       isAtThreadNavigationTarget({ pathname: "/env-b/shared-id", search: {} }, sameIdElsewhere),

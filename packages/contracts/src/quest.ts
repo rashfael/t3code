@@ -188,6 +188,11 @@ export const QuestPendingWrite = Schema.Struct({
   status: Schema.Literals(["pending", "conflict"]),
   createdAt: Schema.String,
   detail: Schema.String,
+  /**
+   * Canonical workspace root and file the save observed. Recovery only proceeds while both still
+   * resolve the same way; saves recorded before this field existed are never recovered automatically.
+   */
+  target: Schema.optionalKey(Schema.Struct({ root: Schema.String, real: Schema.String })),
 });
 export type QuestPendingWrite = typeof QuestPendingWrite.Type;
 

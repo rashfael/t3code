@@ -25,6 +25,23 @@ export function normalizeQuestFilePath(path: Path.Path, relative: string): strin
 }
 
 /**
+ * Fails unless the registered root, stored canonical at registration, still resolves to itself. A
+ * root replaced by a symlink to another folder is unavailable rather than adopted.
+ */
+export const requireQuestRoot = Effect.fn("QuestFiles.requireRoot")(function* (
+  fs: FileSystem.FileSystem,
+  root: string,
+) {
+  const real = yield* fs
+    .realPath(root)
+    .pipe(Effect.mapError(() => unavailable("The Quest workspace is not available.")));
+  if (real !== root)
+    return yield* unavailable(
+      "The Quest workspace folder no longer resolves to where it was registered.",
+    );
+});
+
+/**
  * Resolves a registered relative path inside the workspace on the owning environment. Rejects
  * traversal and symlinks whose real target leaves the workspace; clients never resolve paths.
  */
@@ -37,14 +54,12 @@ export const resolveQuestFile = Effect.fn("QuestFiles.resolve")(function* (
   const normalized = normalizeQuestFilePath(path, relative);
   if (normalized === null)
     return yield* invalid("Use a Markdown path inside the Quest workspace, such as notes/plan.md.");
-  const realRoot = yield* fs
-    .realPath(root)
-    .pipe(Effect.mapError(() => unavailable("The Quest workspace is not available.")));
-  const candidate = path.join(realRoot, normalized);
+  yield* requireQuestRoot(fs, root);
+  const candidate = path.join(root, normalized);
   const real = yield* fs
     .realPath(candidate)
     .pipe(Effect.mapError(() => unavailable(`${normalized} is not available.`)));
-  if (real !== realRoot && !real.startsWith(`${realRoot}${path.sep}`))
+  if (real !== root && !real.startsWith(`${root}${path.sep}`))
     return yield* invalid(`${normalized} leads outside the Quest workspace.`);
   const info = yield* fs
     .stat(real)

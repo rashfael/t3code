@@ -658,11 +658,14 @@ it("finishes exactly the selected reservation and restores its context without o
 });
 
 it.each([
-  { name: "a newer discussion on the question", newer: true },
-  { name: "no discussion left on the question", newer: false },
+  { name: "an answer and a newer discussion", answer: "Use newer summary", newer: true },
+  { name: "an answer and no discussion left", answer: "Use newer summary", newer: false },
+  { name: "a deferral and a newer discussion", answer: null, newer: true },
+  { name: "a deferral and no discussion left", answer: null, newer: false },
+  { name: "a deferral moved to the newer discussion", answer: null, newer: true, pick: true },
 ])(
-  "keeps a detached answer source when only the rationale changes, with $name",
-  async ({ newer }) => {
+  "keeps a detached decision source when only the rationale changes, with $name",
+  async ({ answer, newer, pick }) => {
     const initial = setup();
     const source = { threadId: "detached-thread", runId: "run-7" };
     harness.quests = {
@@ -671,7 +674,8 @@ it.each([
         questions: [
           {
             ...initial.questions[0]!,
-            answer: "Use newer summary",
+            answer,
+            deferred: answer === null,
             rationale: "First reason",
             answerSource: source,
           },
@@ -690,10 +694,16 @@ it.each([
     const details = screen.getByRole("complementary", { name: "Quest details" });
     await details.getByRole("button", { name: /Which summary\?/ }).click();
     await screen.getByRole("textbox", { name: "Rationale (optional)" }).fill("Second reason");
-    await screen.getByRole("button", { name: "Record answer", exact: true }).click();
+    if (pick) {
+      await screen.getByRole("combobox", { name: "Answer from conversation" }).click();
+      await screen.getByRole("option", { name: "Newer discussion" }).click();
+    }
+    await screen
+      .getByRole("button", { name: answer === null ? "Defer" : "Record answer", exact: true })
+      .click();
     expect(harness.run.mock.calls[0]?.[0].input).toMatchObject({
-      change: { type: "answer", rationale: "Second reason", answer: "Use newer summary" },
-      source,
+      change: { type: "answer", rationale: "Second reason", answer, deferred: answer === null },
+      source: pick ? { threadId: "newer-thread", runId: null } : source,
     });
   },
 );
