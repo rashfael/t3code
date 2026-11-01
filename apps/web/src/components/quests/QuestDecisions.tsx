@@ -865,7 +865,8 @@ function EarlierDecisions({
                   </summary>
                   <dl className="mt-1 grid gap-1 text-xs">
                     {entry.changes.map((change) => (
-                      <div key={change.label}>
+                      // Labels repeat, e.g. several new dependencies in one plan change.
+                      <div key={`${change.label}|${change.before}|${change.after}`}>
                         <dt className="font-medium">{change.label}</dt>
                         <dd className="whitespace-pre-wrap break-words text-muted-foreground">
                           {change.before ?? "(empty)"} → {change.after ?? "(empty)"}

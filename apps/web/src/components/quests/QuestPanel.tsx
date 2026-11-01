@@ -182,7 +182,8 @@ export function HistoryEntryRow({
           </summary>
           <dl className="mt-2 space-y-3">
             {entry.changes.map((change) => (
-              <div key={change.label}>
+              // Labels repeat, e.g. several new dependencies in one plan change.
+              <div key={`${change.label}|${change.before}|${change.after}`}>
                 <dt className="text-xs font-medium">{change.label}</dt>
                 <dd className="mt-1 grid gap-1 text-xs">
                   <ChangeText label="Before" text={change.before} />
