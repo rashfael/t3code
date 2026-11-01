@@ -107,6 +107,10 @@ vi.mock(import("~/state/threads"), () => ({
     };
   }) as never,
 }));
+// Thread links in result details pull in app setup; these tests never render one.
+vi.mock(import("../chat/MarkdownThreadLink"), () => ({
+  MarkdownThreadLink: (() => null) as never,
+}));
 vi.mock(import("~/state/shell"), () => ({
   useEnvironmentShellStatus: (() => "live") as never,
 }));
@@ -690,6 +694,8 @@ it("draws the work map as nested regions with expansion, focus, selection and in
   await using screen = await renderQuest();
   await screen.getByRole("button", { name: "Work map", exact: true }).click();
   const map = screen.getByRole("group", { name: "Work map" });
+  // A subdivided scope has no ground of its own; the legend beside the map names and opens it.
+  const legend = screen.getByRole("navigation", { name: "Map legend" });
   const details = screen.getByRole("complementary", { name: "Quest details" });
   const links = () => document.querySelectorAll("[data-link]").length;
   await expect.element(map.getByRole("button", { name: /^Part B ·/ })).toBeVisible();
@@ -701,9 +707,9 @@ it("draws the work map as nested regions with expansion, focus, selection and in
   await details.getByRole("button", { name: "Close details" }).click();
   await screen.getByRole("button", { name: "Expand 1" }).click();
   await expect
-    .element(map.getByRole("button", { name: "Earlier try · Attempt · Recorded outcome" }))
+    .element(map.getByRole("button", { name: "Earlier try · Scope · Attempt · Recorded outcome" }))
     .toBeVisible();
-  await map.getByRole("button", { name: /^Example milestone ·/ }).click();
+  await legend.getByRole("button", { name: /^Example milestone/ }).click();
   await details.getByRole("button", { name: "Close details" }).click();
   await screen.getByRole("button", { name: "Focus on Example milestone" }).click();
   await expect.element(map.getByRole("button", { name: /^Later branch/ })).not.toBeInTheDocument();
@@ -714,7 +720,7 @@ it("draws the work map as nested regions with expansion, focus, selection and in
   await details.getByRole("button", { name: "Close details" }).click();
   await screen.getByRole("button", { name: "Whole Quest" }).click();
   await expect.element(map.getByRole("button", { name: /^Later branch/ })).toBeVisible();
-  await map.getByRole("button", { name: /^Example milestone ·/ }).click();
+  await legend.getByRole("button", { name: /^Example milestone/ }).click();
   await details.getByRole("button", { name: "Close details" }).click();
   await screen.getByRole("button", { name: "Collapse", exact: true }).click();
   await expect.element(map.getByRole("button", { name: /^Part B ·/ })).not.toBeInTheDocument();

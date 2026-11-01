@@ -56,9 +56,22 @@ export function questScopeKey(environmentId: EnvironmentId, questId: string): Qu
   return `${environmentId}|${questId}`;
 }
 
+/**
+ * One Work-map cell by semantic ids: a result effect, a group of results, or a reference to a
+ * result recorded elsewhere. Region-level detail stays a `work` entry.
+ */
+export interface QuestCellEntry {
+  readonly type: "cell";
+  readonly key: string;
+  readonly kind: "effect" | "aggregate" | "reference";
+  readonly workId: string;
+  readonly effectIds: ReadonlyArray<string>;
+}
+
 export type PanelEntry =
   | { readonly type: "work"; readonly id: string }
-  | { readonly type: "question"; readonly id: string };
+  | { readonly type: "question"; readonly id: string }
+  | QuestCellEntry;
 
 export type QuestChange = QuestUpdateInput["change"];
 
@@ -84,6 +97,11 @@ export interface QuestWorkspaceContext {
   /** Work shown in the details panel without pinning it; null restores the pinned panel. */
   readonly previewWorkId: string | null;
   readonly previewWork: (id: string | null) => void;
+  /** Any details entry shown without pinning it, such as a Work-map cell. */
+  readonly previewEntry: PanelEntry | null;
+  readonly previewPanel: (entry: PanelEntry | null) => void;
+  /** The pinned details entry, if any. */
+  readonly pinnedEntry: PanelEntry | null;
 }
 
 export const QuestWorkspace = createContext<QuestWorkspaceContext | null>(null);

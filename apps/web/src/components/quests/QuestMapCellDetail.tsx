@@ -1,6 +1,5 @@
 import type { QuestEvidenceRef } from "@t3tools/contracts";
 import { parseThreadLinkHref } from "@t3tools/shared/threadLinks";
-import { XIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { MarkdownThreadLink } from "../chat/MarkdownThreadLink";
@@ -36,14 +35,12 @@ export function QuestMapCellDetail({
   effects,
   pinned,
   onPin,
-  onClose,
   onExpand,
 }: {
   selection: CellSelection;
   effects: ReadonlyMap<string, MapEffect>;
   pinned: boolean;
   onPin: (selection: CellSelection) => void;
-  onClose: () => void;
   onExpand: ((workId: string) => void) | null;
 }) {
   const { state, openPanel } = useQuest();
@@ -80,19 +77,15 @@ export function QuestMapCellDetail({
         ? home
         : first.contribution.title;
   return (
-    <section aria-label={`Result: ${heading}`} className="grid gap-3 p-3 text-sm">
-      <header className="flex items-start gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="text-xs text-muted-foreground">
-            {kindLabel} · in {region} · {pinned ? "pinned" : "preview"}
-          </p>
-          <h3 className="mt-0.5 font-medium">{heading}</h3>
-        </div>
-        {pinned ? (
-          <Button size="icon-xs" variant="ghost" aria-label="Unpin" onClick={onClose}>
-            <XIcon />
-          </Button>
-        ) : null}
+    <section
+      aria-label={pinned ? `Result: ${heading}` : `Preview: ${heading}`}
+      className="grid gap-3 text-sm"
+    >
+      <header>
+        <p className="text-xs text-muted-foreground">
+          {kindLabel} · in {region}
+        </p>
+        <h2 className="mt-1 text-lg font-semibold">{heading}</h2>
       </header>
       {listed ? (
         <>
@@ -169,6 +162,13 @@ function EffectBody({
     </button>
   );
   const rounds = effect.episodes.length + effect.refinements.length + effect.history.length;
+  // Review refs are listed under review; the result's own reconstruction id is its basis.
+  const evidence = result.evidence.filter(
+    (item) =>
+      !item.ref.startsWith("review:") &&
+      item.ref !== `effect:${effect.reconstructionId}` &&
+      item.ref !== parent?.id,
+  );
   return (
     <>
       <p className="text-xs text-muted-foreground">
@@ -213,10 +213,10 @@ function EffectBody({
         </Field>
       ) : null}
       {result.candidate ? <Field label="Candidate">{result.candidate}</Field> : null}
-      {result.evidence.length > 0 ? (
+      {evidence.length > 0 ? (
         <Field label="Evidence">
           <ul className="grid gap-1">
-            {result.evidence.map((item) => (
+            {evidence.map((item) => (
               <li key={`${item.kind}:${item.ref}`}>
                 <Evidence item={item} effects={effects} onPinEffect={onPinEffect} />
               </li>
@@ -288,7 +288,9 @@ function Evidence({
 }) {
   const { state, environmentId, openDocument } = useQuest();
   const note = item.note ? <span className="text-muted-foreground"> · {item.note}</span> : null;
-  const result = effects.get(item.ref);
+  const result =
+    effects.get(item.ref) ??
+    [...effects.values()].find((effect) => item.ref === `effect:${effect.reconstructionId}`);
   if (result)
     return (
       <>

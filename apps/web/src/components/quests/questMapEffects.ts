@@ -21,6 +21,8 @@ export interface MapEffect {
   readonly history: ReadonlyArray<QuestContribution>;
   /** How the record was established, such as a reconstruction from delivery records. */
   readonly basis: string | null;
+  /** Its id in a registered reconstruction corpus, from an `effect:` evidence ref. */
+  readonly reconstructionId: string | null;
   /** Correction notes recorded against this same effect. */
   readonly refinements: ReadonlyArray<string>;
   /** Review, verification and correction episodes that name this effect. */
@@ -37,41 +39,41 @@ export interface MapEpisode {
   readonly source: string;
 }
 
-function readEpisodes(state: QuestState): ReadonlyArray<MapEpisode & { effectIds: string[] }> {
-  const raw = (state as unknown as Record<string, unknown>).episodes;
-  if (!Array.isArray(raw)) return [];
-  const text = (value: unknown) => (typeof value === "string" ? value : "");
-  return raw.flatMap((item: Record<string, unknown>) => {
-    const effectIds = Array.isArray(item.affectedEffectIds)
-      ? item.affectedEffectIds.filter((id) => typeof id === "string")
-      : [];
-    if (typeof item.id !== "string" || effectIds.length === 0) return [];
-    return [
-      {
-        id: item.id,
-        kind: text(item.kind),
-        lens: text(item.lens),
-        checkedCandidate: text(item.checkedCandidate),
-        outcome: text(item.outcome),
-        source: text(item.source),
-        effectIds,
-      },
-    ];
-  });
+/**
+ * Associations a result states through its evidence refs, since results have no fields for them:
+ * `effect:<id>` names its reconstruction id (or, after the first, a related effect), `review:<id>`
+ * a review episode in the registered ledger whose note gives kind · lens · checked candidate, and
+ * an `other` ref equal to another result's id the coarser result it refines.
+ */
+function statedLinks(record: QuestContribution, resultIds: ReadonlySet<string>) {
+  const own = record.evidence.find(
+    (item) => item.ref.startsWith("effect:") && item.note.startsWith("Reconstruction id"),
+  );
+  const parent = record.evidence.find(
+    (item) => item.kind === "other" && item.ref !== record.id && resultIds.has(item.ref),
+  );
+  const episodes = record.evidence
+    .filter((item) => item.ref.startsWith("review:"))
+    .map((item): MapEpisode => {
+      const source = /\(([^)]+)\)\s*$/.exec(item.note)?.[1] ?? "";
+      const [kind = "", lens = "", checked = ""] = item.note
+        .replace(/\s*\([^)]+\)\s*$/, "")
+        .split(" · ");
+      return {
+        id: item.ref.slice("review:".length),
+        kind,
+        lens,
+        checkedCandidate: checked.replace(/^checked\s+/, ""),
+        outcome: "",
+        source,
+      };
+    });
+  return {
+    reconstructionId: own ? own.ref.slice("effect:".length) : null,
+    parentId: parent?.ref ?? null,
+    episodes,
+  };
 }
-
-// Optional fields a finer effect record may carry; older records have none of them.
-function optionalText(record: QuestContribution, key: string): string | null {
-  const value = (record as unknown as Record<string, unknown>)[key];
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function optionalTexts(record: QuestContribution, key: string): ReadonlyArray<string> {
-  const value = (record as unknown as Record<string, unknown>)[key];
-  return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
-}
-
-const PLANNED_STATUSES = new Set(["planned", "in-progress", "proposed"]);
 
 /**
  * Current effects of a Quest. A superseded record folds into its successor's history; a set-aside
@@ -87,11 +89,8 @@ export function mapEffects(state: QuestState): ReadonlyArray<MapEffect> {
     (item) => !supersededBy.has(item.id) && item.disposition !== "set-aside",
   );
   const currentIds = new Set(current.map((item) => item.id));
-  const parentOf = (item: QuestContribution) => {
-    const parent = optionalText(item, "parentContributionId");
-    return parent && currentIds.has(parent) && parent !== item.id ? parent : null;
-  };
-  const episodes = readEpisodes(state);
+  const links = new Map(current.map((item) => [item.id, statedLinks(item, currentIds)]));
+  const parentOf = (item: QuestContribution) => links.get(item.id)?.parentId ?? null;
   const children = new Map<string, Array<string>>();
   for (const item of current) {
     const parent = parentOf(item);
@@ -109,7 +108,7 @@ export function mapEffects(state: QuestState): ReadonlyArray<MapEffect> {
       history.push(earlier);
       earlier = earlier.supersedes ? byId.get(earlier.supersedes) : undefined;
     }
-    const status = optionalText(item, "status");
+    const stated = links.get(item.id)!;
     return {
       id: item.id,
       contribution: item,
@@ -117,11 +116,14 @@ export function mapEffects(state: QuestState): ReadonlyArray<MapEffect> {
       alsoWorkIds: targets.slice(1),
       parentId: parentOf(item),
       childIds: children.get(item.id) ?? [],
-      planned: status !== null && PLANNED_STATUSES.has(status),
+      // Results record delivered or learned effects; planned scope is planned work, not a result.
+      planned: false,
       history,
-      basis: optionalText(item, "evidenceStatus"),
-      refinements: optionalTexts(item, "refinementEvidence"),
-      episodes: episodes.filter((episode) => episode.effectIds.includes(item.id)),
+      basis: stated.reconstructionId ? "source-backed-reconstruction" : null,
+      reconstructionId: stated.reconstructionId,
+      // Correction notes stay in the result's own summary; nothing records them separately.
+      refinements: [],
+      episodes: stated.episodes,
     };
   });
 }

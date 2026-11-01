@@ -157,10 +157,15 @@ function QuestLoader({
   );
 }
 
+function panelKey(entry: PanelEntry | null): string | null {
+  if (!entry) return null;
+  return entry.type === "cell" ? `cell:${entry.key}` : `${entry.type}:${entry.id}`;
+}
+
 function initialPanel(scope: QuestScopeKey, search: QuestSearch): ReadonlyArray<PanelEntry> {
   if (search.work) return [{ type: "work", id: search.work }];
   // Decisions open in their own view, never in the details panel.
-  return readQuestPanel(scope).filter((entry) => entry.type === "work");
+  return readQuestPanel(scope).filter((entry) => entry.type !== "question");
 }
 
 function QuestWorkspaceView({
@@ -186,7 +191,7 @@ function QuestWorkspaceView({
   const documentTabs = useQuestDocumentTabs(scope);
   const [state, setState] = useState(initial);
   const [panel, setPanelState] = useState(() => initialPanel(scope, search));
-  const [preview, setPreview] = useState<{ view: QuestView; id: string } | null>(null);
+  const [preview, setPreview] = useState<{ view: QuestView; entry: PanelEntry } | null>(null);
   const [pending, setPending] = useState(false);
   const [notice, setNotice] = useState("");
   const [epoch, setEpoch] = useState(0);
@@ -287,9 +292,17 @@ function QuestWorkspaceView({
     state.proposals.filter((item) => item.status === "proposed").length;
   const current = panel.at(-1) ?? null;
   // A preview belongs to the view it was started in; switching views drops it.
-  const previewWorkId = preview?.view === view ? preview.id : null;
-  const previewing =
-    previewWorkId !== null && !(current?.type === "work" && current.id === previewWorkId);
+  const previewEntry = preview?.view === view ? preview.entry : null;
+  const previewWorkId = previewEntry?.type === "work" ? previewEntry.id : null;
+  const previewing = previewEntry !== null && panelKey(previewEntry) !== panelKey(current);
+  const previewPanel = (entry: PanelEntry | null) =>
+    setPreview((previous) =>
+      entry === null
+        ? null
+        : previous?.view === view && panelKey(previous.entry) === panelKey(entry)
+          ? previous
+          : { view, entry },
+    );
   // Geographic views keep a stable inspector column so previews do not reflow what is hovered.
   const keepsInspector = view === "overview" || view === "map";
   return (
@@ -307,14 +320,10 @@ function QuestWorkspaceView({
         showView,
         openDocument,
         previewWorkId,
-        previewWork: (id) =>
-          setPreview((previous) =>
-            id === null
-              ? null
-              : previous?.id === id && previous.view === view
-                ? previous
-                : { view, id },
-          ),
+        previewWork: (id) => previewPanel(id === null ? null : { type: "work", id }),
+        previewEntry,
+        previewPanel,
+        pinnedEntry: current,
       }}
     >
       <header className="border-b px-4 pt-3">
@@ -408,7 +417,13 @@ function QuestWorkspaceView({
           {view === "map" ? (
             <QuestWorkMap
               key={search.work ?? ""}
-              selectedId={current?.type === "work" ? current.id : (search.work ?? null)}
+              selectedId={
+                current?.type === "work"
+                  ? current.id
+                  : current?.type === "cell"
+                    ? current.workId
+                    : (search.work ?? null)
+              }
               initialFocus={search.work ?? null}
             />
           ) : view === "conversation" ? (
@@ -449,11 +464,11 @@ function QuestWorkspaceView({
                 />
               </div>
             ) : null}
-            {previewing && previewWorkId !== null ? (
+            {previewing && previewEntry !== null ? (
               <div className="hidden min-h-0 flex-1 flex-col lg:flex">
                 <QuestPanel
-                  key={`preview:${previewWorkId}:${state.revision}`}
-                  entry={{ type: "work", id: previewWorkId }}
+                  key={`preview:${panelKey(previewEntry)}:${state.revision}`}
+                  entry={previewEntry}
                   preview
                 />
               </div>

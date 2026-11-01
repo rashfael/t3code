@@ -11,10 +11,12 @@ import type { ReactNode } from "react";
 
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { useQuest, type PanelEntry } from "./questContext";
+import { useQuest, type PanelEntry, type QuestCellEntry } from "./questContext";
 import { conversationStatusLabel, useQuestConversationThreads } from "./QuestConversations";
 import { DocumentAssociations, HandoffEditor, useEditorDraft, WorkEditor } from "./QuestEditors";
 import { ReconstructRevision } from "./QuestDocuments";
+import { QuestMapCellDetail } from "./QuestMapCellDetail";
+import { mapEffects } from "./questMapEffects";
 import {
   childrenOf,
   phaseLabels,
@@ -52,7 +54,9 @@ export function QuestPanel({
           </Button>
         ) : null}
         {preview ? null : (
-          <span className="px-1 text-xs font-medium text-muted-foreground">Work</span>
+          <span className="px-1 text-xs font-medium text-muted-foreground">
+            {entry.type === "cell" ? "Result" : "Work"}
+          </span>
         )}
         {onClose ? (
           <span className="ms-auto">
@@ -63,9 +67,28 @@ export function QuestPanel({
         ) : null}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        <WorkInspector id={entry.id} preview={preview} />
+        {entry.type === "cell" ? (
+          <CellInspector entry={entry} preview={preview} />
+        ) : (
+          <WorkInspector id={entry.id} preview={preview} />
+        )}
       </div>
     </>
+  );
+}
+
+/** A Work-map cell: the results it stands for, in the same details column as work. */
+function CellInspector({ entry, preview }: { entry: QuestCellEntry; preview: boolean }) {
+  const { state, openPanel, showView } = useQuest();
+  const effects = new Map(mapEffects(state).map((effect) => [effect.id, effect]));
+  return (
+    <QuestMapCellDetail
+      selection={entry}
+      effects={effects}
+      pinned={!preview}
+      onPin={(selection) => openPanel({ type: "cell", ...selection }, "push")}
+      onExpand={(workId) => showView("map", { work: workId })}
+    />
   );
 }
 
@@ -638,7 +661,7 @@ function PlanRole({ work, preview }: { work: QuestWork; preview: boolean }) {
       )}
       {choice<QuestPhase>(
         "Phase",
-        [[null, "Not set"], ...(Object.entries(phaseLabels) as Array<[QuestPhase, string]>)],
+        [[null, "None"], ...(Object.entries(phaseLabels) as Array<[QuestPhase, string]>)],
         work.phase ?? null,
         (phase) => update({ phase }),
       )}

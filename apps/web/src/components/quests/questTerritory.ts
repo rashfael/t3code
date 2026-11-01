@@ -5,6 +5,8 @@ import type { MapEffect } from "./questMapEffects";
 const SPACING = 26;
 const RINGS = 20;
 const SEED = 73031;
+/** Bounds how often a closed-in region may take a sibling's cell during one growth. */
+const STEAL_LIMIT = 64;
 
 export interface Point {
   readonly x: number;
@@ -484,8 +486,10 @@ function grow(
     }
     return best;
   };
+  const owner = new Map<number, string>();
   const claim = (key: string, cell: number) => {
     claimed.add(cell);
+    owner.set(cell, key);
     const entry = result.get(key);
     const site = sites[cell]!;
     if (entry) {
@@ -493,6 +497,91 @@ function grow(
       entry.sum = { x: entry.sum.x + site.x, y: entry.sum.y + site.y };
     } else result.set(key, { cells: [cell], seed: cell, sum: { x: site.x, y: site.y } });
   };
+  /**
+   * A group closed in by its neighbours grows by pushing: along the shortest path of claimed
+   * cells to a free one, each owner gives up its cell on the path and takes the next, so every
+   * group keeps its size and the closed-in group gains a touching cell instead of an island.
+   * A push that would split any group is not taken.
+   */
+  const push = (key: string): boolean => {
+    const own = result.get(key)!;
+    const from = new Map<number, number>();
+    const queue: Array<number> = [];
+    for (const cell of own.cells)
+      for (const next of neighbours[cell]!)
+        if (owner.has(next) && owner.get(next) !== key && !from.has(next)) {
+          from.set(next, -1);
+          queue.push(next);
+        }
+    for (let index = 0; index < queue.length; index += 1) {
+      const at = queue[index]!;
+      for (const next of neighbours[at]!) {
+        if (from.has(next) || owner.get(next) === key) continue;
+        if (pool !== null && !pool.has(next)) continue;
+        from.set(next, at);
+        if (owner.has(next)) {
+          queue.push(next);
+          continue;
+        }
+        const path: Array<number> = [];
+        for (let cell = next; cell !== -1; cell = from.get(cell)!) path.unshift(cell);
+        const moves = path.map(
+          (cell, step) => [cell, step === 0 ? key : owner.get(path[step - 1]!)!] as const,
+        );
+        const groups = new Set(moves.map(([, group]) => group));
+        const cellsAfter = (group: string) => [
+          ...result.get(group)!.cells.filter((cell) => !path.includes(cell)),
+          ...moves.filter(([, to]) => to === group).map(([cell]) => cell),
+        ];
+        if (
+          [...groups].some(
+            (group) =>
+              piecesOf(cellsAfter(group), neighbours).length >
+              piecesOf(result.get(group)!.cells, neighbours).length,
+          )
+        )
+          continue;
+        for (const group of groups) {
+          const entry = result.get(group)!;
+          entry.cells = cellsAfter(group);
+          if (!entry.cells.includes(entry.seed)) entry.seed = entry.cells[0]!;
+          entry.sum = entry.cells.reduce(
+            (sum, cell) => ({ x: sum.x + sites[cell]!.x, y: sum.y + sites[cell]!.y }),
+            { x: 0, y: 0 },
+          );
+        }
+        for (const [cell, group] of moves) owner.set(cell, group);
+        claimed.add(next);
+        return true;
+      }
+    }
+    return false;
+  };
+  /**
+   * Last resort before an island: take a touching cell from a sibling of this or an earlier wave
+   * that stays in one piece without it. That sibling then regrows by the same rules.
+   */
+  const steal = (key: string, members: ReadonlyArray<{ readonly key: string }>): boolean => {
+    const growing = new Set(members.map((member) => member.key));
+    const own = result.get(key)!;
+    for (const cell of own.cells)
+      for (const next of neighbours[cell]!) {
+        const other = owner.get(next);
+        if (other === undefined || other === key || !growing.has(other)) continue;
+        const entry = result.get(other)!;
+        const rest = entry.cells.filter((item) => item !== next);
+        if (rest.length === 0 || piecesOf(rest, neighbours).length > 1) continue;
+        entry.cells = rest;
+        if (entry.seed === next) entry.seed = rest[0]!;
+        entry.sum = { x: entry.sum.x - sites[next]!.x, y: entry.sum.y - sites[next]!.y };
+        own.cells.push(next);
+        own.sum = { x: own.sum.x + sites[next]!.x, y: own.sum.y + sites[next]!.y };
+        owner.set(next, key);
+        return true;
+      }
+    return false;
+  };
+  let steals = 0;
   const waves = new Map<string, number>();
   const waveOf = (key: string, seen: Set<string>): number => {
     const known = waves.get(key);
@@ -560,8 +649,10 @@ function grow(
       if (best < 0) best = nearestFree(origin);
       if (best >= 0) claim(group.key, best);
     }
+    // Earlier waves may have lent a cell to a closed-in group; they regrow with this wave.
+    const reached = active.filter((group) => waveOf(group.key, new Set()) <= wave);
     for (;;) {
-      const growing = members
+      const growing = reached
         .filter((group) => {
           const entry = result.get(group.key);
           return entry !== undefined && entry.cells.length < group.quota;
@@ -587,6 +678,11 @@ function grow(
             bestScore = score;
           }
         }
+      if (best < 0 && push(group.key)) continue;
+      if (best < 0 && steals < STEAL_LIMIT && steal(group.key, reached)) {
+        steals += 1;
+        continue;
+      }
       if (best < 0) best = nearestFree(centroid);
       if (best < 0) break;
       claim(group.key, best);
@@ -595,6 +691,23 @@ function grow(
   return new Map(
     [...result].map(([key, entry]) => [key, { cells: entry.cells, seed: entry.seed }]),
   );
+}
+
+function piecesOf(
+  cells: ReadonlyArray<number>,
+  neighbours: ReadonlyArray<ReadonlyArray<number>>,
+): Array<Array<number>> {
+  const left = new Set(cells);
+  const pieces: Array<Array<number>> = [];
+  for (const start of cells) {
+    if (!left.has(start)) continue;
+    left.delete(start);
+    const piece = [start];
+    for (let index = 0; index < piece.length; index += 1)
+      for (const next of neighbours[piece[index]!]!) if (left.delete(next)) piece.push(next);
+    pieces.push(piece);
+  }
+  return pieces;
 }
 
 /** Siblings ordered by the longest chain of recorded `follows` among them, then saved order. */

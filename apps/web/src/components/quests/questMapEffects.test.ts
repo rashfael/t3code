@@ -33,12 +33,21 @@ const state = {
     result("v1", { disposition: "superseded" }),
     result("v2", { supersedes: "v1", workId: "x", affectedWorkIds: ["w", "x", "gone"] }),
     result("dropped", { disposition: "set-aside" }),
-    result("part", { parentContributionId: "v2", refinementEvidence: ["abc123: fix"] }),
-    result("orphan-part", { parentContributionId: "dropped", status: "in-progress" }),
-  ],
-  episodes: [
-    { id: "review-1", kind: "review", lens: "behavior", affectedEffectIds: ["part"] },
-    { id: "unlinked", kind: "review", affectedEffectIds: [] },
+    result("part", {
+      evidence: [
+        { kind: "other", ref: "effect:part-effect", note: "Reconstruction id in corpus.json" },
+        { kind: "other", ref: "v2", note: "Finer description of this earlier result" },
+        {
+          kind: "other",
+          ref: "review:review-1",
+          note: "review · behavior · checked abc123 (evidence/reviews.json)",
+        },
+        { kind: "other", ref: "effect:other-effect", note: "Related effect" },
+      ],
+    }),
+    result("orphan-part", {
+      evidence: [{ kind: "other", ref: "dropped", note: "Finer description" }],
+    }),
   ],
   files: [{ id: "file-1", path: "work/record.md" }],
 } as unknown as QuestState;
@@ -55,13 +64,24 @@ describe("mapEffects", () => {
       history: [expect.objectContaining({ id: "v1" })],
       planned: false,
     });
+    // Associations come from the result's own evidence refs, the only place results state them.
     expect(effects.get("part")).toMatchObject({
       parentId: "v2",
-      refinements: ["abc123: fix"],
-      episodes: [expect.objectContaining({ id: "review-1", lens: "behavior" })],
+      reconstructionId: "part-effect",
+      basis: "source-backed-reconstruction",
+      episodes: [
+        {
+          id: "review-1",
+          kind: "review",
+          lens: "behavior",
+          checkedCandidate: "abc123",
+          outcome: "",
+          source: "evidence/reviews.json",
+        },
+      ],
     });
     // A part of a result that is no longer current stands on its own.
-    expect(effects.get("orphan-part")).toMatchObject({ parentId: null, planned: true });
+    expect(effects.get("orphan-part")).toMatchObject({ parentId: null, reconstructionId: null });
   });
 
   it("finds registered files from relative or absolute evidence refs", () => {

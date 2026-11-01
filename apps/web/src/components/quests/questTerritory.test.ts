@@ -57,6 +57,8 @@ function result(id: string, affected: ReadonlyArray<string>, extra: Record<strin
   };
 }
 
+const refines = (id: string) => ({ kind: "other", ref: id, note: "Finer description" });
+
 const state = {
   work: [
     work("root", null),
@@ -79,10 +81,10 @@ const state = {
   contributions: [
     // A coarse delivery refined by two finer effects, one of them revised by a review fix.
     result("coarse", ["a1", "stream"]),
-    result("fine-1", ["a1"], { parentContributionId: "coarse" }),
-    result("fine-2-v1", ["a1"], { parentContributionId: "coarse", disposition: "superseded" }),
-    result("fine-2", ["a1"], { parentContributionId: "coarse", supersedes: "fine-2-v1" }),
-    result("next", ["a1"], { status: "planned" }),
+    result("fine-1", ["a1"], { evidence: [refines("coarse")] }),
+    result("fine-2-v1", ["a1"], { evidence: [refines("coarse")], disposition: "superseded" }),
+    result("fine-2", ["a1"], { evidence: [refines("coarse")], supersedes: "fine-2-v1" }),
+    result("next", ["a1"]),
     result("b-fix", ["b1", "stream"]),
     result("b-fix-2", ["b1", "stream"]),
   ],
@@ -144,12 +146,7 @@ describe("layoutTerritory", () => {
       ["effect", "next"],
     ]);
     expect(new Set(inA1.map((unit) => unit.cell)).size).toBe(3);
-    // Planned scope sits outside the delivered core.
-    const seed = open.regions.find((region) => region.work.id === "a1")!.seed;
     expect(inA1.every((unit) => !cellsOf(open, "a1-try").includes(unit.cell))).toBe(true);
-    const from = (cell: number) =>
-      Math.hypot(sitePoint(cell).x - seed.x, sitePoint(cell).y - seed.y);
-    expect(from(inA1[2]!.cell)).toBeGreaterThanOrEqual(from(inA1[1]!.cell));
     // Other work it affects shows a reference, not a second filled effect.
     expect(
       open.units.filter((unit) => unit.workId === "stream").map((unit) => [unit.kind, unit.key]),
@@ -196,5 +193,123 @@ describe("territoryLinks", () => {
     expect(territoryLinks(state, territory, "b")).toEqual([
       expect.objectContaining({ id: "follows:b1:a1", viaAncestor: true }),
     ]);
+  });
+
+  it("keeps every region in one piece when neighbours close around it", () => {
+    // The real T3 Quest's plan shape at revision 110: ids, parents, order and result placement.
+    const plan = {
+      work: [
+        ["ws-planning", null, "active"],
+        ["ws-human", null, "active"],
+        ["ws-documents", null, "active"],
+        ["ws-conversations", null, "active"],
+        ["ws-execution", null, "planned"],
+        ["m-prototype-journeys", null, "review"],
+        ["p-decisions-documents", "m-prototype-journeys", "review"],
+        ["p-parallel-planning", "m-results-proposals", "review"],
+        ["p-maps", "m-plan-overview", "active"],
+        ["m-real-quest", "m-converge", "review"],
+        ["p-separate-quest", "m-real-quest", "review"],
+        ["p-real-documents", "m-real-quest", "review"],
+        ["p-original-conversations", "m-real-quest", "review"],
+        ["p-owner-walkthrough", "m-real-quest", "attention"],
+        ["m-converge", null, "active"],
+        ["c-contexts", "m-converge", "planned"],
+        ["c-handback", "m-converge", "planned"],
+        ["c-apply", "m-converge", "planned"],
+        ["m-resume", null, "planned"],
+        ["m-steer", null, "planned"],
+        ["m-quest-model", null, "done"],
+        ["m-discussions-in-quest", "m-prototype-journeys", "review"],
+        ["m-decisions-answered", "m-prototype-journeys", "review"],
+        ["m-documents-beside", "m-prototype-journeys", "review"],
+        ["m-results-proposals", "m-prototype-journeys", "review"],
+        ["m-semantics", null, "review"],
+        ["m-plan-overview", null, "active"],
+      ],
+      follows: [
+        ["m-discussions-in-quest", "m-quest-model"],
+        ["m-semantics", "m-quest-model"],
+        ["m-decisions-answered", "m-discussions-in-quest"],
+        ["m-documents-beside", "m-discussions-in-quest"],
+        ["m-results-proposals", "m-discussions-in-quest"],
+        ["m-results-proposals", "m-decisions-answered"],
+        ["m-results-proposals", "m-semantics"],
+        ["m-plan-overview", "m-semantics"],
+        ["m-converge", "m-prototype-journeys"],
+        ["m-resume", "m-converge"],
+        ["m-steer", "m-converge"],
+      ],
+      results: [
+        ["result-1", ["p-decisions-documents", "ws-human", "ws-documents"], null],
+        ["result-2", ["p-parallel-planning", "c-handback", "c-apply"], null],
+        ["result-3", ["p-maps", "ws-planning"], null],
+        ["result-4", ["m-converge", "m-resume", "m-steer", "ws-planning"], null],
+        ["result-5", ["m-discussions-in-quest", "ws-conversations"], null],
+        ["result-6", ["m-discussions-in-quest", "ws-conversations"], null],
+        ["result-7", ["m-discussions-in-quest", "ws-conversations"], null],
+        ["result-8", ["m-discussions-in-quest", "ws-conversations"], "result-1"],
+        ["result-9", ["m-discussions-in-quest", "ws-conversations"], null],
+        ["result-10", ["m-discussions-in-quest", "ws-conversations"], null],
+        ["result-11", ["m-discussions-in-quest", "ws-conversations"], null],
+        ["result-12", ["m-decisions-answered", "ws-human"], "result-1"],
+        ["result-13", ["m-decisions-answered", "ws-human"], "result-1"],
+        ["result-14", ["m-decisions-answered", "ws-human"], "result-1"],
+        ["result-15", ["m-decisions-answered", "ws-human"], "result-1"],
+        ["result-16", ["m-decisions-answered", "ws-human"], "result-1"],
+        ["result-17", ["m-documents-beside", "ws-documents"], null],
+        ["result-18", ["m-documents-beside", "ws-documents"], "result-1"],
+        ["result-19", ["m-documents-beside", "ws-documents"], "result-1"],
+        ["result-20", ["m-documents-beside", "ws-documents"], "result-1"],
+        ["result-21", ["m-documents-beside", "ws-documents"], "result-1"],
+        ["result-22", ["m-documents-beside", "ws-documents"], "result-1"],
+        ["result-23", ["m-documents-beside", "ws-documents"], null],
+        ["result-24", ["m-documents-beside", "ws-documents"], null],
+        ["result-25", ["m-results-proposals", "ws-planning"], "result-2"],
+        ["result-26", ["m-results-proposals", "ws-planning"], "result-2"],
+        ["result-27", ["m-results-proposals", "ws-planning"], "result-2"],
+        ["result-28", ["m-results-proposals", "ws-planning"], "result-2"],
+        ["result-29", ["m-results-proposals", "ws-planning"], "result-2"],
+        ["result-30", ["m-real-quest", "ws-planning"], null],
+        ["result-31", ["m-plan-overview", "ws-planning"], "result-3"],
+        ["result-32", ["m-plan-overview", "ws-planning"], "result-3"],
+        ["result-33", ["m-semantics", "ws-planning"], "result-4"],
+        ["result-34", ["m-semantics", "ws-planning"], null],
+      ],
+      current: "m-converge",
+    } as const;
+    const crowded = {
+      work: plan.work.map(([id, parentId, workState]) => work(id, parentId, workState)),
+      relations: plan.follows.map(([from, to]) => relation("follows", from, to)),
+      contributions: plan.results.map(([id, affected, refined]) =>
+        result(id, affected, refined ? { evidence: [refines(refined)] } : {}),
+      ),
+      currentWorkId: plan.current,
+      files: [],
+    } as unknown as QuestState;
+    const planRoots = plan.work.filter(([, parentId]) => parentId === null).map(([id]) => id);
+    const pieces = (cells: ReadonlyArray<number>) => {
+      const owner = cells.map((_, index) => index);
+      const find = (index: number): number =>
+        owner[index] === index ? index : (owner[index] = find(owner[index]!));
+      cells.forEach((a, i) =>
+        cells.forEach((b, j) => {
+          if (j > i && areNeighbours(a, b)) owner[find(i)] = find(j);
+        }),
+      );
+      return new Set(cells.map((_, index) => find(index))).size;
+    };
+    // As the map first opens: every root and the path to the current milestone expanded.
+    const territory = layoutTerritory(
+      crowded,
+      mapEffects(crowded),
+      new Set([...planRoots, plan.current]),
+      planRoots,
+    );
+    expect(
+      territory.regions
+        .filter((region) => pieces(region.cells) > 1)
+        .map((region) => region.work.id),
+    ).toEqual([]);
   });
 });
