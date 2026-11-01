@@ -1,7 +1,14 @@
 import type { QuestState, QuestWork } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { FOCUS_UNIT, layoutRoadmap, NEUTRAL_FOCUS, ribbonD } from "./questRoadmap";
+import {
+  FOCUS_UNIT,
+  layoutRoadmap,
+  NEUTRAL_FOCUS,
+  ribbonD,
+  type Roadmap,
+  type RoadmapPath,
+} from "./questRoadmap";
 
 function work(
   id: string,
@@ -52,6 +59,29 @@ function question(id: string, workId: string, answer: string | null = null) {
     answerSource: null,
     appliedRevision: null,
   };
+}
+
+/**
+ * Outgoing never exceeds incoming at a stop that has inputs, inputs fill its bar, and what leaves
+ * stacks from the top of the bar so a retained remainder stays at the bottom.
+ */
+function expectFlowConserved(roadmap: Roadmap) {
+  for (const stop of roadmap.stops) {
+    const id = stop.work.id;
+    const incoming = roadmap.paths.filter((path) => path.target === id);
+    const outgoing = roadmap.paths
+      .filter((path) => path.source === id)
+      .toSorted((a, b) => a.sourceY - b.sourceY);
+    const sum = (paths: ReadonlyArray<RoadmapPath>) =>
+      paths.reduce((total, path) => total + path.width, 0);
+    if (incoming.length > 0) expect(sum(incoming)).toBeCloseTo(stop.height);
+    expect(sum(outgoing)).toBeLessThanOrEqual(stop.height + 1e-9);
+    let top = stop.y - stop.height / 2;
+    for (const path of outgoing) {
+      expect(path.sourceY - path.width / 2).toBeCloseTo(top);
+      top += path.width;
+    }
+  }
 }
 
 const state = {
@@ -109,30 +139,25 @@ describe("layoutRoadmap", () => {
     expect(stop("m").needs.map((need) => need.id)).toEqual(["q-m"]);
   });
 
-  it("sizes ribbons by the planned focus they lead into, without multiplying it at joins", () => {
+  it("sizes ribbons as flow that no stop but a root can create", () => {
     const roadmap = layoutRoadmap(state)!;
     const stop = (id: string) => roadmap.stops.find((item) => item.work.id === id)!;
     const width = (id: string) => roadmap.paths.find((path) => path.id === id)!.width;
     const neutral = NEUTRAL_FOCUS * FOCUS_UNIT;
+    expectFlowConserved(roadmap);
+    // next (unset) needs a neutral width; d forwards it, more than d's own focus of 2.
+    expect(width("follows:d:next")).toBe(neutral);
+    expect(stop("d").height).toBe(neutral);
+    // The join takes what d needs from both prerequisites, without counting it twice.
+    expect(width("follows:a:d")).toBe(neutral / 2);
+    expect(width("follows:b:d")).toBe(neutral / 2);
+    // a keeps what it does not forward: its bar is its own focus, its output a part of it.
+    expect(stop("a").height).toBe(5 * FOCUS_UNIT);
     expect(width("fork:a")).toBe(5 * FOCUS_UNIT);
-    // Unset focus is a neutral structural width, not zero.
-    expect(width("fork:b")).toBe(neutral);
-    // d joins a and b: its own focus is divided between them, not added up.
-    expect(width("follows:a:d")).toBe(FOCUS_UNIT);
-    expect(width("follows:b:d")).toBe(FOCUS_UNIT);
-    expect(stop("d").inHeight).toBe(2 * FOCUS_UNIT);
-    // What leaves a stop is what it leads into, so bars show both sides when they differ.
-    expect(stop("a")).toMatchObject({ inHeight: 5 * FOCUS_UNIT, outHeight: FOCUS_UNIT });
-    expect(stop("d").outHeight).toBe(neutral);
-    expect(stop("c")).toMatchObject({ inHeight: neutral, outHeight: neutral });
-    // Ribbons stack on the milestone bar without overlapping.
-    const forks = roadmap.paths
-      .filter((path) => path.kind === "fork")
-      .toSorted((x, y) => x.sourceY - y.sourceY);
-    for (let index = 1; index < forks.length; index += 1)
-      expect(forks[index]!.sourceY - forks[index - 1]!.sourceY).toBeCloseTo(
-        (forks[index]!.width + forks[index - 1]!.width) / 2,
-      );
+    // Unset focus is a neutral structural width, not zero; a leaf keeps all of it.
+    expect(width("fork:c")).toBe(neutral);
+    // The root supplies everything its parts need.
+    expect(stop("m").height).toBe(5 * FOCUS_UNIT + neutral + neutral);
   });
 
   it("keeps a ribbon's perpendicular cross-section constant through its bend", () => {
@@ -248,6 +273,14 @@ describe("layoutRoadmap", () => {
     expect(stop("right").reviewCount).toBe(1);
     expect(stop("journeys").reviewCount).toBe(0);
     expect(roadmap.gap).toBeNull();
+    expectFlowConserved(roadmap);
+    // Paths into work not yet started are planned, also from active work; unset focus is not.
+    expect(
+      roadmap.paths
+        .filter((path) => path.planned)
+        .map((path) => path.id)
+        .toSorted(),
+    ).toEqual(["follows:now:later-a", "follows:now:later-b"]);
     const withoutLater = {
       ...plan,
       relations: plan.relations.filter((relation) => !relation.from.startsWith("later")),

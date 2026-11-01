@@ -20,9 +20,8 @@ export interface RoadmapStop {
   /** Bar centre. */
   readonly x: number;
   readonly y: number;
-  /** Bar extent on each side; they differ when what enters and what leaves are not the same. */
-  readonly inHeight: number;
-  readonly outHeight: number;
+  /** Bar extent: the flow entering, or for a stop nothing enters, the flow it supplies. */
+  readonly height: number;
   /** Open or recorded decisions, then attention work without one, inside this stop's scope. */
   readonly needs: ReadonlyArray<RoadmapNeed>;
   /** Delivery leaves in scope that await review; parents and attempts are not counted again. */
@@ -42,6 +41,8 @@ export interface RoadmapPath {
   readonly source: string;
   readonly target: string;
   readonly width: number;
+  /** Leads into work not yet started, planned or deferred, whatever state its source is in. */
+  readonly planned: boolean;
   /** Ribbon centre where it leaves the source bar and enters the target bar. */
   readonly sourceY: number;
   readonly targetY: number;
@@ -60,8 +61,8 @@ export interface Roadmap {
   readonly height: number;
 }
 
-type PlacedStop = Omit<RoadmapStop, "x" | "y" | "inHeight" | "outHeight">;
-type PlacedLink = Omit<RoadmapPath, "width" | "sourceY" | "targetY" | "via"> & {
+type PlacedStop = Omit<RoadmapStop, "x" | "y" | "height">;
+type PlacedLink = Omit<RoadmapPath, "width" | "planned" | "sourceY" | "targetY" | "via"> & {
   readonly via: ReadonlyArray<{ readonly column: number; readonly row: number }>;
 };
 
@@ -527,10 +528,10 @@ function focusWeight(work: QuestWork): number {
 }
 
 /**
- * Each ribbon carries the planned focus of the work it leads into. A stop with several incoming
- * ribbons divides its own focus among them, so a join never adds up to more than the work it
- * enters. A stop's outgoing side shows the focus it leads on to, independent of its own: shared
- * prerequisites neither multiply nor conserve investment, and bars show both sides when they differ.
+ * Flow is conserved like a Sankey: a stop needs its own planned focus or what it passes on,
+ * whichever is larger, and that need arrives in equal shares from its prerequisites. So what leaves
+ * a stop never exceeds what enters it; only stops nothing enters supply flow, as the total so far.
+ * Widths are a projection of planned focus, not measured effort.
  */
 function arrange(
   placed: ReadonlyArray<PlacedStop>,
@@ -544,21 +545,26 @@ function arrange(
   const incomingCount = new Map<string, number>();
   for (const link of links)
     incomingCount.set(link.target, (incomingCount.get(link.target) ?? 0) + 1);
-  const linkWidth = (link: (typeof links)[number]) => {
-    const target = byId.get(link.target)!;
-    return (focusWeight(target.work) * FOCUS_UNIT) / (incomingCount.get(link.target) ?? 1);
-  };
-  const inHeight = new Map<string, number>();
-  const outHeight = new Map<string, number>();
-  for (const link of links) {
-    const width = linkWidth(link);
-    outHeight.set(link.source, (outHeight.get(link.source) ?? 0) + width);
-    inHeight.set(link.target, (inHeight.get(link.target) ?? 0) + width);
-  }
-  const barHeight = (id: string) => {
+  const need = new Map<string, number>();
+  const needOf = (id: string, visiting: Set<string>): number => {
+    const known = need.get(id);
+    if (known !== undefined) return known;
     const own = focusWeight(byId.get(id)!.work) * FOCUS_UNIT;
-    return Math.max(inHeight.get(id) ?? 0, outHeight.get(id) ?? 0, own);
+    // A cycle is cut where it is found, as in the ranks.
+    if (visiting.has(id)) return own;
+    visiting.add(id);
+    let forwarded = 0;
+    for (const link of links)
+      if (link.source === id)
+        forwarded += needOf(link.target, visiting) / incomingCount.get(link.target)!;
+    visiting.delete(id);
+    const value = Math.max(own, forwarded);
+    need.set(id, value);
+    return value;
   };
+  for (const stop of placed) needOf(stop.work.id, new Set());
+  const linkWidth = (link: PlacedLink) => need.get(link.target)! / incomingCount.get(link.target)!;
+  const barHeight = (id: string) => need.get(id)!;
   const pitch = Math.max(...placed.map((stop) => barHeight(stop.work.id))) + LABEL_ROOM;
   const allRows = [
     ...placed.map((stop) => stop.row),
@@ -570,19 +576,15 @@ function arrange(
   const yOf = (row: number) => top + (row - minRow) * pitch;
   const xOf = (index: number) => PADDING_X + index * column;
 
-  const stops: Array<RoadmapStop> = placed.map((stop) => {
-    const own = focusWeight(stop.work) * FOCUS_UNIT;
-    return {
-      ...stop,
-      x: xOf(stop.column),
-      y: yOf(stop.row),
-      // A stop with nothing on one side still shows its own planned focus there.
-      inHeight: inHeight.get(stop.work.id) ?? own,
-      outHeight: outHeight.get(stop.work.id) ?? own,
-    };
-  });
+  const stops: Array<RoadmapStop> = placed.map((stop) => ({
+    ...stop,
+    x: xOf(stop.column),
+    y: yOf(stop.row),
+    height: barHeight(stop.work.id),
+  }));
   const stopsById = new Map(stops.map((stop) => [stop.work.id, stop]));
-  // Ribbons stack on each side of a bar in the vertical order of where they go next.
+  // Ribbons stack from the top of each side of a bar in the vertical order of where they go next,
+  // so what a stop keeps stays visible below what it passes on.
   const offsets = new Map<string, { sourceY: number; targetY: number; width: number }>();
   const nextY = (link: PlacedLink, side: "source" | "target") => {
     const point = side === "source" ? link.via[0] : link.via.at(-1);
@@ -594,8 +596,7 @@ function arrange(
       const attached = links
         .filter((link) => link[side] === stop.work.id)
         .toSorted((a, b) => nextY(a, side) - nextY(b, side) || a.id.localeCompare(b.id));
-      const height = side === "source" ? stop.outHeight : stop.inHeight;
-      let cursor = stop.y - height / 2;
+      let cursor = stop.y - stop.height / 2;
       for (const link of attached) {
         const width = linkWidth(link);
         const entry = offsets.get(link.id) ?? { sourceY: 0, targetY: 0, width };
@@ -611,6 +612,7 @@ function arrange(
   const paths: Array<RoadmapPath> = links.map((link) => ({
     ...link,
     ...offsets.get(link.id)!,
+    planned: ["planned", "deferred"].includes(byId.get(link.target)!.work.state),
     via: link.via.map((point) => ({ x: xOf(point.column), y: yOf(point.row) })),
   }));
   const lowest = Math.max(...stops.map((stop) => stop.y + barHeight(stop.work.id) / 2));

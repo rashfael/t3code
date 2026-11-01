@@ -40,33 +40,14 @@ function keepIfSame(next: Overflow) {
     previous.earlier === next.earlier && previous.later === next.later ? previous : next;
 }
 
-// Literal classes so Tailwind generates them; one per workstream palette slot. Ribbons into
-// planned milestones are lighter but keep their colour.
+// Literal classes so Tailwind generates them; one per workstream palette slot.
 const streamRibbon = [
-  {
-    reached: "fill-stream-1/80 stroke-stream-1 dark:fill-stream-1/85",
-    ahead: "fill-stream-1/50 stroke-stream-1 dark:fill-stream-1/55",
-  },
-  {
-    reached: "fill-stream-2/80 stroke-stream-2 dark:fill-stream-2/85",
-    ahead: "fill-stream-2/50 stroke-stream-2 dark:fill-stream-2/55",
-  },
-  {
-    reached: "fill-stream-3/80 stroke-stream-3 dark:fill-stream-3/85",
-    ahead: "fill-stream-3/50 stroke-stream-3 dark:fill-stream-3/55",
-  },
-  {
-    reached: "fill-stream-4/80 stroke-stream-4 dark:fill-stream-4/85",
-    ahead: "fill-stream-4/50 stroke-stream-4 dark:fill-stream-4/55",
-  },
-  {
-    reached: "fill-stream-5/80 stroke-stream-5 dark:fill-stream-5/85",
-    ahead: "fill-stream-5/50 stroke-stream-5 dark:fill-stream-5/55",
-  },
-  {
-    reached: "fill-stream-6/80 stroke-stream-6 dark:fill-stream-6/85",
-    ahead: "fill-stream-6/50 stroke-stream-6 dark:fill-stream-6/55",
-  },
+  "fill-stream-1 stroke-stream-1",
+  "fill-stream-2 stroke-stream-2",
+  "fill-stream-3 stroke-stream-3",
+  "fill-stream-4 stroke-stream-4",
+  "fill-stream-5 stroke-stream-5",
+  "fill-stream-6 stroke-stream-6",
 ] as const;
 
 /** The workstream a ribbon continues: one both ends share, else where it leads, else where it starts. */
@@ -78,8 +59,8 @@ function ribbonStream(source: QuestWork, target: QuestWork): string | null {
 
 /**
  * Milestone overview as a Sankey: explicit milestones and the dependencies between them, or for
- * older Quests the current work fanning out to its parts. Ribbon width is the explicit planned
- * focus of the work a ribbon leads into; unset focus is a neutral width with a faded, dashed ribbon.
+ * older Quests the current work fanning out to its parts. Ribbons carry conserved flow derived from
+ * planned focus; a ribbon into work not yet started is a dashed outline.
  */
 export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null }) {
   const { state, openPanel, previewWorkId } = useQuest();
@@ -161,11 +142,10 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
               const source = byId.get(path.source);
               const target = byId.get(path.target);
               if (!source || !target) return null;
-              const unset = target.work.focus === undefined;
               const lit = highlighted === source.work.id || highlighted === target.work.id;
               const stream = ribbonStream(source.work, target.work);
               const slot = stream === null ? undefined : slots.get(stream);
-              const ahead = target.work.state === "planned" || target.work.state === "deferred";
+              const solid = slot === undefined ? 0.6 : 0.72;
               const points = [
                 { x: source.x + half, y: path.sourceY },
                 ...path.via,
@@ -175,16 +155,13 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
                 <g
                   key={path.id}
                   className={
-                    slot === undefined
-                      ? ribbonClass[target.work.state]
-                      : streamRibbon[slot]![ahead ? "ahead" : "reached"]
+                    slot === undefined ? ribbonClass[target.work.state] : streamRibbon[slot]
                   }
-                  fillOpacity={
-                    slot === undefined ? (ahead ? 0.3 : 0.6) + (lit ? 0.25 : 0) : lit ? 1 : 0.9
-                  }
-                  strokeOpacity={unset ? 0.3 : 0}
-                  strokeWidth={0.75}
-                  strokeDasharray={unset ? "3 3" : undefined}
+                  // Planned paths are outlined, not filled like flow that has happened.
+                  fillOpacity={path.planned ? (lit ? 0.3 : 0.12) : lit ? 0.85 : solid}
+                  strokeOpacity={path.planned ? 0.9 : 0}
+                  strokeWidth={1.25}
+                  strokeDasharray={path.planned ? "4 3" : undefined}
                 >
                   {points.slice(1).map((point, index) => (
                     <path
@@ -196,8 +173,7 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
               );
             })}
             {roadmap.stops.map((stop) => {
-              const height = Math.max(stop.inHeight, stop.outHeight);
-              const split = stop.inHeight !== stop.outHeight;
+              const height = stop.height;
               const bar = stop.isCurrent ? "fill-info" : "fill-foreground/70";
               return (
                 <g key={stop.work.id} className="cursor-pointer" {...inspect(stop.work.id)}>
@@ -209,32 +185,13 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
                     height={height + 8}
                     fill="transparent"
                   />
-                  {split ? (
-                    <>
-                      <rect
-                        x={stop.x - half}
-                        y={stop.y - stop.inHeight / 2}
-                        width={half}
-                        height={stop.inHeight}
-                        className={bar}
-                      />
-                      <rect
-                        x={stop.x}
-                        y={stop.y - stop.outHeight / 2}
-                        width={half}
-                        height={stop.outHeight}
-                        className={bar}
-                      />
-                    </>
-                  ) : (
-                    <rect
-                      x={stop.x - half}
-                      y={stop.y - height / 2}
-                      width={ROADMAP_BAR}
-                      height={height}
-                      className={bar}
-                    />
-                  )}
+                  <rect
+                    x={stop.x - half}
+                    y={stop.y - height / 2}
+                    width={ROADMAP_BAR}
+                    height={height}
+                    className={bar}
+                  />
                   {selectedWorkId === stop.work.id ? (
                     <rect
                       x={stop.x - half - 3}
@@ -300,7 +257,7 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
             </span>
           ) : null}
           <p className="absolute bottom-1 left-3 text-2xs text-muted-foreground">
-            Width: planned focus · faded dashed: not set
+            Width: planned focus as flow, not effort · dashed outline: planned
           </p>
         </div>
       </div>
@@ -331,7 +288,7 @@ function RoadmapLabel({
 }) {
   const { work } = stop;
   const needs = stop.needs.length;
-  const height = Math.max(stop.inHeight, stop.outHeight);
+  const height = stop.height;
   const description = [
     stop.isCurrent ? "Current milestone" : stop.role === "successor" ? "Follows" : null,
     workStateLabels[work.state],
