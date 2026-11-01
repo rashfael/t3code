@@ -61,8 +61,8 @@ function rowPreview(question: QuestQuestion, workTitle: string | undefined): str
 
 /** Decisions: a compact question list beside the selected question's working area. */
 export function QuestDecisions({ requested }: { requested: string | null }) {
-  const { environmentId, state, showView } = useQuest();
-  const remembered = useRememberedQuestDecision(environmentId);
+  const { scope, state, showView } = useQuest();
+  const remembered = useRememberedQuestDecision(scope);
   // Below lg the app sidebar leaves too little room for a list beside the question.
   const narrow = useMediaQuery("max-lg");
   const groups = questionsByStatus(state.questions);
@@ -95,11 +95,11 @@ export function QuestDecisions({ requested }: { requested: string | null }) {
   const selectedId = chosen ?? fallback ?? null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- records the shown decision in the Quest store so returning to Decisions reopens it
   useEffect(() => {
-    if (chosen) rememberQuestDecision(environmentId, chosen);
-  }, [environmentId, chosen]);
+    if (chosen) rememberQuestDecision(scope, chosen);
+  }, [scope, chosen]);
 
   function select(id: string | null) {
-    rememberQuestDecision(environmentId, id);
+    rememberQuestDecision(scope, id);
     showView("decisions", id ? { question: id } : {});
   }
 
@@ -302,9 +302,9 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 function QuestionWorkspace({ id, onBack }: { id: string; onBack: (() => void) | null }) {
-  const { environmentId, state, canWrite, pending, openPanel, showView, openDocument } = useQuest();
+  const { scope, state, canWrite, pending, openPanel, showView, openDocument } = useQuest();
   const question = state.questions.find((item) => item.id === id);
-  const draft = useQuestDraft(environmentId, `question:${id}`);
+  const draft = useQuestDraft(scope, `question:${id}`);
   const [editingQuestion, setEditingQuestion] = useState(false);
   if (!question)
     return (
@@ -569,8 +569,8 @@ function AnswerEditor({
     questionId: string | null;
   }>;
 }) {
-  const { environmentId, canWrite, pending } = useQuest();
-  const draft = useQuestDraft(environmentId, `question:${question.id}`);
+  const { scope, canWrite, pending } = useQuest();
+  const draft = useQuestDraft(scope, `question:${question.id}`);
   const answer = draftText(draft.draft, "answer", question.answer ?? "");
   const rationale = draftText(draft.draft, "rationale", question.rationale ?? "");
   const writing =
@@ -728,8 +728,8 @@ function OptionMark({ checked }: { checked: boolean }) {
 
 /** The decision's primary actions, kept in view below its content. */
 function DecisionActions({ question, answering }: { question: QuestQuestion; answering: boolean }) {
-  const { environmentId, state, pending, save } = useQuest();
-  const draft = useQuestDraft(environmentId, `question:${question.id}`);
+  const { scope, state, pending, save } = useQuest();
+  const draft = useQuestDraft(scope, `question:${question.id}`);
   const status = questQuestionStatus(question);
   const work = state.work.find((item) => item.id === question.workId);
   const discussions = state.conversations.filter(

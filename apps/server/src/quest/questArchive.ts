@@ -17,6 +17,8 @@ const COLLECTIONS = {
   pendingWrites: (item: QuestDomain["pendingWrites"][number]) => item.id,
   contributions: (item: QuestDomain["contributions"][number]) => item.id,
   proposals: (item: QuestDomain["proposals"][number]) => item.id,
+  externalConversations: (item: QuestDomain["externalConversations"][number]) =>
+    `${item.environmentId}/${item.threadId}`,
 } as const;
 type Collection = keyof typeof COLLECTIONS;
 const COLLECTION_NAMES = Object.keys(COLLECTIONS) as ReadonlyArray<Collection>;

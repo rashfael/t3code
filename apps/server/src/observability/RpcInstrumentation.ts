@@ -22,6 +22,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.questWorkspaceFiles]: "quest",
   [WS_METHODS.questWriteDocument]: "quest",
   [WS_METHODS.questRecoverWrite]: "quest",
+  [WS_METHODS.questCreate]: "quest",
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getNativeChildWork]: "orchestration",

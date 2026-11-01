@@ -159,18 +159,18 @@ function documentPins(state: QuestState, entry: QuestEntry): ReadonlyArray<Pin> 
 }
 
 function useHasDraft(id: string) {
-  const { environmentId } = useQuest();
+  const { scope } = useQuest();
   return useQuestDraftStore(
     (store) =>
-      store.drafts[`${environmentId}|file:${id}`] !== undefined ||
-      store.drafts[`${environmentId}|document:${id}`] !== undefined,
+      store.drafts[`${scope}|file:${id}`] !== undefined ||
+      store.drafts[`${scope}|document:${id}`] !== undefined,
   );
 }
 
 /** The Documents view: the folder tree beside the open documents. */
 export function QuestDocumentsView() {
-  const { environmentId } = useQuest();
-  const tabs = useQuestDocumentTabs(environmentId);
+  const { scope } = useQuest();
+  const tabs = useQuestDocumentTabs(scope);
   const narrow = useMediaQuery("max-lg");
   const [treeOpen, setTreeOpen] = useState<boolean | null>(null);
   // Narrow layouts give the reader the width; the tree comes back on request.
@@ -209,8 +209,8 @@ export function QuestDocumentsView() {
 
 /** Open documents beside the conversation: a resizable pane, or the full width when narrow. */
 export function QuestDocumentsBeside({ narrow }: { narrow: boolean }) {
-  const { environmentId } = useQuest();
-  const tabs = useQuestDocumentTabs(environmentId);
+  const { environmentId, scope } = useQuest();
+  const tabs = useQuestDocumentTabs(scope);
   if (narrow)
     return (
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -231,8 +231,8 @@ export function QuestDocumentsBeside({ narrow }: { narrow: boolean }) {
 }
 
 function DocumentTree({ onOpened, onHide }: { onOpened: () => void; onHide: (() => void) | null }) {
-  const { environmentId, state } = useQuest();
-  const tabs = useQuestDocumentTabs(environmentId);
+  const { scope, state } = useQuest();
+  const tabs = useQuestDocumentTabs(scope);
   const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
   const [picking, setPicking] = useState(false);
   const entries = [
@@ -278,7 +278,7 @@ function DocumentTree({ onOpened, onHide }: { onOpened: () => void; onHide: (() 
           depth={depth}
           isSelected={tabs.active === entry.id}
           onOpen={() => {
-            openQuestDocumentTab(environmentId, entry.id, false);
+            openQuestDocumentTab(scope, entry.id, false);
             onOpened();
           }}
         />
@@ -303,7 +303,7 @@ function DocumentTree({ onOpened, onHide }: { onOpened: () => void; onHide: (() 
         open={picking}
         onOpenChange={setPicking}
         onOpen={(id) => {
-          openQuestDocumentTab(environmentId, id, false);
+          openQuestDocumentTab(scope, id, false);
           onOpened();
         }}
       />
@@ -423,7 +423,7 @@ function QuestDocumentPicker({
   onOpenChange: (open: boolean) => void;
   onOpen: (id: string) => void;
 }) {
-  const { environmentId, state, pending, save } = useQuest();
+  const { environmentId, questId, state, pending, save } = useQuest();
   const theme = useRenderedAppearance();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   // Adding exposes files on this environment, so it needs the file read grant too.
@@ -432,7 +432,7 @@ function QuestDocumentPicker({
   );
   const files = useEnvironmentQuery(
     open && state.workspace && canAdd
-      ? questEnvironment.workspaceFiles({ environmentId, input: {} })
+      ? questEnvironment.workspaceFiles({ environmentId, input: { questId } })
       : null,
   );
   const [query, setQuery] = useState("");
@@ -586,8 +586,8 @@ function QuestDocumentTabs({
   leading?: ReactNode;
   narrow?: boolean;
 }) {
-  const { environmentId, state, showView } = useQuest();
-  const tabs = useQuestDocumentTabs(environmentId);
+  const { scope, state, showView } = useQuest();
+  const tabs = useQuestDocumentTabs(scope);
   const drafts = useQuestDraftStore((store) => store.drafts);
   const theme = useRenderedAppearance();
   const [closing, setClosing] = useState<string | null>(null);
@@ -601,11 +601,7 @@ function QuestDocumentTabs({
     >
       <div className="flex h-9 shrink-0 items-center gap-1 border-b px-2">
         {narrow ? (
-          <Button
-            size="xs"
-            variant="ghost"
-            onClick={() => showQuestDocumentsBeside(environmentId, false)}
-          >
+          <Button size="xs" variant="ghost" onClick={() => showQuestDocumentsBeside(scope, false)}>
             <ArrowLeftIcon aria-hidden />
             Conversation
           </Button>
@@ -618,8 +614,8 @@ function QuestDocumentTabs({
               const title = entry?.title ?? "Missing document";
               const isActive = tabs.active === id;
               const unsaved =
-                drafts[`${environmentId}|file:${id}`] !== undefined ||
-                drafts[`${environmentId}|document:${id}`] !== undefined;
+                drafts[`${scope}|file:${id}`] !== undefined ||
+                drafts[`${scope}|document:${id}`] !== undefined;
               const pinned = tabs.versions[id] !== undefined;
               return (
                 <div
@@ -634,9 +630,7 @@ function QuestDocumentTabs({
                 >
                   <PanelTabCloseButton
                     label={`Close ${title}`}
-                    onClick={() =>
-                      unsaved ? setClosing(id) : closeQuestDocumentTab(environmentId, id)
-                    }
+                    onClick={() => (unsaved ? setClosing(id) : closeQuestDocumentTab(scope, id))}
                   >
                     <PierreEntryIcon
                       pathValue={entry ? entryIconPath(state, entry) : `${title}.md`}
@@ -658,7 +652,7 @@ function QuestDocumentTabs({
                           type="button"
                           aria-current={isActive ? "page" : undefined}
                           className="flex min-w-0 cursor-pointer items-center gap-1"
-                          onClick={() => openQuestDocumentTab(environmentId, id, beside)}
+                          onClick={() => openQuestDocumentTab(scope, id, beside)}
                         >
                           <span className="truncate">{title}</span>
                           {pinned ? (
@@ -682,7 +676,7 @@ function QuestDocumentTabs({
             label="Open beside the conversation"
             disabled={tabs.open.length === 0}
             onPress={() => {
-              showQuestDocumentsBeside(environmentId, true);
+              showQuestDocumentsBeside(scope, true);
               showView("conversation");
             }}
           >
@@ -693,7 +687,7 @@ function QuestDocumentTabs({
             <FileSurfaceAction
               label={tabs.full ? "Restore the split" : "Fill the work area"}
               pressed={tabs.full}
-              onPress={() => showQuestDocumentsFull(environmentId, !tabs.full)}
+              onPress={() => showQuestDocumentsFull(scope, !tabs.full)}
             >
               {tabs.full ? (
                 <Minimize2Icon className="size-3.5" />
@@ -703,7 +697,7 @@ function QuestDocumentTabs({
             </FileSurfaceAction>
             <FileSurfaceAction
               label="Hide documents"
-              onPress={() => showQuestDocumentsBeside(environmentId, false)}
+              onPress={() => showQuestDocumentsBeside(scope, false)}
             >
               <XIcon className="size-3.5" />
             </FileSurfaceAction>
@@ -723,7 +717,7 @@ function QuestDocumentTabs({
       <QuestDocumentPicker
         open={picking}
         onOpenChange={setPicking}
-        onOpen={(id) => openQuestDocumentTab(environmentId, id, beside)}
+        onOpen={(id) => openQuestDocumentTab(scope, id, beside)}
       />
       <AlertDialog open={closing !== null} onOpenChange={(open) => !open && setClosing(null)}>
         <AlertDialogPopup>
@@ -741,11 +735,11 @@ function QuestDocumentTabs({
                 if (!closing) return;
                 useQuestDraftStore.setState((store) => {
                   const drafts = { ...store.drafts };
-                  delete drafts[`${environmentId}|file:${closing}`];
-                  delete drafts[`${environmentId}|document:${closing}`];
+                  delete drafts[`${scope}|file:${closing}`];
+                  delete drafts[`${scope}|document:${closing}`];
                   return { drafts };
                 });
-                closeQuestDocumentTab(environmentId, closing);
+                closeQuestDocumentTab(scope, closing);
                 setClosing(null);
               }}
             >
@@ -759,10 +753,10 @@ function QuestDocumentTabs({
 }
 
 function QuestDocumentSurface({ id }: { id: string }) {
-  const { environmentId, state } = useQuest();
-  const tabs = useQuestDocumentTabs(environmentId);
+  const { scope, state } = useQuest();
+  const tabs = useQuestDocumentTabs(scope);
   const entry = findEntry(state, id);
-  const { comparison } = useQuestComparison(environmentId, id);
+  const { comparison } = useQuestComparison(scope, id);
   if (!entry)
     return (
       <p className="p-4 text-sm text-muted-foreground">This document is no longer in the Quest.</p>
@@ -785,7 +779,7 @@ function VersionChoice({
   pins: ReadonlyArray<Pin>;
   version: string | null;
 }) {
-  const { environmentId } = useQuest();
+  const { scope } = useQuest();
   if (pins.length === 0) return null;
   const options = [
     {
@@ -799,7 +793,7 @@ function VersionChoice({
       value={version ?? ""}
       items={options}
       onValueChange={(next) => {
-        if (next !== null) selectQuestDocumentVersion(environmentId, entry.id, next || null);
+        if (next !== null) selectQuestDocumentVersion(scope, entry.id, next || null);
       }}
     >
       <SelectTrigger size="sm" aria-label="Version" className="max-w-64">
@@ -828,15 +822,15 @@ function DocumentBody({
   name: string;
   text: string;
 }) {
-  const { environmentId } = useQuest();
-  const { rendered } = useQuestReaderMode(environmentId, entry.id, version);
+  const { scope } = useQuest();
+  const { rendered } = useQuestReaderMode(scope, entry.id, version);
   if (!rendered)
     return (
       <Suspense fallback={<FileSurfaceLoading />}>
         <ReadOnlySourcePreview name={name} text={text} wordWrap />
       </Suspense>
     );
-  const position = readerPosition(environmentId, entry.id, version, "rendered");
+  const position = readerPosition(scope, entry.id, version, "rendered");
   return (
     <div
       className="scrollbar-gutter-both min-h-0 flex-1 overflow-y-auto"
@@ -851,8 +845,8 @@ function DocumentBody({
 }
 
 function RenderedToggle({ entry, version }: { entry: QuestEntry; version: string | null }) {
-  const { environmentId } = useQuest();
-  const { rendered, setRendered } = useQuestReaderMode(environmentId, entry.id, version);
+  const { scope } = useQuest();
+  const { rendered, setRendered } = useQuestReaderMode(scope, entry.id, version);
   return (
     <FileSurfaceAction
       label={rendered ? "Show markdown source" : "Show rendered markdown"}
@@ -874,8 +868,8 @@ function ShowChanges({
   /** A file comparison waits for a read newer than its request, so it asks for one. */
   readCurrent?: () => void;
 }) {
-  const { environmentId } = useQuest();
-  const { set } = useQuestComparison(environmentId, entry.id);
+  const { scope } = useQuest();
+  const { set } = useQuestComparison(scope, entry.id);
   const latest = pins[0];
   if (!latest) return null;
   return (
@@ -985,16 +979,16 @@ function FileSurface({
   file: QuestFile;
   pins: ReadonlyArray<Pin>;
 }) {
-  const { environmentId, state, canWrite: canWriteQuest, adopt, save } = useQuest();
+  const { environmentId, scope, questId, state, canWrite: canWriteQuest, adopt, save } = useQuest();
   // The file's bytes need this connection's file grants; the Quest record does not.
   const canReadFiles = useEnvironmentScope(environmentId, AuthFilesystemReadScope);
   const canWrite = useAtomValue(questEnvironment.writeDocument.permissionAtom(environmentId));
   const query = useEnvironmentQuery(
     canReadFiles
-      ? questEnvironment.document({ environmentId, input: { documentId: file.id } })
+      ? questEnvironment.document({ environmentId, input: { questId, documentId: file.id } })
       : null,
   );
-  const editor = useQuestDraft(environmentId, `file:${file.id}`);
+  const editor = useQuestDraft(scope, `file:${file.id}`);
   const write = useAtomCommand(questEnvironment.writeDocument, { reportFailure: false });
   const recover = useAtomCommand(questEnvironment.recoverWrite, { reportFailure: false });
   const [busy, setBusy] = useState(false);
@@ -1012,7 +1006,7 @@ function FileSurface({
     setBusy(true);
     const result = await write({
       environmentId,
-      input: { operationId, documentId: file.id, expectedSha256: base, content },
+      input: { questId, operationId, documentId: file.id, expectedSha256: base, content },
     });
     setBusy(false);
     if (result._tag !== "Success") return setNotice(failureText(result));
@@ -1028,7 +1022,7 @@ function FileSurface({
     setBusy(true);
     const result = await recover({
       environmentId,
-      input: { operationId: randomUUID(), writeId: pendingWrite.id },
+      input: { questId, operationId: randomUUID(), writeId: pendingWrite.id },
     });
     setBusy(false);
     if (result._tag !== "Success") return setNotice(failureText(result));
@@ -1130,7 +1124,7 @@ function FileSurface({
             name={file.path}
             contents={content}
             onChange={(next) => editor.update({ content: next })}
-            position={readerPosition(environmentId, file.id, null, "editor")}
+            position={readerPosition(scope, file.id, null, "editor")}
           />
         </Suspense>
       ) : current?.content != null ? (
@@ -1154,8 +1148,8 @@ function RecordSurface({
   document: QuestDocument;
   pins: ReadonlyArray<Pin>;
 }) {
-  const { environmentId, canWrite, pending, save } = useQuest();
-  const editor = useQuestDraft(environmentId, `document:${document.id}`);
+  const { scope, canWrite, pending, save } = useQuest();
+  const editor = useQuestDraft(scope, `document:${document.id}`);
   const [title, setTitle] = useState(document.title);
   const editable = document.kind === "living" && canWrite;
   const body = draftText(editor.draft, "body", document.body);
@@ -1253,7 +1247,7 @@ function RecordSurface({
             name={`${document.title}.md`}
             contents={body}
             onChange={(next) => editor.update({ body: next })}
-            position={readerPosition(environmentId, document.id, null, "editor")}
+            position={readerPosition(scope, document.id, null, "editor")}
           />
         </Suspense>
       ) : (
@@ -1270,14 +1264,14 @@ function RecordSurface({
 
 /** The exact bytes a conversation pinned, retained by the Quest. Never editable. */
 function usePinnedText(entry: QuestEntry, sha256: string | null) {
-  const { environmentId } = useQuest();
+  const { environmentId, questId } = useQuest();
   const canReadFiles = useEnvironmentScope(environmentId, AuthFilesystemReadScope);
   // A Quest record's own text is the pinned text when the hashes match.
   const own =
     entry.kind === "record" && entry.document.sha256 === sha256 ? entry.document.body : null;
   const retained = useEnvironmentQuery(
     sha256 !== null && own === null && canReadFiles
-      ? questEnvironment.retained({ environmentId, input: { sha256 } })
+      ? questEnvironment.retained({ environmentId, input: { questId, sha256 } })
       : null,
   );
   const text = own ?? retained.data?.content ?? null;
@@ -1344,15 +1338,15 @@ function PinnedSurface({
  * Refresh reads the current text again; it never touches an open draft or its base.
  */
 function ComparisonSurface({ entry, pins }: { entry: QuestEntry; pins: ReadonlyArray<Pin> }) {
-  const { environmentId, state } = useQuest();
+  const { environmentId, questId, scope, state } = useQuest();
   const resolvedTheme = useRenderedAppearance();
   const wide = useMediaQuery("(min-width: 1600px)");
-  const tabs = useQuestDocumentTabs(environmentId);
-  const { comparison, set, clear } = useQuestComparison(environmentId, entry.id);
+  const tabs = useQuestDocumentTabs(scope);
+  const { comparison, set, clear } = useQuestComparison(scope, entry.id);
   const canReadFiles = useEnvironmentScope(environmentId, AuthFilesystemReadScope);
   const current = useEnvironmentQuery(
     entry.kind === "file" && canReadFiles
-      ? questEnvironment.document({ environmentId, input: { documentId: entry.id } })
+      ? questEnvironment.document({ environmentId, input: { questId, documentId: entry.id } })
       : null,
   );
   const pinned = usePinnedText(entry, comparison?.pinSha256 ?? null);
@@ -1488,11 +1482,14 @@ function PendingWrite({
   onDiscard: () => void;
   onUseDraft: (text: string) => void;
 }) {
-  const { environmentId } = useQuest();
+  const { environmentId, questId } = useQuest();
   const [shown, setShown] = useState(false);
   const draft = useEnvironmentQuery(
     shown
-      ? questEnvironment.retained({ environmentId, input: { sha256: write.desiredSha256 } })
+      ? questEnvironment.retained({
+          environmentId,
+          input: { questId, sha256: write.desiredSha256 },
+        })
       : null,
   ).data;
   return (

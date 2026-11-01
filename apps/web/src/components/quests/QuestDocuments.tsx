@@ -14,11 +14,13 @@ export function pinnedTabId(documentId: string, sha256: string) {
 
 /** Shows one saved revision rebuilt from the baseline and revision records. */
 export function ReconstructRevision() {
-  const { environmentId, state } = useQuest();
+  const { environmentId, questId, state } = useQuest();
   const [value, setValue] = useState("");
   const [revision, setRevision] = useState<number | null>(null);
   const query = useEnvironmentQuery(
-    revision === null ? null : questEnvironment.reconstruct({ environmentId, input: { revision } }),
+    revision === null
+      ? null
+      : questEnvironment.reconstruct({ environmentId, input: { questId, revision } }),
   );
   const past = query.data;
   const title = (workId: string | null) =>

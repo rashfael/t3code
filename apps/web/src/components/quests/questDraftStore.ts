@@ -1,24 +1,23 @@
-import type { EnvironmentId } from "@t3tools/contracts";
 import { create } from "zustand";
 
-import type { PanelEntry, QuestView } from "./questContext";
+import type { PanelEntry, QuestScopeKey, QuestView } from "./questContext";
 
 export type QuestDraft = Readonly<Record<string, string | ReadonlyArray<string>>>;
 
 interface QuestDraftStoreState {
-  /** Unsaved editor values by `environmentId|editor:recordId`. An entry means its editor is open. */
+  /** Unsaved editor values by `scope|editor:recordId`, where a scope is one Quest in one environment. An entry means its editor is open. */
   readonly drafts: Readonly<Record<string, QuestDraft>>;
-  /** The details trail per environment, so a round trip through a thread returns to it. */
+  /** The details trail per Quest, so a round trip through a thread returns to it. */
   readonly panels: Readonly<Record<string, ReadonlyArray<PanelEntry>>>;
-  /** The conversation last shown per environment, reopened when the route names none. */
+  /** The conversation last shown per Quest, reopened when the route names none. */
   readonly conversations: Readonly<Record<string, string>>;
-  /** The Quest view last shown per environment, reopened when the route names nothing. */
+  /** The Quest view last shown per Quest, reopened when the route names nothing. */
   readonly views: Readonly<Record<string, QuestView>>;
-  /** Open document tabs per environment, shared by Documents and the split beside a conversation. */
+  /** Open document tabs per Quest, shared by Documents and the split beside a conversation. */
   readonly documents: Readonly<Record<string, QuestDocumentTabs>>;
-  /** The decision last selected per environment, shown again when Decisions reopens. */
+  /** The decision last selected per Quest, shown again when Decisions reopens. */
   readonly decisions: Readonly<Record<string, string>>;
-  /** Rendered or source presentation per `environmentId|documentId@version`. */
+  /** Rendered or source presentation per `scope|documentId@version`. */
   readonly readerModes: Readonly<Record<string, "rendered" | "source">>;
   /** The before/after pair a Show changes view compares, kept until explicitly refreshed. */
   readonly comparisons: Readonly<Record<string, QuestComparison>>;
@@ -73,12 +72,12 @@ export const useQuestDraftStore = create<QuestDraftStoreState>()(() => ({
   comparisons: {},
 }));
 
-function draftKey(environmentId: EnvironmentId, key: string) {
-  return `${environmentId}|${key}`;
+function draftKey(scope: QuestScopeKey, key: string) {
+  return `${scope}|${key}`;
 }
 
-export function useQuestDraft(environmentId: EnvironmentId, key: string) {
-  const id = draftKey(environmentId, key);
+export function useQuestDraft(scope: QuestScopeKey, key: string) {
+  const id = draftKey(scope, key);
   const draft = useQuestDraftStore((store) => store.drafts[id]);
   return {
     draft,
@@ -94,8 +93,8 @@ export function useQuestDraft(environmentId: EnvironmentId, key: string) {
   };
 }
 
-export function clearQuestDrafts(environmentId: EnvironmentId) {
-  const prefix = `${environmentId}|`;
+export function clearQuestDrafts(scope: QuestScopeKey) {
+  const prefix = `${scope}|`;
   useQuestDraftStore.setState((store) => ({
     drafts: Object.fromEntries(
       Object.entries(store.drafts).filter(([key]) => !key.startsWith(prefix)),
@@ -103,13 +102,13 @@ export function clearQuestDrafts(environmentId: EnvironmentId) {
   }));
 }
 
-export function readQuestPanel(environmentId: EnvironmentId): ReadonlyArray<PanelEntry> {
-  return useQuestDraftStore.getState().panels[environmentId] ?? [];
+export function readQuestPanel(scope: QuestScopeKey): ReadonlyArray<PanelEntry> {
+  return useQuestDraftStore.getState().panels[scope] ?? [];
 }
 
-export function rememberQuestPanel(environmentId: EnvironmentId, panel: ReadonlyArray<PanelEntry>) {
+export function rememberQuestPanel(scope: QuestScopeKey, panel: ReadonlyArray<PanelEntry>) {
   useQuestDraftStore.setState((store) => ({
-    panels: { ...store.panels, [environmentId]: panel },
+    panels: { ...store.panels, [scope]: panel },
   }));
 }
 
@@ -118,34 +117,34 @@ export function draftText(draft: QuestDraft | undefined, field: string, saved: s
   return typeof value === "string" ? value : saved;
 }
 
-export function rememberQuestConversation(environmentId: EnvironmentId, threadId: string) {
-  if (useQuestDraftStore.getState().conversations[environmentId] === threadId) return;
+export function rememberQuestConversation(scope: QuestScopeKey, threadId: string) {
+  if (useQuestDraftStore.getState().conversations[scope] === threadId) return;
   useQuestDraftStore.setState((store) => ({
-    conversations: { ...store.conversations, [environmentId]: threadId },
+    conversations: { ...store.conversations, [scope]: threadId },
   }));
 }
 
-export function readQuestView(environmentId: EnvironmentId): QuestView | undefined {
-  return useQuestDraftStore.getState().views[environmentId];
+export function readQuestView(scope: QuestScopeKey): QuestView | undefined {
+  return useQuestDraftStore.getState().views[scope];
 }
 
-export function rememberQuestView(environmentId: EnvironmentId, view: QuestView) {
-  if (useQuestDraftStore.getState().views[environmentId] === view) return;
-  useQuestDraftStore.setState((store) => ({ views: { ...store.views, [environmentId]: view } }));
+export function rememberQuestView(scope: QuestScopeKey, view: QuestView) {
+  if (useQuestDraftStore.getState().views[scope] === view) return;
+  useQuestDraftStore.setState((store) => ({ views: { ...store.views, [scope]: view } }));
 }
 
-export function useQuestDocumentTabs(environmentId: EnvironmentId): QuestDocumentTabs {
-  return useQuestDraftStore((store) => store.documents[environmentId] ?? NO_DOCUMENT_TABS);
+export function useQuestDocumentTabs(scope: QuestScopeKey): QuestDocumentTabs {
+  return useQuestDraftStore((store) => store.documents[scope] ?? NO_DOCUMENT_TABS);
 }
 
 function changeDocumentTabs(
-  environmentId: EnvironmentId,
+  scope: QuestScopeKey,
   change: (tabs: QuestDocumentTabs) => QuestDocumentTabs,
 ) {
   useQuestDraftStore.setState((store) => ({
     documents: {
       ...store.documents,
-      [environmentId]: change(store.documents[environmentId] ?? NO_DOCUMENT_TABS),
+      [scope]: change(store.documents[scope] ?? NO_DOCUMENT_TABS),
     },
   }));
 }
@@ -163,9 +162,9 @@ function parseDocumentTabId(tabId: string): { id: string; sha256: string | null 
 }
 
 /** Opens or selects a document; `beside` shows it next to the conversation, taking the pane back. */
-export function openQuestDocumentTab(environmentId: EnvironmentId, tabId: string, beside: boolean) {
+export function openQuestDocumentTab(scope: QuestScopeKey, tabId: string, beside: boolean) {
   const { id, sha256 } = parseDocumentTabId(tabId);
-  changeDocumentTabs(environmentId, (tabs) => {
+  changeDocumentTabs(scope, (tabs) => {
     const versions = without(tabs.versions, id);
     return {
       ...tabs,
@@ -180,19 +179,19 @@ export function openQuestDocumentTab(environmentId: EnvironmentId, tabId: string
 
 /** Selects the current version (`null`) or a pinned one inside the document's tab. */
 export function selectQuestDocumentVersion(
-  environmentId: EnvironmentId,
+  scope: QuestScopeKey,
   documentId: string,
   sha256: string | null,
 ) {
-  changeDocumentTabs(environmentId, (tabs) => {
+  changeDocumentTabs(scope, (tabs) => {
     const versions = without(tabs.versions, documentId);
     return { ...tabs, versions: sha256 ? { ...versions, [documentId]: sha256 } : versions };
   });
 }
 
 /** Closes a tab and selects its neighbour. Callers confirm before closing over an unsaved draft. */
-export function closeQuestDocumentTab(environmentId: EnvironmentId, tabId: string) {
-  changeDocumentTabs(environmentId, (tabs) => {
+export function closeQuestDocumentTab(scope: QuestScopeKey, tabId: string) {
+  changeDocumentTabs(scope, (tabs) => {
     const index = tabs.open.indexOf(tabId);
     const open = tabs.open.filter((item) => item !== tabId);
     const versions = without(tabs.versions, tabId);
@@ -202,8 +201,8 @@ export function closeQuestDocumentTab(environmentId: EnvironmentId, tabId: strin
   });
 }
 
-export function showQuestDocumentsBeside(environmentId: EnvironmentId, beside: boolean) {
-  changeDocumentTabs(environmentId, (tabs) => ({
+export function showQuestDocumentsBeside(scope: QuestScopeKey, beside: boolean) {
+  changeDocumentTabs(scope, (tabs) => ({
     ...tabs,
     beside,
     tools: false,
@@ -212,37 +211,37 @@ export function showQuestDocumentsBeside(environmentId: EnvironmentId, beside: b
 }
 
 /** Gives the pane beside the conversation to its own tools, or back to the documents. */
-export function showQuestConversationTools(environmentId: EnvironmentId, tools: boolean) {
-  changeDocumentTabs(environmentId, (tabs) =>
+export function showQuestConversationTools(scope: QuestScopeKey, tools: boolean) {
+  changeDocumentTabs(scope, (tabs) =>
     tabs.tools === tools ? tabs : { ...tabs, tools, full: tools ? false : tabs.full },
   );
 }
 
-export function showQuestDocumentsFull(environmentId: EnvironmentId, full: boolean) {
-  changeDocumentTabs(environmentId, (tabs) => ({ ...tabs, full }));
+export function showQuestDocumentsFull(scope: QuestScopeKey, full: boolean) {
+  changeDocumentTabs(scope, (tabs) => ({ ...tabs, full }));
 }
 
-export function useRememberedQuestDecision(environmentId: EnvironmentId): string | null {
-  return useQuestDraftStore((store) => store.decisions[environmentId] ?? null);
+export function useRememberedQuestDecision(scope: QuestScopeKey): string | null {
+  return useQuestDraftStore((store) => store.decisions[scope] ?? null);
 }
 
-export function rememberQuestDecision(environmentId: EnvironmentId, questionId: string | null) {
+export function rememberQuestDecision(scope: QuestScopeKey, questionId: string | null) {
   useQuestDraftStore.setState((store) => {
-    const decisions = without(store.decisions, environmentId);
-    return { decisions: questionId ? { ...decisions, [environmentId]: questionId } : decisions };
+    const decisions = without(store.decisions, scope);
+    return { decisions: questionId ? { ...decisions, [scope]: questionId } : decisions };
   });
 }
 
-function readerKey(environmentId: EnvironmentId, documentId: string, version: string | null) {
-  return `${environmentId}|${documentId}@${version ?? "current"}`;
+function readerKey(scope: QuestScopeKey, documentId: string, version: string | null) {
+  return `${scope}|${documentId}@${version ?? "current"}`;
 }
 
 export function useQuestReaderMode(
-  environmentId: EnvironmentId,
+  scope: QuestScopeKey,
   documentId: string,
   version: string | null,
 ) {
-  const key = readerKey(environmentId, documentId, version);
+  const key = readerKey(scope, documentId, version);
   const mode = useQuestDraftStore((store) => store.readerModes[key] ?? "rendered");
   return {
     rendered: mode === "rendered",
@@ -260,24 +259,24 @@ export function useQuestReaderMode(
 const readerPositions = new Map<string, number>();
 
 export function readerPosition(
-  environmentId: EnvironmentId,
+  scope: QuestScopeKey,
   documentId: string,
   version: string | null,
   mode: string,
 ) {
-  const key = `${readerKey(environmentId, documentId, version)}|${mode}`;
+  const key = `${readerKey(scope, documentId, version)}|${mode}`;
   return {
     read: () => readerPositions.get(key) ?? 0,
     write: (offset: number) => readerPositions.set(key, offset),
   };
 }
 
-function comparisonKey(environmentId: EnvironmentId, documentId: string) {
-  return `${environmentId}|${documentId}`;
+function comparisonKey(scope: QuestScopeKey, documentId: string) {
+  return `${scope}|${documentId}`;
 }
 
-export function useQuestComparison(environmentId: EnvironmentId, documentId: string) {
-  const key = comparisonKey(environmentId, documentId);
+export function useQuestComparison(scope: QuestScopeKey, documentId: string) {
+  const key = comparisonKey(scope, documentId);
   const comparison = useQuestDraftStore((store) => store.comparisons[key] ?? null);
   return {
     comparison,

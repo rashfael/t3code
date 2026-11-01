@@ -14,7 +14,7 @@ import {
   type QuestState,
   type ThreadId,
 } from "@t3tools/contracts";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import {
   ArrowLeftIcon,
@@ -33,6 +33,7 @@ import { useComposerDraftStore } from "~/composerDraftStore";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { resolveProjectDefaultProviderModelSelection } from "~/providerInstances";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
+import { useEnvironments } from "~/state/environments";
 import { useProjects, useQuietThreadShells } from "~/state/entities";
 import { environmentServerConfigsAtom } from "~/state/server";
 import { useEnvironmentQuery } from "~/state/query";
@@ -204,7 +205,7 @@ function newThreadDefaults(environmentId: EnvironmentId, project: EnvironmentPro
 }
 
 function useOpenQuestConversation() {
-  const { environmentId, state, adopt, showView } = useQuest();
+  const { environmentId, questId, state, adopt, showView } = useQuest();
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
   const open = useAtomCommand(questEnvironment.openConversation, { reportFailure: false });
   // One operation per intent until it succeeds, so a retry resolves the same reservation.
@@ -240,6 +241,7 @@ function useOpenQuestConversation() {
       environmentId,
       input: {
         ...request,
+        questId,
         operationId,
         projectId: project.id,
         modelSelection: defaults.modelSelection,
@@ -277,8 +279,8 @@ function useOpenQuestConversation() {
  * action) gives the pane to the tools; closing the tools gives it back. Automatic opens never take it.
  */
 function useToolsPaneOwner(threadId: string | null) {
-  const { environmentId } = useQuest();
-  const tabs = useQuestDocumentTabs(environmentId);
+  const { environmentId, scope } = useQuest();
+  const tabs = useQuestDocumentTabs(scope);
   const threadKey = threadId
     ? scopedThreadKey(scopeThreadRef(environmentId, threadId as ThreadId))
     : "";
@@ -293,9 +295,9 @@ function useToolsPaneOwner(threadId: string | null) {
     seen.current = { threadKey, userActions };
     if (!tabs.beside) return;
     const explicit = previous.threadKey === threadKey && previous.userActions !== userActions;
-    if (explicit && toolsOpen) showQuestConversationTools(environmentId, true);
-    else if (!toolsOpen && tabs.tools) showQuestConversationTools(environmentId, false);
-  }, [environmentId, threadKey, userActions, toolsOpen, tabs.beside, tabs.tools]);
+    if (explicit && toolsOpen) showQuestConversationTools(scope, true);
+    else if (!toolsOpen && tabs.tools) showQuestConversationTools(scope, false);
+  }, [scope, threadKey, userActions, toolsOpen, tabs.beside, tabs.tools]);
 }
 
 // The document pane loads with the first split, as the Documents view loads its workspace.
@@ -313,9 +315,9 @@ export function QuestConversations({
   about: string | null;
   thread: string | null;
 }) {
-  const { environmentId, state, canWrite, save, showView } = useQuest();
+  const { environmentId, scope, state, canWrite, save, showView } = useQuest();
   const threads = useQuestConversationThreads();
-  const remembered = useQuestDraftStore((store) => store.conversations[environmentId] ?? null);
+  const remembered = useQuestDraftStore((store) => store.conversations[scope] ?? null);
   const { openConversation, busy } = useOpenQuestConversation();
   const subject = parseSubject(state, about);
   const byId = (id: string | null) =>
@@ -328,10 +330,10 @@ export function QuestConversations({
   const selectedId = selected?.threadId ?? null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- records the shown conversation in the Quest store so a later visit without one in the route reopens it
   useEffect(() => {
-    if (selectedId) rememberQuestConversation(environmentId, selectedId);
-  }, [environmentId, selectedId]);
+    if (selectedId) rememberQuestConversation(scope, selectedId);
+  }, [scope, selectedId]);
 
-  const tabs = useQuestDocumentTabs(environmentId);
+  const tabs = useQuestDocumentTabs(scope);
   const narrow = useMediaQuery("max-xl");
   const documentsShown = tabs.beside && !tabs.tools && tabs.open.length > 0;
   const chatHidden = documentsShown && (narrow || tabs.full);
@@ -356,7 +358,7 @@ export function QuestConversations({
         (item.path.startsWith("/") ? item.path : root ? `${root}/${item.path}` : null) === hostPath,
     );
     if (!file) return false;
-    openQuestDocumentTab(environmentId, file.id, true);
+    openQuestDocumentTab(scope, file.id, true);
     return true;
   };
 
@@ -514,8 +516,8 @@ function ConversationSelector({
   /** The rail already lists the discussions; only the way back to documents remains. */
   listed: boolean;
 }) {
-  const { environmentId, state, showView } = useQuest();
-  const tabs = useQuestDocumentTabs(environmentId);
+  const { scope, state, showView } = useQuest();
+  const tabs = useQuestDocumentTabs(scope);
   const ordered = [
     ...state.conversations.filter((item) => item.role === "core"),
     ...state.conversations.filter((item) => item.role !== "core").toReversed(),
@@ -555,7 +557,7 @@ function ConversationSelector({
           size="xs"
           variant="ghost"
           className="ms-auto"
-          onClick={() => showQuestConversationTools(environmentId, false)}
+          onClick={() => showQuestConversationTools(scope, false)}
         >
           <FileTextIcon aria-hidden />
           Back to documents
@@ -798,7 +800,53 @@ function ConversationRail({
           <ul>{older.map(row)}</ul>
         </section>
       ) : null}
+      {state.externalConversations.length > 0 ? <ExternalConversations /> : null}
     </nav>
+  );
+}
+
+/** Conversations recorded as this Quest's provenance that live in another environment. */
+function ExternalConversations() {
+  const { state } = useQuest();
+  const { environments } = useEnvironments();
+  const connected = new Set(environments.map((item) => item.environmentId as string));
+  const titleOf = (threadId: string) =>
+    state.externalConversations.find((item) => item.threadId === threadId)?.title ?? threadId;
+  return (
+    <section aria-label="Conversations in another environment">
+      <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Elsewhere · {state.externalConversations.length}
+      </h3>
+      <ul className="flex flex-col gap-2">
+        {state.externalConversations.map((item) => (
+          <li key={`${item.environmentId}/${item.threadId}`} className="px-2 text-xs">
+            {connected.has(item.environmentId) ? (
+              <Link
+                to="/$environmentId/$threadId"
+                params={{ environmentId: item.environmentId, threadId: item.threadId }}
+                className="block truncate text-sm font-medium hover:underline"
+              >
+                {item.title}
+              </Link>
+            ) : (
+              <span className="block truncate text-sm font-medium">{item.title}</span>
+            )}
+            {item.purpose ? (
+              <span className="block text-muted-foreground">{item.purpose}</span>
+            ) : null}
+            {item.forkOf ? (
+              <span className="block text-muted-foreground">Fork of {titleOf(item.forkOf)}</span>
+            ) : null}
+            {connected.has(item.environmentId) ? null : (
+              <span className="block text-muted-foreground">
+                Lives in environment {item.environmentId.slice(0, 8)}, which is not connected here.
+                Not a member: its agent does not read or write this Quest.
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -1025,12 +1073,12 @@ function ConversationHeader({
 }
 
 function PinRow({ pin }: { pin: QuestConversation["sources"][number] }) {
-  const { environmentId, state, openDocument } = useQuest();
+  const { environmentId, questId, state, openDocument } = useQuest();
   const isFile = state.files.some((file) => file.id === pin.documentId);
   const canReadFiles = useEnvironmentScope(environmentId, AuthFilesystemReadScope);
   const current = useEnvironmentQuery(
     isFile && canReadFiles
-      ? questEnvironment.document({ environmentId, input: { documentId: pin.documentId } })
+      ? questEnvironment.document({ environmentId, input: { questId, documentId: pin.documentId } })
       : null,
   ).data;
   const title =

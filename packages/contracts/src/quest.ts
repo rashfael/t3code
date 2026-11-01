@@ -164,6 +164,23 @@ export const QuestConversation = Schema.Struct({
 });
 export type QuestConversation = typeof QuestConversation.Type;
 
+/**
+ * A conversation that belongs to this Quest's history but lives in another environment. It is
+ * provenance only: it is not a member, local agents cannot act as it, and it opens only where that
+ * environment is connected.
+ */
+export const QuestExternalConversation = Schema.Struct({
+  environmentId: Schema.String,
+  threadId: Schema.String,
+  title: Schema.String,
+  /** The thread it was forked from, when it is a fork. */
+  forkOf: Schema.NullOr(Schema.String),
+  workId: Schema.NullOr(Schema.String),
+  purpose: Schema.String,
+  recordedAt: Schema.String,
+});
+export type QuestExternalConversation = typeof QuestExternalConversation.Type;
+
 export const QuestCorePredecessor = Schema.Struct({
   conversation: QuestConversation,
   replacedAt: Schema.String,
@@ -402,6 +419,8 @@ export type QuestPlanProposal = typeof QuestPlanProposal.Type;
 
 /** What the thread route needs to show a linked thread's Quest context, without the whole Quest. */
 export const QuestThreadLink = Schema.Struct({
+  questId: Schema.String,
+  questTitle: Schema.String,
   threadId: Schema.String,
   workId: Schema.NullOr(Schema.String),
   questionId: Schema.NullOr(Schema.String),
@@ -430,6 +449,25 @@ export const QuestMembership = Schema.Struct({
 });
 export type QuestMembership = typeof QuestMembership.Type;
 
+/** Every Quest on the environment with its member threads. A thread belongs to at most one. */
+export const QuestCatalog = Schema.Struct({ quests: Schema.Array(QuestMembership) });
+export type QuestCatalog = typeof QuestCatalog.Type;
+
+/** The Quest the environment kept before it held several; plain `/quests` URLs open it. */
+export const QUEST_DEFAULT_ID = "market-tracking";
+
+export const QuestId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}$/));
+
+/** Names the Quest a request reads or changes. An unknown id fails; it never selects another. */
+export const QuestScope = Schema.Struct({ questId: QuestId });
+export type QuestScope = typeof QuestScope.Type;
+
+export const QuestCreateInput = Schema.Struct({
+  questId: QuestId,
+  title: Schema.String,
+});
+export type QuestCreateInput = typeof QuestCreateInput.Type;
+
 export const QuestHistoryEntry = Schema.Struct({
   id: Schema.String,
   revision: Schema.Number,
@@ -453,6 +491,7 @@ export const QuestHistoryEntry = Schema.Struct({
     "contribution",
     "proposal",
     "plan",
+    "reference",
   ]),
   targetId: Schema.NullOr(Schema.String),
   summary: Schema.String,
@@ -482,6 +521,9 @@ const QuestDomainFields = {
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   proposals: Schema.Array(QuestPlanProposal).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  externalConversations: Schema.Array(QuestExternalConversation).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 };
 /** The saved meaning of a Quest at one revision, without its prose change log. */
 export const QuestDomain = Schema.Struct(QuestDomainFields);
@@ -563,6 +605,19 @@ export const QuestUpdateInput = Schema.Struct({
   source: Schema.optionalKey(QuestResultSource),
   change: Schema.Union([
     Schema.Struct({ type: Schema.Literal("work"), work: QuestWork }),
+    /** Adds new work. Planning changes from discussions go through plan proposals instead. */
+    Schema.Struct({ type: Schema.Literal("work-add"), work: QuestWork }),
+    Schema.Struct({
+      type: Schema.Literal("external-conversation"),
+      conversation: Schema.Struct({
+        environmentId: Schema.String,
+        threadId: Schema.String,
+        title: Schema.String,
+        forkOf: Schema.NullOr(Schema.String),
+        workId: Schema.NullOr(Schema.String),
+        purpose: Schema.String,
+      }),
+    }),
     Schema.Struct({ type: Schema.Literal("document"), document: QuestDocument }),
     Schema.Struct({
       type: Schema.Literal("answer"),

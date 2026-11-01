@@ -458,34 +458,54 @@ describe("Quest document authorization", () => {
         Effect.all([
           outcome(
             client[WS_METHODS.questUpdate]({
+              questId: "market-tracking",
               expectedRevision: 1,
               change: { type: "current", workId: "work" },
             }),
           ),
           outcome(
             client[WS_METHODS.questUpdate]({
+              questId: "market-tracking",
               expectedRevision: 1,
               change: { type: "workspace-register", root: "/elsewhere" },
             }),
           ),
           outcome(
             client[WS_METHODS.questUpdate]({
+              questId: "market-tracking",
               expectedRevision: 1,
               change: { type: "file-register", path: "plan.md", title: "Plan" },
             }),
           ),
-          outcome(client[WS_METHODS.questReadDocument]({ documentId: "file-1" })),
-          outcome(client[WS_METHODS.questRetained]({ sha256: "0".repeat(64) })),
-          outcome(client[WS_METHODS.questWorkspaceFiles]({})),
+          outcome(
+            client[WS_METHODS.questReadDocument]({
+              questId: "market-tracking",
+              documentId: "file-1",
+            }),
+          ),
+          outcome(
+            client[WS_METHODS.questRetained]({
+              questId: "market-tracking",
+              sha256: "0".repeat(64),
+            }),
+          ),
+          outcome(client[WS_METHODS.questWorkspaceFiles]({ questId: "market-tracking" })),
           outcome(
             client[WS_METHODS.questWriteDocument]({
+              questId: "market-tracking",
               operationId: "op",
               documentId: "file-1",
               expectedSha256: "0".repeat(64),
               content: "x",
             }),
           ),
-          outcome(client[WS_METHODS.questRecoverWrite]({ operationId: "op", writeId: "write-1" })),
+          outcome(
+            client[WS_METHODS.questRecoverWrite]({
+              questId: "market-tracking",
+              operationId: "op",
+              writeId: "write-1",
+            }),
+          ),
         ]);
 
       const operator = yield* connect([AuthOrchestrationReadScope, AuthOrchestrationOperateScope]);

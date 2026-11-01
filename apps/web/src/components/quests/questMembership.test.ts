@@ -1,5 +1,5 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, ThreadId, type QuestMembership } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, type QuestCatalog } from "@t3tools/contracts";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -43,17 +43,21 @@ import {
   threadNavigationTarget,
 } from "./questMembership";
 
-function quest(threadIds: ReadonlyArray<string>): QuestMembership {
+function quest(threadIds: ReadonlyArray<string>, questId = "market-tracking") {
   return {
-    questId: "market-tracking",
-    title: "Market tracking",
+    questId,
+    title: questId,
     revision: 3,
     members: threadIds.map((threadId, index) => ({
       threadId,
-      role: index === 0 ? "core" : "focused",
+      role: index === 0 ? ("core" as const) : ("focused" as const),
       title: threadId,
     })),
   };
+}
+
+function catalog(...quests: QuestCatalog["quests"]): QuestCatalog {
+  return { quests };
 }
 
 describe("questMembershipAtom", () => {
@@ -61,13 +65,33 @@ describe("questMembershipAtom", () => {
     harness.registry = AtomRegistry.make();
     // The same thread id on two environments is two different threads.
     harness.results = {
-      "env-a": AsyncResult.success(quest(["shared-id", "focused-a"])),
+      "env-a": AsyncResult.success(
+        catalog(quest(["shared-id", "focused-a"]), quest(["real-core"], "t3-quests")),
+      ),
       "env-b": AsyncResult.failure(new Error("offline") as never),
       // env-c has not answered yet.
     };
     const index = harness.registry.get(questMembershipAtom);
-    expect(index.quests.map((item) => item.environmentId)).toEqual(["env-a"]);
-    expect(index.hiddenKeys.size).toBe(2);
+    expect(index.quests.map((item) => [item.environmentId, item.quest.questId])).toEqual([
+      ["env-a", "market-tracking"],
+      ["env-a", "t3-quests"],
+    ]);
+    expect(index.hiddenKeys.size).toBe(3);
+    // A member of another Quest opens that Quest, not the historical default.
+    const realMember = scopeThreadRef(EnvironmentId.make("env-a"), ThreadId.make("real-core"));
+    expect(threadNavigationTarget(realMember)).toEqual({
+      to: "/quests",
+      search: { env: "env-a", quest: "t3-quests", view: "conversation", thread: "real-core" },
+    });
+    expect(
+      isAtThreadNavigationTarget(
+        {
+          pathname: "/quests",
+          search: { env: "env-a", view: "conversation", thread: "real-core" },
+        },
+        realMember,
+      ),
+    ).toBe(false);
 
     const member = scopeThreadRef(EnvironmentId.make("env-a"), ThreadId.make("shared-id"));
     const sameIdElsewhere = scopeThreadRef(EnvironmentId.make("env-b"), ThreadId.make("shared-id"));

@@ -6,6 +6,8 @@ export type QuestView = "overview" | "conversation" | "map" | "decisions" | "doc
 export interface QuestSearch {
   /** The environment whose Quest is shown; without it, the primary environment's. */
   readonly env?: string;
+  /** The Quest shown; without it, the environment's historical Quest. */
+  readonly quest?: string;
   readonly view?: QuestView;
   readonly work?: string;
   readonly question?: string;
@@ -30,6 +32,7 @@ function searchText(value: unknown) {
 
 export function parseQuestSearch(raw: Record<string, unknown>): QuestSearch {
   const env = searchText(raw.env);
+  const quest = searchText(raw.quest);
   const view = VIEWS.find((candidate) => candidate === raw.view);
   const work = searchText(raw.work);
   const question = searchText(raw.question);
@@ -37,12 +40,20 @@ export function parseQuestSearch(raw: Record<string, unknown>): QuestSearch {
   const thread = searchText(raw.thread);
   return {
     ...(env ? { env } : {}),
+    ...(quest ? { quest } : {}),
     ...(view ? { view } : {}),
     ...(work ? { work } : {}),
     ...(question ? { question } : {}),
     ...(about ? { about } : {}),
     ...(thread ? { thread } : {}),
   };
+}
+
+/** One Quest in one environment. Drafts, panels and open documents are kept per scope. */
+export type QuestScopeKey = `${string}|${string}`;
+
+export function questScopeKey(environmentId: EnvironmentId, questId: string): QuestScopeKey {
+  return `${environmentId}|${questId}`;
 }
 
 export type PanelEntry =
@@ -53,6 +64,8 @@ export type QuestChange = QuestUpdateInput["change"];
 
 export interface QuestWorkspaceContext {
   readonly environmentId: EnvironmentId;
+  readonly questId: string;
+  readonly scope: QuestScopeKey;
   readonly state: QuestState;
   readonly canWrite: boolean;
   readonly pending: boolean;
@@ -65,7 +78,7 @@ export interface QuestWorkspaceContext {
   readonly adopt: (state: QuestState) => void;
   /** `push` keeps the current panel one Back step away; `replace` starts a new panel trail. */
   readonly openPanel: (entry: PanelEntry, mode?: "push" | "replace") => void;
-  readonly showView: (view: QuestView, extra?: Omit<QuestSearch, "view" | "env">) => void;
+  readonly showView: (view: QuestView, extra?: Omit<QuestSearch, "view" | "env" | "quest">) => void;
   /** Opens a document tab: beside the conversation when it is shown, else in Documents. */
   readonly openDocument: (tabId: string) => void;
   /** Work shown in the details panel without pinning it; null restores the pinned panel. */

@@ -27,13 +27,13 @@ import { SidebarProvider } from "../ui/sidebar";
 import { SidebarQuests } from "../sidebar/SidebarQuests";
 
 type QueryTarget =
-  | { readonly kind: "quest"; readonly environmentId: string }
+  | { readonly kind: "quest"; readonly environmentId: string; readonly questId: string }
   | { readonly kind: "retained"; readonly sha256: string }
   | { readonly kind: "document"; readonly documentId: string }
   | { readonly kind: "link"; readonly environmentId: string; readonly threadId: string };
 
 const harness = vi.hoisted(() => ({
-  /** Saved Quest per environment, as the server would answer `quest.get`. */
+  /** Saved Quests as `quest.get` answers: the historical one by environment, others by `environment|quest`. */
   quests: {} as Record<string, QuestState>,
   /** Retained bytes by SHA-256, as `quest.retained` would answer. */
   retained: {} as Record<string, string>,
@@ -54,7 +54,11 @@ const harness = vi.hoisted(() => ({
 
 vi.mock(import("./questEnvironment"), () => ({
   questEnvironment: {
-    get: ({ environmentId }: { environmentId: string }) => ({ kind: "quest", environmentId }),
+    get: ({ environmentId, input }: { environmentId: string; input: { questId: string } }) => ({
+      kind: "quest",
+      environmentId,
+      questId: input.questId,
+    }),
     threadLink: ({
       environmentId,
       input,
@@ -138,7 +142,11 @@ vi.mock(import("~/state/query"), () => ({
             target === null
               ? null
               : target.kind === "quest"
-                ? (harness.quests[target.environmentId] ?? null)
+                ? (harness.quests[
+                    target.questId === "market-tracking"
+                      ? target.environmentId
+                      : `${target.environmentId}|${target.questId}`
+                  ] ?? null)
                 : target.kind === "retained"
                   ? { content: harness.retained[target.sha256] ?? null }
                   : (harness.links[`${target.environmentId}|${target.threadId}`] ?? null),
@@ -325,6 +333,7 @@ function setup() {
     pendingWrites: [],
     contributions: [],
     proposals: [],
+    externalConversations: [],
     history: [
       {
         id: "baseline-0",
@@ -1084,6 +1093,8 @@ it("switches, reopens and deep-links linked conversations on their own environme
     ],
   };
   harness.links["second-environment|thread-a"] = {
+    questId: "market-tracking",
+    questTitle: "Market tracking",
     threadId: "thread-a",
     workId: null,
     questionId: null,
@@ -1136,8 +1147,17 @@ it("switches, reopens and deep-links linked conversations on their own environme
 });
 
 it("shows a linked thread's Quest from the server on a fresh client, without the Quest page", async () => {
-  setup();
+  const initial = setup();
+  // The thread belongs to a second Quest on the environment; the bar names and opens that one.
+  harness.quests["example-environment|t3-quests"] = {
+    ...initial,
+    work: initial.work.map((item) =>
+      item.id === "milestone" ? { ...item, title: "Real milestone" } : item,
+    ),
+  };
   harness.links["example-environment|thread-1"] = {
+    questId: "t3-quests",
+    questTitle: "Quests in T3",
     threadId: "thread-1",
     workId: "part-a",
     questionId: null,
@@ -1145,12 +1165,19 @@ it("shows a linked thread's Quest from the server on a fresh client, without the
     role: "focused",
     purpose: "",
   };
-  const { screen } = await renderRoutes("/example-environment/thread-1");
+  const { screen, router } = await renderRoutes("/example-environment/thread-1");
   await using _screen = screen;
   const bar = screen.getByRole("navigation", { name: "Quest conversation" });
+  await expect.element(bar.getByText("Quest · Quests in T3")).toBeVisible();
   await expect.element(bar.getByText("About: Part A")).toBeVisible();
   await bar.getByRole("link", { name: "Work map" }).click();
   await expect.element(screen.getByRole("group", { name: "Work map" })).toBeVisible();
+  expect(router.state.location.search).toMatchObject({
+    env: "example-environment",
+    quest: "t3-quests",
+    view: "map",
+  });
+  await expect.element(screen.getByText("Historical example")).not.toBeInTheDocument();
 });
 
 it("returns from a thread to the Quest of that thread's environment", async () => {
@@ -1163,6 +1190,8 @@ it("returns from a thread to the Quest of that thread's environment", async () =
     ),
   };
   harness.links["second-environment|thread-2"] = {
+    questId: "market-tracking",
+    questTitle: "Market tracking",
     threadId: "thread-2",
     workId: null,
     questionId: null,
@@ -1261,9 +1290,18 @@ it("lists each environment's Quest as one row with its attention and reopens its
     ],
   };
   harness.quests["second-environment"] = initial;
-  const quest = (members: ReadonlyArray<readonly [string, string]>) => ({
-    questId: "market-tracking",
-    title: "Market tracking",
+  harness.quests["example-environment|t3-quests"] = {
+    ...initial,
+    work: initial.work.map((item) =>
+      item.id === "milestone" ? { ...item, title: "Real milestone" } : item,
+    ),
+  };
+  const quest = (
+    members: ReadonlyArray<readonly [string, string]>,
+    questId = "market-tracking",
+  ) => ({
+    questId,
+    title: questId === "market-tracking" ? "Market tracking" : "Quests in T3",
     revision: 1,
     members: members.map(([threadId, role]) => ({ threadId, role, title: threadId })),
   });
@@ -1285,6 +1323,7 @@ it("lists each environment's Quest as one row with its attention and reopens its
           ["focused-a", "focused"],
         ]),
       },
+      { environmentId: "example-environment", quest: quest([], "t3-quests") },
     ],
     members: new Map(),
     hiddenKeys: new Set(),
@@ -1369,6 +1408,29 @@ it("lists each environment's Quest as one row with its attention and reopens its
   await expect
     .element(views.getByRole("button", { name: "Overview", exact: true }))
     .toHaveAttribute("aria-current", "page");
+
+  // A second Quest on the same environment has its own URL, title and unsaved drafts.
+  const real = screen.getByRole("link", { name: "Quests in T3" });
+  await real.click();
+  expect(router.state.location.search).toEqual({ env: "example-environment", quest: "t3-quests" });
+  await expect.element(screen.getByRole("heading", { name: "Quests in T3" })).toBeVisible();
+  await expect.element(real).toHaveAttribute("aria-current", "page");
+  await expect.element(first).not.toHaveAttribute("aria-current");
+  await screen.getByRole("button", { name: "Details", exact: true }).click();
+  await screen.getByRole("button", { name: "Edit", exact: true }).click();
+  const title = screen.getByRole("textbox", { name: "Work title", exact: true });
+  await expect.element(title).toHaveValue("Real milestone");
+  await title.fill("Unsaved real draft");
+  await first.click();
+  await expect.element(screen.getByRole("heading", { name: "Market tracking" })).toBeVisible();
+  await expect
+    .element(screen.getByRole("textbox", { name: "Work title", exact: true }))
+    .not.toBeInTheDocument();
+  await real.click();
+  await expect
+    .element(screen.getByRole("textbox", { name: "Work title", exact: true }))
+    .toHaveValue("Unsaved real draft");
+  expect(harness.run).not.toHaveBeenCalled();
 });
 
 it("reads documents from one tree, keeps reading state, compares a pin and shares the pane with the chat's tools", async () => {

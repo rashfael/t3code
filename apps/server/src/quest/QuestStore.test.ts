@@ -5,6 +5,7 @@ import {
   type QuestOpenConversationInput,
   type QuestUpdateInput,
 } from "@t3tools/contracts";
+import { QUEST_DEFAULT_ID } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -13,10 +14,15 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 
 import * as ServerConfig from "../config.ts";
-import { questAgentContext } from "./questContext.ts";
+import { LEGACY_QUEST, questAgentContext } from "./questContext.ts";
 import { migrateQuestV1 } from "./questMigration.ts";
 import { questSeedV1 } from "./questSeed.ts";
 import * as QuestStore from "./QuestStore.ts";
+
+const legacyQuest = Effect.gen(function* () {
+  const store = yield* QuestStore.QuestStore;
+  return yield* store.quest(QUEST_DEFAULT_ID);
+});
 
 const actor = { kind: "client", id: null } as const;
 
@@ -36,7 +42,7 @@ describe("QuestStore", () => {
       Effect.gen(function* () {
         const { layer } = yield* harness;
         const saved = yield* Effect.gen(function* () {
-          const store = yield* QuestStore.QuestStore;
+          const store = yield* legacyQuest;
           const initial = yield* store.get;
           const question = initial.questions[0]!;
           const work = initial.work.find((item) => item.id === question.workId)!;
@@ -79,7 +85,7 @@ describe("QuestStore", () => {
         }).pipe(Effect.provide(layer));
 
         yield* Effect.gen(function* () {
-          const reopened = yield* QuestStore.QuestStore;
+          const reopened = yield* legacyQuest;
           const recovered = yield* reopened.get;
           expect(recovered).toEqual(saved.answered);
           expect(recovered.documents.find((item) => item.id === saved.doc.id)?.body).toBe(
@@ -215,7 +221,7 @@ describe("QuestStore", () => {
       Effect.gen(function* () {
         const { layer } = yield* harness;
         yield* Effect.gen(function* () {
-          const store = yield* QuestStore.QuestStore;
+          const store = yield* legacyQuest;
           const initial = yield* store.get;
           const question = initial.questions[0]!;
           const results = yield* Effect.all(
@@ -329,7 +335,7 @@ describe("QuestStore", () => {
           Effect.provide(config),
         );
         yield* Effect.gen(function* () {
-          const store = yield* QuestStore.QuestStore;
+          const store = yield* legacyQuest;
           yield* store.get;
           // Loading a missing Quest shows the example without creating any file.
           expect(yield* fs.exists(path.join(stateDir, "quest-prototype"))).toBe(false);
@@ -370,7 +376,7 @@ describe("QuestStore", () => {
         yield* fs.makeDirectory(directory, { recursive: true });
         yield* fs.writeFileString(statePath, encoded);
         yield* Effect.gen(function* () {
-          const store = yield* QuestStore.QuestStore;
+          const store = yield* legacyQuest;
           const upgraded = yield* store.get;
           expect(upgraded.schemaVersion).toBe(3);
           expect(upgraded.revision).toBe(5);
@@ -457,7 +463,7 @@ describe("QuestStore", () => {
       Effect.gen(function* () {
         const { layer } = yield* harness;
         yield* Effect.gen(function* () {
-          const store = yield* QuestStore.QuestStore;
+          const store = yield* legacyQuest;
           const initial = yield* store.get;
           const link = {
             type: "link" as const,
@@ -476,6 +482,8 @@ describe("QuestStore", () => {
           ]);
           expect(linked.history.at(-1)?.summary).toContain("A4 · small live demonstration");
           expect(yield* store.threadLink("thread-1")).toEqual({
+            questId: QUEST_DEFAULT_ID,
+            questTitle: "Market tracking",
             threadId: "thread-1",
             workId: "a4-demonstration",
             questionId: null,
@@ -534,7 +542,7 @@ describe("QuestStore", () => {
         yield* fs.makeDirectory(directory, { recursive: true });
         yield* fs.writeFileString(path.join(directory, "state.json"), encoded);
         yield* Effect.gen(function* () {
-          const store = yield* QuestStore.QuestStore;
+          const store = yield* legacyQuest;
           const read = yield* store.get;
           expect(yield* store.membership).toMatchObject({
             revision: 9,
@@ -570,7 +578,7 @@ describe("QuestStore", () => {
       Effect.gen(function* () {
         const { layer } = yield* harness;
         yield* Effect.gen(function* () {
-          const store = yield* QuestStore.QuestStore;
+          const store = yield* legacyQuest;
           const states = [yield* store.get];
           const save = (
             change: QuestUpdateInput["change"],
@@ -694,7 +702,7 @@ describe("QuestStore", () => {
       Effect.gen(function* () {
         const { layer } = yield* harness;
         yield* Effect.gen(function* () {
-          const store = yield* QuestStore.QuestStore;
+          const store = yield* legacyQuest;
           const open = (operationId: string, extra: Partial<QuestOpenConversationInput> = {}) =>
             store.reserveConversation(
               {
@@ -778,7 +786,7 @@ describe("QuestStore", () => {
           // The core's current context follows the current milestone; a focused one keeps its subject.
           const coreId = core[0]!.threadId;
           const atReservation = yield* store.get;
-          expect(questAgentContext(atReservation, coreId)).toMatchObject({
+          expect(questAgentContext(atReservation, coreId, LEGACY_QUEST)).toMatchObject({
             currentWorkId: "milestone-a",
             work: { id: "milestone-a" },
             caller: { role: "core" },
@@ -790,7 +798,7 @@ describe("QuestStore", () => {
             },
             actor,
           );
-          const asCore = questAgentContext(moved, coreId);
+          const asCore = questAgentContext(moved, coreId, LEGACY_QUEST);
           expect(asCore).toMatchObject({
             currentWorkId: "summary-gap",
             work: { id: "summary-gap" },
@@ -803,12 +811,16 @@ describe("QuestStore", () => {
             },
             actor,
           );
-          expect(questAgentContext(moveBack, discussion.conversation.threadId)).toMatchObject({
+          expect(
+            questAgentContext(moveBack, discussion.conversation.threadId, LEGACY_QUEST),
+          ).toMatchObject({
             currentWorkId: "review-deliveries",
             work: { id: "summary-gap" },
             caller: { role: "focused", sourceRevision: discussion.conversation.sourceRevision },
           });
-          expect(questAgentContext(moveBack, coreId).work?.id).toBe("review-deliveries");
+          expect(questAgentContext(moveBack, coreId, LEGACY_QUEST).work?.id).toBe(
+            "review-deliveries",
+          );
           expect((yield* store.reconstruct(moved.revision)).domain.currentWorkId).toBe(
             "summary-gap",
           );
@@ -881,7 +893,7 @@ const workspaceHarness = Effect.gen(function* () {
 });
 
 const setupFile = Effect.gen(function* () {
-  const store = yield* QuestStore.QuestStore;
+  const store = yield* legacyQuest;
   const path = yield* Path.Path;
   const initial = yield* store.get;
   const root = path.dirname(path.dirname((yield* Effect.service(WorkspaceRoot)).plan));
@@ -1403,7 +1415,7 @@ describe("QuestStore documents", () => {
         control.reads = [];
         yield* store(
           Effect.gen(function* () {
-            const store = yield* QuestStore.QuestStore;
+            const store = yield* legacyQuest;
             const recovered = yield* store
               .recoverWrite({ operationId: "bound-recover", writeId }, actor)
               .pipe(Effect.result);
@@ -1488,7 +1500,7 @@ describe("QuestStore documents", () => {
       const legacy = yield* fs.readFileString(statePath);
       expect(legacy).not.toContain(real);
       yield* Effect.gen(function* () {
-        const store = yield* QuestStore.QuestStore;
+        const store = yield* legacyQuest;
         const { target: _, ...unbound } = write;
         control.reads = [];
         for (const content of [read.content!, "Desired\n", "Someone else\n"]) {
@@ -1544,7 +1556,7 @@ describe("QuestStore plan coordination", () => {
       Effect.gen(function* () {
         const { layer } = yield* harness;
         yield* Effect.gen(function* () {
-          const store = yield* QuestStore.QuestStore;
+          const store = yield* legacyQuest;
           let state = yield* store.get;
           const save = (change: QuestUpdateInput["change"], operationId?: string) =>
             store.update(
@@ -1629,7 +1641,7 @@ describe("QuestStore plan coordination", () => {
           });
           state = reported.state;
 
-          const mapView = questAgentContext(state, mapThread);
+          const mapView = questAgentContext(state, mapThread, LEGACY_QUEST);
           expect(mapView.results.find((item) => item.id === result.id)).toMatchObject({
             affectsYourWork: true,
             newSinceYourContext: true,
@@ -1754,7 +1766,7 @@ describe("QuestStore plan coordination", () => {
           expect(state.history.at(-1)?.changes.at(-2)).toMatchObject({ label: "Not applied" });
 
           for (const threadId of [mapThread, docsThread]) {
-            const view = questAgentContext(state, threadId);
+            const view = questAgentContext(state, threadId, LEGACY_QUEST);
             expect(view.plan.currentWorkId).toBe("two-discussions");
             expect(view.proposals[0]).toMatchObject({ status: "applied" });
             expect(view.sinceYourContext?.appliedPlanChanges).toEqual([proposal.id]);
@@ -1771,7 +1783,7 @@ describe("QuestStore plan coordination", () => {
         }).pipe(Effect.provide(layer));
 
         yield* Effect.gen(function* () {
-          const reopened = yield* (yield* QuestStore.QuestStore).get;
+          const reopened = yield* (yield* legacyQuest).get;
           expect(reopened.proposals[0]?.status).toBe("applied");
           expect(reopened.contributions[0]?.provenance).toBe("observed");
         }).pipe(Effect.provide(layer));
@@ -1782,7 +1794,7 @@ describe("QuestStore plan coordination", () => {
     Effect.gen(function* () {
       const { layer } = yield* harness;
       yield* Effect.gen(function* () {
-        const store = yield* QuestStore.QuestStore;
+        const store = yield* legacyQuest;
         const draft = {
           title: "First result",
           summary: "First",
@@ -1887,5 +1899,153 @@ describe("QuestStore plan coordination", () => {
         expect((yield* propose(original.id).pipe(Effect.flip)).message).toContain("not open");
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("QuestStore several Quests", () => {
+  const work = (id: string, parentId: string | null = null) => ({
+    id,
+    parentId,
+    kind: "work" as const,
+    title: `Work ${id}`,
+    state: "planned" as const,
+    owner: "",
+    agent: "",
+    understanding: "",
+    documentIds: [],
+    priorAttempts: "",
+    findings: "",
+    handoff: "",
+  });
+
+  it.effect(
+    "keeps a created Quest separate from the historical one and never resolves an unknown id",
+    () =>
+      Effect.gen(function* () {
+        const { layer, directory } = yield* harness;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* Effect.gen(function* () {
+          const store = yield* QuestStore.QuestStore;
+          const legacy = yield* store.quest(QUEST_DEFAULT_ID);
+          const historical = yield* legacy.update(
+            {
+              expectedRevision: (yield* legacy.get).revision,
+              change: {
+                type: "link",
+                threadId: "thread-shared",
+                projectId: null,
+                title: "Historical",
+                workId: null,
+                questionId: null,
+              },
+            },
+            actor,
+          );
+          const legacyFile = path.join(directory, "userdata", "quest-prototype", "state.json");
+          const legacyBytes = yield* fs.readFileString(legacyFile);
+
+          const created = yield* store.create({ questId: "t3-quests", title: "Quests in T3" });
+          expect(created).toMatchObject({ revision: 0, work: [], conversations: [] });
+          expect(yield* store.create({ questId: "t3-quests", title: "Quests in T3" })).toEqual(
+            created,
+          );
+          expect(
+            (yield* store.create({ questId: "t3-quests", title: "Other" }).pipe(Effect.flip))
+              .reason,
+          ).toBe("invalid");
+          expect(
+            (yield* store
+              .create({ questId: QUEST_DEFAULT_ID, title: "Market tracking" })
+              .pipe(Effect.flip)).reason,
+          ).toBe("invalid");
+          expect((yield* store.quest("missing").pipe(Effect.flip)).reason).toBe("unavailable");
+
+          const real = yield* store.quest("t3-quests");
+          const added = yield* real.update(
+            { expectedRevision: 0, change: { type: "work-add", work: work("milestone") } },
+            actor,
+          );
+          const child = yield* real.update(
+            {
+              expectedRevision: added.revision,
+              change: { type: "work-add", work: work("part", "milestone") },
+            },
+            actor,
+          );
+          expect(
+            (yield* real
+              .update(
+                {
+                  expectedRevision: child.revision,
+                  change: { type: "work-add", work: work("part") },
+                },
+                actor,
+              )
+              .pipe(Effect.flip)).reason,
+          ).toBe("invalid");
+          const referenced = yield* real.update(
+            {
+              expectedRevision: child.revision,
+              change: {
+                type: "external-conversation",
+                conversation: {
+                  environmentId: "env-elsewhere",
+                  threadId: "thread-original",
+                  title: "Original",
+                  forkOf: null,
+                  workId: "milestone",
+                  purpose: "Design",
+                },
+              },
+            },
+            actor,
+          );
+          // A thread belongs to one Quest; linking it into a second is refused.
+          const refused = yield* real
+            .update(
+              {
+                expectedRevision: referenced.revision,
+                change: {
+                  type: "link",
+                  threadId: "thread-shared",
+                  projectId: null,
+                  title: "Again",
+                  workId: null,
+                  questionId: null,
+                },
+              },
+              actor,
+            )
+            .pipe(Effect.flip);
+          expect(refused.message).toContain("Market tracking");
+
+          expect(yield* fs.readFileString(legacyFile)).toBe(legacyBytes);
+          expect((yield* legacy.get).work.some((item) => item.id === "milestone")).toBe(false);
+          expect((yield* store.memberQuest("thread-shared"))?.identity.id).toBe(QUEST_DEFAULT_ID);
+          expect(yield* store.memberQuest("thread-original")).toBeNull();
+          expect((yield* store.threadLink("thread-shared"))?.questId).toBe(QUEST_DEFAULT_ID);
+          expect(
+            (yield* store.catalog).quests.map((item) => [item.questId, item.revision]),
+          ).toEqual([
+            [QUEST_DEFAULT_ID, historical.revision],
+            ["t3-quests", referenced.revision],
+          ]);
+          const context = questAgentContext(referenced, null, real.identity);
+          expect(context).toMatchObject({
+            questId: "t3-quests",
+            caller: null,
+            externalConversations: [
+              { environmentId: "env-elsewhere", threadId: "thread-original" },
+            ],
+          });
+          const baseline = yield* real.reconstruct(0);
+          expect(baseline.domain.work).toEqual([]);
+          expect(baseline.limit).toContain("created in T3 Code");
+          expect(
+            (yield* real.reconstruct(child.revision)).domain.work.map((item) => item.id),
+          ).toEqual(["milestone", "part"]);
+        }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

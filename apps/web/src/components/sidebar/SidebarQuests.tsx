@@ -8,6 +8,7 @@ import { CompassIcon } from "lucide-react";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { CollapsibleSectionHeader } from "~/components/ui/collapsible-section-header";
 import { useSidebar } from "~/components/ui/sidebar";
+import { QUEST_DEFAULT_ID } from "@t3tools/contracts";
 import { parseQuestSearch } from "~/components/quests/questContext";
 import { useQuestMembership } from "~/components/quests/questMembership";
 import { cn } from "~/lib/utils";
@@ -84,6 +85,7 @@ export function SidebarQuests({
       thread,
     ]),
   );
+  const environmentCount = new Set(membership.quests.map((item) => item.environmentId)).size;
   const quests = membership.quests.map(({ environmentId, quest }) => {
     const members = quest.members.flatMap((member) => {
       const shell = shellByKey.get(
@@ -127,14 +129,22 @@ export function SidebarQuests({
           ) : null}
           {quests.map(({ environmentId, quest, members }) => {
             const rowId = `quest:${environmentId}:${quest.questId}`;
-            const isHere = onQuest && (search.env ?? quests[0]?.environmentId) === environmentId;
+            const isHere =
+              onQuest &&
+              (search.env ?? quests[0]?.environmentId) === environmentId &&
+              (search.quest ?? QUEST_DEFAULT_ID) === quest.questId;
             const questAttention = attentionText(attentionOf(members, lastVisitedByKey));
             return (
               <li key={rowId} className="list-none py-0.5">
                 <Link
                   to="/quests"
-                  search={{ env: environmentId }}
+                  search={{
+                    env: environmentId,
+                    ...(quest.questId === QUEST_DEFAULT_ID ? {} : { quest: quest.questId }),
+                  }}
                   aria-label={quest.title}
+                  // Router activity alone would mark every Quest whose search is a subset of this one.
+                  activeOptions={{ exact: true }}
                   aria-current={isHere ? "page" : undefined}
                   role={treeNavigation ? "treeitem" : undefined}
                   tabIndex={treeNavigation ? -1 : undefined}
@@ -151,9 +161,14 @@ export function SidebarQuests({
                     <div className="flex h-5 min-w-0 items-center gap-1.5 text-xs text-secondary-label">
                       <CompassIcon aria-hidden className="size-4 shrink-0" />
                       <span className="truncate">
-                        {membership.quests.length > 1
-                          ? (environmentLabelById.get(environmentId) ?? "Environment")
-                          : "product-research"}
+                        {[
+                          environmentCount > 1
+                            ? (environmentLabelById.get(environmentId) ?? "Environment")
+                            : null,
+                          quest.questId === QUEST_DEFAULT_ID ? "Historical example" : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </span>
                       {questAttention ? (
                         <span className="ms-auto shrink-0">{questAttention}</span>

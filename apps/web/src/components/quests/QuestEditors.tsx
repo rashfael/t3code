@@ -37,8 +37,8 @@ function captureText(update: (fields: Record<string, string>) => void) {
 
 /** The editor's draft; its presence is what keeps the editor open. */
 export function useEditorDraft(editor: "work" | "handoff" | "documents", id: string) {
-  const { environmentId } = useQuest();
-  return useQuestDraft(environmentId, `${editor}:${id}`);
+  const { scope } = useQuest();
+  return useQuestDraft(scope, `${editor}:${id}`);
 }
 
 function EditorActions({ onCancel, submit }: { onCancel: () => void; submit: string }) {
@@ -233,11 +233,8 @@ export function QuestionEditor({
   workId?: string;
   onDone: () => void;
 }) {
-  const { environmentId, state, save, pending, canWrite } = useQuest();
-  const { draft, update, clear } = useQuestDraft(
-    environmentId,
-    `question-editor:${question?.id ?? "new"}`,
-  );
+  const { scope, state, save, pending, canWrite } = useQuest();
+  const { draft, update, clear } = useQuestDraft(scope, `question-editor:${question?.id ?? "new"}`);
   const chosenWork = draftText(
     draft,
     "workId",

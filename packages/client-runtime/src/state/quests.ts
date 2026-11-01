@@ -56,35 +56,50 @@ export function createQuestEnvironmentAtoms<R, E>(
     tag: WS_METHODS.questReconstruct,
     idleTtlMs: 60_000,
   });
-  const saved = (environmentId: EnvironmentId, registry: AtomRegistry.AtomRegistry) =>
+  const saved = (
+    { environmentId, input }: { environmentId: EnvironmentId; input: { questId: string } },
+    registry: AtomRegistry.AtomRegistry,
+  ) =>
     Effect.sync(() => {
-      registry.refresh(get({ environmentId, input: {} }));
+      registry.refresh(get({ environmentId, input: { questId: input.questId } }));
       const revision = savedRevision(environmentId);
       registry.set(revision, registry.get(revision) + 1);
     });
   const update = createEnvironmentRpcCommand(runtime, {
     label: "environment-data:quest:update",
     tag: WS_METHODS.questUpdate,
-    concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
-    onSuccess: ({ environmentId }, registry) => saved(environmentId, registry),
+    concurrency: {
+      mode: "singleFlight",
+      key: ({ environmentId, input }) => `${environmentId}|${input.questId}`,
+    },
+    onSuccess: saved,
   });
   const openConversation = createEnvironmentRpcCommand(runtime, {
     label: "environment-data:quest:open-conversation",
     tag: WS_METHODS.questOpenConversation,
-    concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
-    onSuccess: ({ environmentId }, registry) => saved(environmentId, registry),
+    concurrency: {
+      mode: "singleFlight",
+      key: ({ environmentId, input }) => `${environmentId}|${input.questId}`,
+    },
+    onSuccess: saved,
   });
   const writeDocument = createEnvironmentRpcCommand(runtime, {
     label: "environment-data:quest:write-document",
     tag: WS_METHODS.questWriteDocument,
-    concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
-    onSuccess: ({ environmentId }, registry) => saved(environmentId, registry),
+    concurrency: {
+      mode: "singleFlight",
+      key: ({ environmentId, input }) => `${environmentId}|${input.questId}`,
+    },
+    onSuccess: saved,
   });
   const recoverWrite = createEnvironmentRpcCommand(runtime, {
     label: "environment-data:quest:recover-write",
     tag: WS_METHODS.questRecoverWrite,
-    concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
-    onSuccess: ({ environmentId }, registry) => saved(environmentId, registry),
+    concurrency: {
+      mode: "singleFlight",
+      key: ({ environmentId, input }) => `${environmentId}|${input.questId}`,
+    },
+    onSuccess: saved,
   });
   const read = createEnvironmentRpcCommand(runtime, {
     label: "environment-data:quest:read",

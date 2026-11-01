@@ -23,6 +23,7 @@ export class QuestConversations extends Context.Service<
      * The identity is saved first, so a retry or a second client resolves the same thread.
      */
     readonly open: (
+      questId: string,
       input: QuestOpenConversationInput,
       actor: QuestActor,
       access: QuestStore.QuestFileAccess,
@@ -38,11 +39,13 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService.ThreadManagementService;
 
   const open = Effect.fn("QuestConversations.open")(function* (
+    questId: string,
     input: QuestOpenConversationInput,
     actor: QuestActor,
     access: QuestStore.QuestFileAccess,
   ) {
-    const reserved = yield* store.reserveConversation(input, actor, access);
+    const quest = yield* store.quest(questId);
+    const reserved = yield* quest.reserveConversation(input, actor, access);
     const { conversation } = reserved;
     const threadId = ThreadId.make(conversation.threadId);
     const shell = yield* threads
@@ -84,7 +87,7 @@ const make = Effect.gen(function* () {
           ),
         ),
       );
-    const state = yield* store.finalizeConversation(
+    const state = yield* quest.finalizeConversation(
       conversation.threadId,
       launched.projection.thread.modelSelection,
       actor,

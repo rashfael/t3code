@@ -1,6 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, QuestState, QuestUpdateInput } from "@t3tools/contracts";
+import {
+  QUEST_DEFAULT_ID,
+  type EnvironmentId,
+  type QuestState,
+  type QuestUpdateInput,
+} from "@t3tools/contracts";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Columns2Icon, CompassIcon, RotateCcwIcon } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
@@ -21,6 +26,8 @@ import {
   type QuestChange,
   type QuestSearch,
   type QuestView,
+  questScopeKey,
+  type QuestScopeKey,
 } from "./questContext";
 import {
   clearQuestDrafts,
@@ -35,7 +42,8 @@ import {
   useQuestDocumentTabs,
 } from "./questDraftStore";
 import { questEnvironment } from "./questEnvironment";
-import { QUEST_TITLE, questionsByStatus } from "./questModel";
+import { questionsByStatus } from "./questModel";
+import { useQuestMembership } from "./questMembership";
 import { QuestConversations } from "./QuestConversations";
 import { QuestOverview } from "./QuestOverview";
 import { QuestDecisions } from "./QuestDecisions";
@@ -57,12 +65,12 @@ const VIEWS: ReadonlyArray<{ value: QuestView; label: string }> = [
 ];
 
 /** The view a route shows: its own, else the remembered one when it names nothing else. */
-function resolveView(environmentId: EnvironmentId, search: QuestSearch): QuestView {
+function resolveView(scope: QuestScopeKey, search: QuestSearch): QuestView {
   if (search.view) return search.view;
   if (search.question) return "decisions";
-  const { env: _env, ...rest } = search;
+  const { env: _env, quest: _quest, ...rest } = search;
   if (Object.keys(rest).length > 0) return "overview";
-  return readQuestView(environmentId) ?? "overview";
+  return readQuestView(scope) ?? "overview";
 }
 
 function useQuestSearch(): QuestSearch {
@@ -76,12 +84,15 @@ export function QuestPage() {
   const navigate = useNavigate();
   // The route names its environment, so returning from a thread reopens the same one.
   const environmentId = (search.env as EnvironmentId | undefined) ?? primaryId;
+  // Plain `/quests` keeps opening the historical Quest; any other Quest is named in the URL.
+  const questId = search.quest ?? QUEST_DEFAULT_ID;
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden" aria-label="Quest workspace">
       {environmentId ? (
         <QuestLoader
-          key={environmentId}
+          key={`${environmentId}|${questId}`}
           environmentId={environmentId}
+          questId={questId}
           environmentPicker={
             environments.length > 1 ? (
               <Select
@@ -121,12 +132,14 @@ export function QuestPage() {
 
 function QuestLoader({
   environmentId,
+  questId,
   environmentPicker,
 }: {
   environmentId: EnvironmentId;
+  questId: string;
   environmentPicker: React.ReactNode;
 }) {
-  const query = useEnvironmentQuery(questEnvironment.get({ environmentId, input: {} }));
+  const query = useEnvironmentQuery(questEnvironment.get({ environmentId, input: { questId } }));
   if (!query.data)
     return (
       <div className="p-6">
@@ -137,36 +150,42 @@ function QuestLoader({
   return (
     <QuestWorkspaceView
       environmentId={environmentId}
+      questId={questId}
       initial={query.data}
       environmentPicker={environmentPicker}
     />
   );
 }
 
-function initialPanel(
-  environmentId: EnvironmentId,
-  search: QuestSearch,
-): ReadonlyArray<PanelEntry> {
+function initialPanel(scope: QuestScopeKey, search: QuestSearch): ReadonlyArray<PanelEntry> {
   if (search.work) return [{ type: "work", id: search.work }];
   // Decisions open in their own view, never in the details panel.
-  return readQuestPanel(environmentId).filter((entry) => entry.type === "work");
+  return readQuestPanel(scope).filter((entry) => entry.type === "work");
 }
 
 function QuestWorkspaceView({
   environmentId,
+  questId,
   initial,
   environmentPicker,
 }: {
   environmentId: EnvironmentId;
+  questId: string;
   initial: QuestState;
   environmentPicker: React.ReactNode;
 }) {
   const search = useQuestSearch();
   const navigate = useNavigate();
-  const view = resolveView(environmentId, search);
-  const documentTabs = useQuestDocumentTabs(environmentId);
+  const scope = questScopeKey(environmentId, questId);
+  const historical = questId === QUEST_DEFAULT_ID;
+  const title =
+    useQuestMembership().quests.find(
+      (item) => item.environmentId === environmentId && item.quest.questId === questId,
+    )?.quest.title ?? questId;
+  const view = resolveView(scope, search);
+  const documentTabs = useQuestDocumentTabs(scope);
   const [state, setState] = useState(initial);
-  const [panel, setPanelState] = useState(() => initialPanel(environmentId, search));
+  const [panel, setPanelState] = useState(() => initialPanel(scope, search));
   const [preview, setPreview] = useState<{ view: QuestView; id: string } | null>(null);
   const [pending, setPending] = useState(false);
   const [notice, setNotice] = useState("");
@@ -177,11 +196,11 @@ function QuestWorkspaceView({
   const read = useAtomCommand(questEnvironment.read, { reportFailure: false });
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- records the shown view in the Quest store so returning to the bare Quest route reopens it
-  useEffect(() => rememberQuestView(environmentId, view), [environmentId, view]);
+  useEffect(() => rememberQuestView(scope, view), [scope, view]);
 
   function setPanel(next: ReadonlyArray<PanelEntry>) {
     setPanelState(next);
-    rememberQuestPanel(environmentId, next);
+    rememberQuestPanel(scope, next);
   }
 
   function adopt(next: QuestState) {
@@ -196,6 +215,7 @@ function QuestWorkspaceView({
     const result = await update({
       environmentId,
       input: {
+        questId,
         expectedRevision: state.revision,
         operationId: randomUUID(),
         change,
@@ -222,24 +242,32 @@ function QuestWorkspaceView({
     if (pendingRef.current) return;
     pendingRef.current = true;
     setPending(true);
-    const result = await read({ environmentId, input: {} });
+    const result = await read({ environmentId, input: { questId } });
     pendingRef.current = false;
     setPending(false);
     if (result._tag === "Success") {
-      clearQuestDrafts(environmentId);
+      clearQuestDrafts(scope);
       setState(result.value);
       setEpoch((value) => value + 1);
       setNotice("Reloaded. Unsaved drafts discarded.");
     } else setNotice("Could not reload. Your current draft has been kept.");
   }
 
-  function showView(next: QuestView, extra: Omit<QuestSearch, "view" | "env"> = {}) {
-    void navigate({ to: "/quests", search: { env: environmentId, view: next, ...extra } });
+  function showView(next: QuestView, extra: Omit<QuestSearch, "view" | "env" | "quest"> = {}) {
+    void navigate({
+      to: "/quests",
+      search: {
+        env: environmentId,
+        ...(historical ? {} : { quest: questId }),
+        view: next,
+        ...extra,
+      },
+    });
   }
 
   function openPanel(entry: PanelEntry, mode: "push" | "replace" = "replace") {
     if (entry.type === "question") {
-      rememberQuestDecision(environmentId, entry.id);
+      rememberQuestDecision(scope, entry.id);
       showView("decisions", { question: entry.id });
       return;
     }
@@ -247,8 +275,8 @@ function QuestWorkspaceView({
   }
 
   function openDocument(tabId: string) {
-    if (view === "conversation") return openQuestDocumentTab(environmentId, tabId, true);
-    openQuestDocumentTab(environmentId, tabId, false);
+    if (view === "conversation") return openQuestDocumentTab(scope, tabId, true);
+    openQuestDocumentTab(scope, tabId, false);
     if (view !== "documents") showView("documents");
   }
 
@@ -268,6 +296,8 @@ function QuestWorkspaceView({
     <QuestWorkspace
       value={{
         environmentId,
+        questId,
+        scope,
         state,
         canWrite,
         pending,
@@ -293,8 +323,8 @@ function QuestWorkspaceView({
             <SidebarTrigger />
           </div>
           <CompassIcon aria-hidden className="size-5 shrink-0" />
-          <h1 className="text-base font-semibold">{QUEST_TITLE}</h1>
-          <Badge variant="outline">Historical example</Badge>
+          <h1 className="text-base font-semibold">{title}</h1>
+          {historical ? <Badge variant="outline">Historical example</Badge> : null}
           <div className="ms-auto flex flex-wrap items-center gap-1.5">
             {environmentPicker}
             <Button
@@ -353,8 +383,8 @@ function QuestWorkspaceView({
                 pressed={documentTabs.beside && !documentTabs.tools}
                 onPress={() =>
                   documentTabs.beside && documentTabs.tools
-                    ? showQuestConversationTools(environmentId, false)
-                    : showQuestDocumentsBeside(environmentId, !documentTabs.beside)
+                    ? showQuestConversationTools(scope, false)
+                    : showQuestDocumentsBeside(scope, !documentTabs.beside)
                 }
               >
                 <Columns2Icon className="size-3.5" />

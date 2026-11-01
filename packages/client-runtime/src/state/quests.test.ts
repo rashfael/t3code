@@ -105,7 +105,11 @@ describe("Quest thread links", () => {
       const saved = yield* Effect.promise(() =>
         h.quests.update.run(h.registry, {
           environmentId: ENVIRONMENT_ID,
-          input: { expectedRevision: 0, change: { type: "unlink", threadId: "thread-1" } },
+          input: {
+            questId: "market-tracking",
+            expectedRevision: 0,
+            change: { type: "unlink", threadId: "thread-1" },
+          },
         }),
       );
       expect(saved._tag).toBe("Success");

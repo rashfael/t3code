@@ -39,12 +39,13 @@ const contribute = Effect.fn("QuestMcp.contribute")(function* (
       code: "capability_denied",
       message: "Only a Quest discussion's own agent can record this.",
     });
-  const store = yield* QuestStore.QuestStore;
-  const current = yield* store.get.pipe(Effect.mapError(toFailure));
-  if (!current.conversations.some((item) => item.threadId === threadId))
+  const store = yield* (yield* QuestStore.QuestStore)
+    .memberQuest(threadId)
+    .pipe(Effect.mapError(toFailure));
+  if (store === null)
     return yield* new OrchestratorMcpFailure({
       code: "invalid_request",
-      message: "This thread is not a discussion in the Quest.",
+      message: "This thread is not a discussion in any Quest.",
     });
   const runId = caller.activeRunId ?? null;
   const digest = NodeCrypto.createHash("sha256").update(encodeParams(params)).digest("hex");
@@ -102,14 +103,26 @@ export const layer = McpToolAccess.toLayer(QuestToolkit, {
           code: "capability_denied",
           message: "This credential belongs to another environment.",
         });
-      const store = yield* QuestStore.QuestStore;
       const threadId = input.threadId ?? context.scope.thread?.threadId ?? null;
+      // The thread's own membership selects the Quest, never what a client is showing.
+      const store =
+        threadId === null
+          ? null
+          : yield* (yield* QuestStore.QuestStore)
+              .memberQuest(threadId)
+              .pipe(Effect.mapError(toFailure));
+      if (store === null)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "This thread is not a discussion in any Quest on this environment.",
+        });
       if (input.revision === undefined) {
         const state = yield* store.get.pipe(Effect.mapError(toFailure));
-        return questAgentContext(state, threadId);
+        return questAgentContext(state, threadId, store.identity);
       }
       const past = yield* store.reconstruct(input.revision).pipe(Effect.mapError(toFailure));
       return {
+        questId: store.identity.id,
         revision: past.revision,
         limit: past.limit,
         currentWorkId: past.domain.currentWorkId,

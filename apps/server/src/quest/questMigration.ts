@@ -124,6 +124,7 @@ export function migrateQuestV2(saved: QuestStateV2): QuestState {
     pendingWrites: [],
     contributions: [],
     proposals: [],
+    externalConversations: [],
   };
 }
 

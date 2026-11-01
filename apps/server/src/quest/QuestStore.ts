@@ -2,6 +2,7 @@
 import * as NodeCrypto from "node:crypto";
 
 import {
+  QUEST_DEFAULT_ID,
   QuestBaseline,
   QuestError,
   QuestPendingWrite,
@@ -11,6 +12,8 @@ import {
   questAppliedUnderstanding,
   type ModelSelection,
   type QuestActor,
+  type QuestCatalog,
+  type QuestCreateInput,
   type QuestContribution,
   type QuestConversation,
   type QuestFileContent,
@@ -50,7 +53,12 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as ServerConfig from "../config.ts";
 import { diffQuestDomain, questDomain, replayQuestRecord } from "./questArchive.ts";
-import { QUEST_ID, QUEST_TITLE, questContextPacket, questSourceIds } from "./questContext.ts";
+import {
+  LEGACY_QUEST,
+  questContextPacket,
+  questSourceIds,
+  type QuestIdentity,
+} from "./questContext.ts";
 import {
   normalizeQuestFilePath,
   requireQuestRoot,
@@ -82,46 +90,60 @@ export interface QuestFileAccess {
   readonly readFiles: boolean;
 }
 
+/** One Quest's records. Every method reads and writes only that Quest. */
+export interface QuestRecord {
+  readonly identity: QuestIdentity;
+  /** Read-only: never creates, migrates or finalizes anything on disk. */
+  readonly get: Effect.Effect<QuestState, QuestError>;
+  readonly membership: Effect.Effect<QuestMembership, QuestError>;
+  readonly threadLink: (threadId: string) => Effect.Effect<QuestThreadLink | null, QuestError>;
+  readonly reconstruct: (revision: number) => Effect.Effect<QuestReconstruction, QuestError>;
+  readonly update: (
+    input: QuestUpdateInput,
+    actor: QuestActor,
+  ) => Effect.Effect<QuestState, QuestError>;
+  /** Returns the new record's id, or the earlier one when the operation was already saved. */
+  readonly contribute: (
+    input: QuestContributeInput,
+    actor: QuestActor,
+  ) => Effect.Effect<{ readonly state: QuestState; readonly id: string | null }, QuestError>;
+  /** Persists a conversation identity before any thread exists, or returns the one to resume. */
+  readonly reserveConversation: (
+    input: QuestOpenConversationInput,
+    actor: QuestActor,
+    access: QuestFileAccess,
+  ) => Effect.Effect<QuestReservation, QuestError>;
+  readonly finalizeConversation: (
+    threadId: string,
+    effective: ModelSelection,
+    actor: QuestActor,
+  ) => Effect.Effect<QuestState, QuestError>;
+  readonly readDocument: (documentId: string) => Effect.Effect<QuestFileContent, QuestError>;
+  readonly retained: (sha: string) => Effect.Effect<QuestRetained, QuestError>;
+  readonly workspaceFiles: Effect.Effect<QuestWorkspaceFiles, QuestError>;
+  readonly writeDocument: (
+    input: QuestWriteDocumentInput,
+    actor: QuestActor,
+  ) => Effect.Effect<QuestWriteResult, QuestError>;
+  /** Resolves a pending write against the file's actual bytes; a third version is a conflict. */
+  readonly recoverWrite: (
+    input: QuestRecoverWriteInput,
+    actor: QuestActor,
+  ) => Effect.Effect<QuestWriteResult, QuestError>;
+}
+
 export class QuestStore extends Context.Service<
   QuestStore,
   {
-    /** Read-only: never creates, migrates or finalizes anything on disk. */
-    readonly get: Effect.Effect<QuestState, QuestError>;
-    readonly membership: Effect.Effect<QuestMembership, QuestError>;
+    /** Every Quest on this environment with its members. */
+    readonly catalog: Effect.Effect<QuestCatalog, QuestError>;
+    /** The named Quest; an unknown id fails and never resolves to another Quest. */
+    readonly quest: (questId: string) => Effect.Effect<QuestRecord, QuestError>;
+    /** Creates an empty Quest. Repeating it with the same title returns the existing one. */
+    readonly create: (input: QuestCreateInput) => Effect.Effect<QuestState, QuestError>;
     readonly threadLink: (threadId: string) => Effect.Effect<QuestThreadLink | null, QuestError>;
-    readonly reconstruct: (revision: number) => Effect.Effect<QuestReconstruction, QuestError>;
-    readonly update: (
-      input: QuestUpdateInput,
-      actor: QuestActor,
-    ) => Effect.Effect<QuestState, QuestError>;
-    /** Returns the new record's id, or the earlier one when the operation was already saved. */
-    readonly contribute: (
-      input: QuestContributeInput,
-      actor: QuestActor,
-    ) => Effect.Effect<{ readonly state: QuestState; readonly id: string | null }, QuestError>;
-    /** Persists a conversation identity before any thread exists, or returns the one to resume. */
-    readonly reserveConversation: (
-      input: QuestOpenConversationInput,
-      actor: QuestActor,
-      access: QuestFileAccess,
-    ) => Effect.Effect<QuestReservation, QuestError>;
-    readonly finalizeConversation: (
-      threadId: string,
-      effective: ModelSelection,
-      actor: QuestActor,
-    ) => Effect.Effect<QuestState, QuestError>;
-    readonly readDocument: (documentId: string) => Effect.Effect<QuestFileContent, QuestError>;
-    readonly retained: (sha: string) => Effect.Effect<QuestRetained, QuestError>;
-    readonly workspaceFiles: Effect.Effect<QuestWorkspaceFiles, QuestError>;
-    readonly writeDocument: (
-      input: QuestWriteDocumentInput,
-      actor: QuestActor,
-    ) => Effect.Effect<QuestWriteResult, QuestError>;
-    /** Resolves a pending write against the file's actual bytes; a third version is a conflict. */
-    readonly recoverWrite: (
-      input: QuestRecoverWriteInput,
-      actor: QuestActor,
-    ) => Effect.Effect<QuestWriteResult, QuestError>;
+    /** The Quest a thread is a member of, or null; fails if records name it in several. */
+    readonly memberQuest: (threadId: string) => Effect.Effect<QuestRecord | null, QuestError>;
   }
 >()("t3/quest/QuestStore") {}
 
@@ -691,6 +713,68 @@ function changeState(
         entry: { kind: "work", targetId: work.id, summary: `Edited “${work.title}”`, changes },
       };
     }
+    case "work-add": {
+      const work = change.work;
+      if (
+        !WORK_ID.test(work.id) ||
+        current.work.some((item) => item.id === work.id) ||
+        !work.title.trim() ||
+        (work.focus !== undefined && !isQuestFocus(work.focus)) ||
+        work.documentIds.some((id) => !documentExists(current, id)) ||
+        !validParent(current, work)
+      )
+        return null;
+      return {
+        state: { ...current, work: [...current.work, { ...work, title: work.title.trim() }] },
+        entry: {
+          kind: "work",
+          targetId: work.id,
+          summary: `Added “${work.title.trim()}”`,
+          changes: WORK_FIELDS.flatMap(([key, label]) => {
+            const after = fieldText(work[key]);
+            return after ? [{ label, before: null, after }] : [];
+          }),
+        },
+      };
+    }
+    case "external-conversation": {
+      const reference = change.conversation;
+      if (
+        !reference.environmentId.trim() ||
+        !reference.threadId.trim() ||
+        !reference.title.trim() ||
+        (reference.workId !== null && !current.work.some((item) => item.id === reference.workId))
+      )
+        return null;
+      const existing = current.externalConversations.find(
+        (item) =>
+          item.environmentId === reference.environmentId && item.threadId === reference.threadId,
+      );
+      const next = { ...reference, recordedAt: existing?.recordedAt ?? at };
+      if (existing && JSON.stringify(existing) === JSON.stringify(next))
+        return { state: current, entry: null };
+      return {
+        state: {
+          ...current,
+          externalConversations: existing
+            ? current.externalConversations.map((item) => (item === existing ? next : item))
+            : [...current.externalConversations, next],
+        },
+        entry: {
+          kind: "reference",
+          targetId: reference.threadId,
+          summary: `${existing ? "Updated" : "Recorded"} the conversation “${reference.title}” in another environment`,
+          changes: [
+            {
+              label: "Environment",
+              before: existing?.environmentId ?? null,
+              after: reference.environmentId,
+            },
+            { label: "Purpose", before: existing?.purpose ?? null, after: reference.purpose },
+          ].filter((item) => item.before !== item.after),
+        },
+      };
+    }
     case "document": {
       const existing = current.documents.find((item) => item.id === change.document.id);
       if (
@@ -1060,12 +1144,21 @@ function baselineLimit(loaded: Loaded): string {
   return `Structured history starts at revision ${revision}. Earlier revisions are described only by the prose history and cannot be reconstructed; the exact earlier file is kept as a backup.`;
 }
 
-const make = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const config = yield* ServerConfig.ServerConfig;
-  const mutex = yield* Semaphore.make(1);
-  const directory = path.join(config.stateDir, "quest-prototype");
+interface RecordOptions {
+  readonly identity: QuestIdentity;
+  readonly directory: string;
+  /** Shared by every Quest, so a thread cannot be linked into two Quests at once. */
+  readonly mutex: Semaphore.Semaphore;
+  /** The title of another Quest that already has this thread as a member. */
+  readonly memberElsewhere: (threadId: string) => Effect.Effect<string | null, QuestError>;
+}
+
+function makeRecord(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  options: RecordOptions,
+): QuestRecord {
+  const { identity, directory, mutex } = options;
   const statePath = path.join(directory, "state.json");
   const pendingPath = path.join(directory, "state.pending.json");
   const blobDirectory = path.join(directory, "blobs");
@@ -1076,6 +1169,9 @@ const make = Effect.gen(function* () {
 
   const load = Effect.fn("QuestStore.load")(function* () {
     const exists = yield* fs.exists(statePath).pipe(Effect.mapError(storageError));
+    // Only the historical Quest starts from its captured example; others are created explicitly.
+    if (!exists && !identity.historical)
+      return yield* storageError(`The Quest ${identity.id} has no saved state.`);
     if (!exists)
       return { state: freshSeed(yield* now), archive: null, prior: null } satisfies Loaded;
     const encoded = yield* fs.readFileString(statePath).pipe(Effect.mapError(storageError));
@@ -1184,6 +1280,11 @@ const make = Effect.gen(function* () {
 
   /** Validates what needs the filesystem, then hands a plain change to `changeState`. */
   const prepare = Effect.fn("QuestStore.prepare")(function* (state: QuestState, change: Change) {
+    if (change.type === "link") {
+      const other = yield* options.memberElsewhere(change.threadId);
+      if (other !== null)
+        return yield* invalid(`That thread already belongs to the Quest “${other}”.`);
+    }
     if (change.type === "workspace-register") {
       const root = yield* validateQuestWorkspace(fs, path, change.root);
       // Document ids and pending saves resolve against this root; moving it would silently retarget them.
@@ -1377,8 +1478,8 @@ const make = Effect.gen(function* () {
       projectId: input.projectId,
       title:
         input.role === "core"
-          ? `${QUEST_TITLE} · Core`
-          : `${QUEST_TITLE} · ${shape.purpose || about || "Discussion"}`.slice(0, 120),
+          ? `${identity.title} · Core`
+          : `${identity.title} · ${shape.purpose || about || "Discussion"}`.slice(0, 120),
       workId: input.workId,
       questionId: input.questionId,
       linkedAt: at,
@@ -1388,7 +1489,7 @@ const make = Effect.gen(function* () {
       sourceRevision: state.revision,
       sources,
       context: "packet",
-      prepared: questContextPacket(state, shape, sources, state.revision),
+      prepared: questContextPacket(state, shape, sources, state.revision, identity),
       origin: null,
       creation: {
         commandId: `quest:${input.operationId}`,
@@ -1872,8 +1973,8 @@ const make = Effect.gen(function* () {
   const membership = Effect.gen(function* () {
     const { state } = yield* load();
     return {
-      questId: QUEST_ID,
-      title: QUEST_TITLE,
+      questId: identity.id,
+      title: identity.title,
       revision: state.revision,
       members: state.conversations.map((item) => ({
         threadId: item.threadId,
@@ -1888,6 +1989,8 @@ const make = Effect.gen(function* () {
     const conversation = state.conversations.find((item) => item.threadId === threadId);
     if (!conversation) return null;
     return {
+      questId: identity.id,
+      questTitle: identity.title,
       threadId,
       workId: conversation.workId,
       questionId: conversation.questionId,
@@ -1925,7 +2028,8 @@ const make = Effect.gen(function* () {
     } satisfies QuestReconstruction;
   });
 
-  return QuestStore.of({
+  return {
+    identity,
     get: load().pipe(Effect.map((loaded) => loaded.state)),
     membership,
     threadLink,
@@ -1939,7 +2043,208 @@ const make = Effect.gen(function* () {
     workspaceFiles,
     writeDocument,
     recoverWrite,
+  } satisfies QuestRecord;
+}
+
+const QuestIdentityFile = Schema.Struct({
+  format: Schema.Literal("t3-quest-identity-1"),
+  id: Schema.String,
+  title: Schema.String,
+  createdAt: Schema.String,
+});
+const decodeIdentityFile = Schema.decodeEffect(Schema.fromJsonString(QuestIdentityFile));
+const encodeIdentityFile = Schema.encodeEffect(Schema.fromJsonString(QuestIdentityFile));
+const QUEST_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+function emptyQuest(title: string, at: string): QuestState {
+  return {
+    schemaVersion: 3,
+    revision: 0,
+    currentWorkId: null,
+    work: [],
+    relations: [],
+    documents: [],
+    questions: [],
+    conversations: [],
+    corePredecessors: [],
+    workspace: null,
+    files: [],
+    pendingWrites: [],
+    contributions: [],
+    proposals: [],
+    externalConversations: [],
+    history: [
+      {
+        id: "r0",
+        revision: 0,
+        at,
+        kind: "baseline",
+        targetId: null,
+        summary: `Started “${title}” in T3 Code`,
+        changes: [],
+      },
+    ],
+  };
+}
+
+/**
+ * The historical Quest keeps its original files directly in `quest-prototype`; every other Quest
+ * has its own folder below `quest-prototype/quests`, with its identity, state and retained blobs.
+ */
+const make = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const config = yield* ServerConfig.ServerConfig;
+  const mutex = yield* Semaphore.make(1);
+  const root = path.join(config.stateDir, "quest-prototype");
+  const questsDirectory = path.join(root, "quests");
+  const storageError = (cause: unknown) => new QuestError({ reason: "storage", cause });
+  const records = new Map<string, QuestRecord>();
+
+  const readIdentity = Effect.fn("QuestStore.readIdentity")(function* (questId: string) {
+    if (!QUEST_ID.test(questId)) return null;
+    const file = path.join(questsDirectory, questId, "quest.json");
+    if (!(yield* fs.exists(file).pipe(Effect.mapError(storageError)))) return null;
+    const encoded = yield* fs.readFileString(file).pipe(Effect.mapError(storageError));
+    const stored = yield* decodeIdentityFile(encoded).pipe(Effect.mapError(storageError));
+    if (stored.id !== questId) return yield* storageError(`${file} names another Quest.`);
+    return { id: stored.id, title: stored.title, historical: false } satisfies QuestIdentity;
   });
+
+  const identities: Effect.Effect<ReadonlyArray<QuestIdentity>, QuestError> = Effect.gen(
+    function* () {
+      const exists = yield* fs.exists(questsDirectory).pipe(Effect.mapError(storageError));
+      const names = exists
+        ? yield* fs.readDirectory(questsDirectory).pipe(Effect.mapError(storageError))
+        : [];
+      const created = yield* Effect.forEach(names.toSorted(), (name) =>
+        readIdentity(name).pipe(Effect.map((identity) => (identity ? [identity] : []))),
+      );
+      return [LEGACY_QUEST, ...created.flat()];
+    },
+  );
+
+  const recordFor = (identity: QuestIdentity): QuestRecord => {
+    const cached = records.get(identity.id);
+    if (cached) return cached;
+    const record = makeRecord(fs, path, {
+      identity,
+      directory: identity.historical ? root : path.join(questsDirectory, identity.id),
+      mutex,
+      memberElsewhere: Effect.fn("QuestStore.memberElsewhere")(function* (threadId: string) {
+        for (const other of yield* identities) {
+          if (other.id === identity.id) continue;
+          const state = yield* recordFor(other).get;
+          if (state.conversations.some((item) => item.threadId === threadId)) return other.title;
+        }
+        return null;
+      }),
+    });
+    records.set(identity.id, record);
+    return record;
+  };
+
+  const quest = Effect.fn("QuestStore.quest")(function* (questId: string) {
+    if (questId === LEGACY_QUEST.id) return recordFor(LEGACY_QUEST);
+    const identity = yield* readIdentity(questId);
+    if (identity === null)
+      return yield* new QuestError({
+        reason: "unavailable",
+        detail: `There is no Quest “${questId}” on this environment.`,
+      });
+    return recordFor(identity);
+  });
+
+  const all = Effect.map(identities, (list) => list.map(recordFor));
+
+  const create = Effect.fn("QuestStore.create")(function* (input: QuestCreateInput) {
+    const title = input.title.trim();
+    if (!QUEST_ID.test(input.questId) || input.questId === QUEST_DEFAULT_ID || !title)
+      return yield* new QuestError({
+        reason: "invalid",
+        detail:
+          "A new Quest needs a title and an unused id of lowercase letters, digits and dashes.",
+      });
+    const existing = yield* readIdentity(input.questId);
+    if (existing !== null) {
+      if (existing.title !== title)
+        return yield* new QuestError({
+          reason: "invalid",
+          detail: `The Quest “${input.questId}” already exists as “${existing.title}”.`,
+        });
+      return yield* recordFor(existing).get;
+    }
+    const directory = path.join(questsDirectory, input.questId);
+    const at = DateTime.formatIso(yield* DateTime.now);
+    const state = emptyQuest(title, at);
+    const encoded = yield* encodeStoreFile({
+      format: "t3-quest-store-3",
+      state,
+      archive: {
+        baseline: {
+          revision: 0,
+          at,
+          sourceSha256: null,
+          backupFile: null,
+          limit:
+            "Structured history starts when this Quest was created in T3 Code. Earlier work is recorded only in the Quest's own documents and conversations, not as T3 revisions.",
+          domain: questDomain(state),
+        },
+        records: [],
+      },
+    }).pipe(Effect.mapError(storageError));
+    const identity = yield* encodeIdentityFile({
+      format: "t3-quest-identity-1",
+      id: input.questId,
+      title,
+      createdAt: at,
+    }).pipe(Effect.mapError(storageError));
+    // The identity file is written last: a Quest without one is not listed, and creating it again
+    // replaces the unfinished state.
+    yield* Effect.gen(function* () {
+      yield* fs.makeDirectory(directory, { recursive: true });
+      yield* fs.writeFileString(path.join(directory, "state.pending.json"), encoded);
+      yield* fs.rename(
+        path.join(directory, "state.pending.json"),
+        path.join(directory, "state.json"),
+      );
+      yield* fs.writeFileString(path.join(directory, "quest.pending.json"), identity);
+      yield* fs.rename(
+        path.join(directory, "quest.pending.json"),
+        path.join(directory, "quest.json"),
+      );
+    }).pipe(Effect.mapError(storageError));
+    return state;
+  }, mutex.withPermits(1));
+
+  const catalog = Effect.gen(function* () {
+    const quests = yield* Effect.forEach(yield* all, (record) => record.membership);
+    return { quests } satisfies QuestCatalog;
+  }).pipe(Effect.withSpan("QuestStore.catalog"));
+
+  const threadLink = Effect.fn("QuestStore.threadLink")(function* (threadId: string) {
+    for (const record of yield* all) {
+      const link = yield* record.threadLink(threadId);
+      if (link) return link;
+    }
+    return null;
+  });
+
+  const memberQuest = Effect.fn("QuestStore.memberQuest")(function* (threadId: string) {
+    const matches: Array<QuestRecord> = [];
+    for (const record of yield* all) {
+      const state = yield* record.get;
+      if (state.conversations.some((item) => item.threadId === threadId)) matches.push(record);
+    }
+    if (matches.length > 1)
+      return yield* new QuestError({
+        reason: "invalid",
+        detail: `This thread is recorded in several Quests (${matches.map((item) => item.identity.title).join(", ")}). Remove it from all but one.`,
+      });
+    return matches[0] ?? null;
+  });
+
+  return QuestStore.of({ catalog, quest, create, threadLink, memberQuest });
 });
 
 export const layer = Layer.effect(QuestStore, make);

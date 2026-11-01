@@ -1,4 +1,5 @@
 import {
+  QUEST_DEFAULT_ID,
   questQuestionStatus,
   type QuestContribution,
   type QuestConversation,
@@ -7,8 +8,18 @@ import {
 } from "@t3tools/contracts";
 import { questPlanEditChecks, questPlanEditSummary } from "@t3tools/shared/questPlan";
 
-export const QUEST_ID = "market-tracking";
-export const QUEST_TITLE = "Market tracking";
+export interface QuestIdentity {
+  readonly id: string;
+  readonly title: string;
+  /** The captured historical example, which must not be resumed as real work. */
+  readonly historical: boolean;
+}
+
+export const LEGACY_QUEST: QuestIdentity = {
+  id: QUEST_DEFAULT_ID,
+  title: "Market tracking",
+  historical: true,
+};
 const FIELD_LIMIT = 1500;
 
 function bounded(text: string): string {
@@ -39,9 +50,12 @@ export function questContextPacket(
   conversation: Pick<QuestConversation, "role" | "purpose" | "workId" | "questionId" | "context">,
   sources: ReadonlyArray<QuestSourcePin>,
   revision: number,
+  identity: QuestIdentity,
 ): string {
   const lines = [
-    `Quest: ${QUEST_TITLE} (historical example; do not resume the original market-tracking work).`,
+    identity.historical
+      ? `Quest: ${identity.title} (historical example; do not resume the original market-tracking work).`
+      : `Quest: ${identity.title}.`,
     `Quest revision ${revision}. Role: ${conversation.role === "core" ? "core coordination conversation" : "focused discussion"}.`,
   ];
   if (conversation.context === "packet" && conversation.role === "focused")
@@ -224,7 +238,11 @@ function questCoordination(state: QuestState, threadId: string | null, workId: s
 }
 
 /** Current, bounded context for an agent in a Quest conversation. History is a separate read. */
-export function questAgentContext(state: QuestState, threadId: string | null) {
+export function questAgentContext(
+  state: QuestState,
+  threadId: string | null,
+  identity: QuestIdentity,
+) {
   const member = state.conversations.find((item) => item.threadId === threadId) ?? null;
   // The core coordinates whatever is current now; a focused discussion keeps its own subject.
   const workId =
@@ -234,8 +252,8 @@ export function questAgentContext(state: QuestState, threadId: string | null) {
   const work = state.work.find((item) => item.id === workId) ?? null;
   const core = state.conversations.find((item) => item.role === "core") ?? null;
   return {
-    questId: QUEST_ID,
-    title: QUEST_TITLE,
+    questId: identity.id,
+    title: identity.title,
     revision: state.revision,
     currentWorkId: state.currentWorkId,
     caller: member
@@ -298,6 +316,15 @@ export function questAgentContext(state: QuestState, threadId: string | null) {
       questionId: item.questionId,
       sourceRevision: item.sourceRevision,
       ready: item.creation?.status !== "reserved",
+    })),
+    // Provenance only: these threads live in another environment and are not members here.
+    externalConversations: state.externalConversations.map((item) => ({
+      environmentId: item.environmentId,
+      threadId: item.threadId,
+      title: item.title,
+      forkOf: item.forkOf,
+      workId: item.workId,
+      purpose: item.purpose,
     })),
     pendingWrites: state.pendingWrites.map((item) => ({
       documentId: item.documentId,

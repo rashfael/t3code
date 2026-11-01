@@ -39,8 +39,6 @@ export const questionStatusOrder: ReadonlyArray<QuestQuestionStatus> = [
   "applied",
 ];
 
-export const QUEST_TITLE = "Market tracking";
-
 export function childrenOf(state: QuestState, parentId: string | null): ReadonlyArray<QuestWork> {
   return state.work.filter((item) => item.parentId === parentId);
 }

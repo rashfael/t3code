@@ -2800,22 +2800,41 @@ export const layerWsRpc = (
               (cause) => new OrchestrationDispatchCommandError({ message: cause.message, cause }),
             ),
           ),
-        [WS_METHODS.questGet]: () => questStore.get,
-        [WS_METHODS.questUpdate]: (input) => questStore.update(input, QUEST_CLIENT_ACTOR),
+        [WS_METHODS.questGet]: (input) =>
+          questStore.quest(input.questId).pipe(Effect.flatMap((quest) => quest.get)),
+        [WS_METHODS.questUpdate]: ({ questId, ...input }) =>
+          questStore
+            .quest(questId)
+            .pipe(Effect.flatMap((quest) => quest.update(input, QUEST_CLIENT_ACTOR))),
         [WS_METHODS.questThreadLink]: (input) => questStore.threadLink(input.threadId),
-        [WS_METHODS.questMembership]: () => questStore.membership,
-        [WS_METHODS.questReconstruct]: (input) => questStore.reconstruct(input.revision),
-        [WS_METHODS.questOpenConversation]: (input) =>
-          questConversations.open(input, QUEST_CLIENT_ACTOR, {
+        [WS_METHODS.questMembership]: () => questStore.catalog,
+        [WS_METHODS.questReconstruct]: (input) =>
+          questStore
+            .quest(input.questId)
+            .pipe(Effect.flatMap((quest) => quest.reconstruct(input.revision))),
+        [WS_METHODS.questOpenConversation]: ({ questId, ...input }) =>
+          questConversations.open(questId, input, QUEST_CLIENT_ACTOR, {
             readFiles: currentSession.scopes.includes(AuthFilesystemReadScope),
           }),
-        [WS_METHODS.questReadDocument]: (input) => questStore.readDocument(input.documentId),
-        [WS_METHODS.questRetained]: (input) => questStore.retained(input.sha256),
-        [WS_METHODS.questWorkspaceFiles]: () => questStore.workspaceFiles,
-        [WS_METHODS.questWriteDocument]: (input) =>
-          questStore.writeDocument(input, QUEST_CLIENT_ACTOR),
-        [WS_METHODS.questRecoverWrite]: (input) =>
-          questStore.recoverWrite(input, QUEST_CLIENT_ACTOR),
+        [WS_METHODS.questReadDocument]: (input) =>
+          questStore
+            .quest(input.questId)
+            .pipe(Effect.flatMap((quest) => quest.readDocument(input.documentId))),
+        [WS_METHODS.questRetained]: (input) =>
+          questStore
+            .quest(input.questId)
+            .pipe(Effect.flatMap((quest) => quest.retained(input.sha256))),
+        [WS_METHODS.questWorkspaceFiles]: (input) =>
+          questStore.quest(input.questId).pipe(Effect.flatMap((quest) => quest.workspaceFiles)),
+        [WS_METHODS.questWriteDocument]: ({ questId, ...input }) =>
+          questStore
+            .quest(questId)
+            .pipe(Effect.flatMap((quest) => quest.writeDocument(input, QUEST_CLIENT_ACTOR))),
+        [WS_METHODS.questRecoverWrite]: ({ questId, ...input }) =>
+          questStore
+            .quest(questId)
+            .pipe(Effect.flatMap((quest) => quest.recoverWrite(input, QUEST_CLIENT_ACTOR))),
+        [WS_METHODS.questCreate]: (input) => questStore.create(input),
         [WS_METHODS.projectsCreateNew]: (input) =>
           managedFolders
             .createNamedProject(input)

@@ -1,12 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
-import type {
-  EnvironmentId,
-  QuestMember,
-  QuestMembership,
-  ScopedThreadRef,
-  ThreadId,
+import {
+  QUEST_DEFAULT_ID,
+  type EnvironmentId,
+  type QuestMember,
+  type QuestMembership,
+  type ScopedThreadRef,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
 
@@ -17,6 +18,7 @@ import { questEnvironment } from "./questEnvironment";
 
 export interface QuestHomeMember extends QuestMember {
   readonly environmentId: EnvironmentId;
+  readonly questId: string;
 }
 
 export interface QuestMembershipIndex {
@@ -42,11 +44,13 @@ export const questMembershipAtom = Atom.make((get): QuestMembershipIndex => {
   for (const environmentId of get(environmentSummaries.connectedEnvironmentIdsAtom)) {
     const result = get(questEnvironment.membership({ environmentId, input: {} }));
     if (!AsyncResult.isSuccess(result)) continue;
-    quests.push({ environmentId, quest: result.value });
-    for (const member of result.value.members) {
-      const ref = scopeThreadRef(environmentId, member.threadId as ThreadId);
-      members.set(scopedThreadKey(ref), { ...member, environmentId });
-      hiddenKeys.add(threadKey(ref));
+    for (const quest of result.value.quests) {
+      quests.push({ environmentId, quest });
+      for (const member of quest.members) {
+        const ref = scopeThreadRef(environmentId, member.threadId as ThreadId);
+        members.set(scopedThreadKey(ref), { ...member, environmentId, questId: quest.questId });
+        hiddenKeys.add(threadKey(ref));
+      }
     }
   }
   return { quests, members, hiddenKeys };
@@ -62,7 +66,12 @@ export function threadNavigationTarget(ref: ScopedThreadRef) {
   if (member)
     return {
       to: "/quests",
-      search: { env: ref.environmentId, view: "conversation", thread: ref.threadId },
+      search: {
+        env: ref.environmentId,
+        ...(member.questId === QUEST_DEFAULT_ID ? {} : { quest: member.questId }),
+        view: "conversation",
+        thread: ref.threadId,
+      },
     } as const;
   return {
     to: "/$environmentId/$threadId",
@@ -84,6 +93,7 @@ export function isAtThreadNavigationTarget(
     location.pathname.replace(/\/$/, "") === "/quests" &&
     search.view === target.search.view &&
     search.env === target.search.env &&
+    search.quest === ("quest" in target.search ? target.search.quest : undefined) &&
     search.thread === target.search.thread
   );
 }

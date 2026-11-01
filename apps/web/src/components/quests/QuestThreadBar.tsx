@@ -1,10 +1,9 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import { QUEST_DEFAULT_ID, type EnvironmentId } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { CompassIcon } from "lucide-react";
 
 import { useEnvironmentQuery } from "~/state/query";
 import { questEnvironment } from "./questEnvironment";
-import { QUEST_TITLE } from "./questModel";
 
 /** Shown above a normal thread that is linked to the Quest, so the Quest stays one step away. */
 export function QuestThreadBar({
@@ -20,6 +19,10 @@ export function QuestThreadBar({
       : null,
   );
   if (!environmentId || !link) return null;
+  const at = {
+    env: environmentId,
+    ...(link.questId === QUEST_DEFAULT_ID ? {} : { quest: link.questId }),
+  };
   const tab = "rounded px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground";
   return (
     <nav
@@ -28,7 +31,7 @@ export function QuestThreadBar({
     >
       <span className="flex min-w-0 items-center gap-1.5 font-medium">
         <CompassIcon aria-hidden className="size-3.5 shrink-0" />
-        Quest · {QUEST_TITLE}
+        Quest · {link.questTitle}
       </span>
       {link.role === "core" ? (
         <span className="min-w-0 truncate text-muted-foreground">Core conversation</span>
@@ -38,12 +41,12 @@ export function QuestThreadBar({
         </span>
       ) : null}
       <span className="ms-auto flex items-center gap-1">
-        <Link to="/quests" search={{ env: environmentId, view: "overview" }} className={tab}>
+        <Link to="/quests" search={{ ...at, view: "overview" }} className={tab}>
           Overview
         </Link>
         <Link
           to="/quests"
-          search={{ env: environmentId, view: "conversation", thread: link.threadId }}
+          search={{ ...at, view: "conversation", thread: link.threadId }}
           className={tab}
         >
           Open in Quest
@@ -51,7 +54,7 @@ export function QuestThreadBar({
         <Link
           to="/quests"
           search={{
-            env: environmentId,
+            ...at,
             view: "map",
             ...(link.workId ? { work: link.workId } : {}),
           }}
