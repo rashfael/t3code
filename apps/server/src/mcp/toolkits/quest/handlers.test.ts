@@ -1,0 +1,97 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { expect, it } from "@effect/vitest";
+import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
+
+import * as ServerConfig from "../../../config.ts";
+import * as Environment from "../../../environment/ServerEnvironment.ts";
+import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as QuestStore from "../../../quest/QuestStore.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as McpToolAccess from "../../McpToolAccess.ts";
+import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
+import * as QuestHandlers from "./handlers.ts";
+import { QuestToolkit } from "./tools.ts";
+
+const environmentId = EnvironmentId.make("environment:quest");
+const threadId = ThreadId.make("thread:quest-discussion");
+
+it.effect(
+  "records a result as the calling discussion's own run and replays an identical call",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-quest-mcp-test-" });
+      const store = QuestStore.layer.pipe(
+        Layer.provide(ServerConfig.layerTest(directory, directory)),
+      );
+      const dependencies = Layer.mergeAll(
+        store,
+        Layer.succeed(McpInvocationContext.McpInvocationContext, {
+          environmentId,
+          requestNamespace: "provider:quest",
+          thread: {
+            threadId,
+            providerSessionId: "provider:quest",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          },
+          client: undefined,
+          capabilities: new Set(["orchestration" as const]),
+          issuedAt: 0,
+        }),
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
+        }),
+        Layer.mock(Environment.ServerEnvironment)({}),
+      );
+      yield* Effect.gen(function* () {
+        const toolkit = yield* QuestToolkit;
+        const quest = yield* QuestStore.QuestStore;
+        const publish = toolkit
+          .handle("t3_quest_publish_result", {
+            title: "Documents delivered",
+            summary: "Documents read as one pane.",
+            affectedWorkIds: ["a4-demonstration"],
+          })
+          .pipe(Stream.unwrap, Stream.runCollect);
+        const outsider = (yield* publish).at(-1)?.result;
+        expect(outsider).toMatchObject({ code: "invalid_request" });
+
+        const initial = yield* quest.get;
+        yield* quest.update(
+          {
+            expectedRevision: initial.revision,
+            change: {
+              type: "link",
+              threadId,
+              projectId: null,
+              title: "Documents",
+              workId: "n1a-navigation",
+              questionId: null,
+            },
+          },
+          { kind: "client", id: null },
+        );
+        const first = (yield* publish).at(-1)?.result;
+        const again = (yield* publish).at(-1)?.result;
+        expect(first).toMatchObject({ id: "result-1" });
+        expect(again).toEqual(first);
+        const saved = yield* quest.get;
+        expect(saved.contributions).toHaveLength(1);
+        expect(saved.contributions[0]).toMatchObject({
+          provenance: "observed",
+          source: { threadId, runId: "run:mcp-test" },
+          workId: "n1a-navigation",
+        });
+      }).pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(QuestHandlers.layer).pipe(
+            Layer.provideMerge(dependencies),
+          ),
+        ),
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+);

@@ -377,7 +377,11 @@ function WorkInspector({ id, preview }: { id: string; preview: boolean }) {
                     {label}: {title(other)}
                   </button>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {relation.provenance === "capture" ? "Source" : "Example link"}
+                    {relation.provenance === "capture"
+                      ? "Source"
+                      : relation.provenance === "plan"
+                        ? "Applied plan change"
+                        : "Example link"}
                     {source ? (
                       <>
                         {": "}

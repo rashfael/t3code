@@ -1,9 +1,12 @@
 import {
   questAppliedUnderstanding,
   questQuestionStatus,
+  type QuestContribution,
   type QuestHistoryEntry,
+  type QuestPlanProposal,
   type QuestQuestion,
   type QuestQuestionStatus,
+  type QuestState,
 } from "@t3tools/contracts";
 import { ArrowLeftIcon, ChevronRightIcon, MessageSquareIcon, PlusIcon } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
@@ -22,6 +25,13 @@ import {
   useRememberedQuestDecision,
 } from "./questDraftStore";
 import { QuestionEditor } from "./QuestEditors";
+import {
+  planGroups,
+  planStatusLabels,
+  ProposalWorkspace,
+  resultDispositionLabels,
+  ResultWorkspace,
+} from "./QuestPlanChanges";
 import { questionsByStatus } from "./questModel";
 
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -56,9 +66,32 @@ export function QuestDecisions({ requested }: { requested: string | null }) {
   // Below lg the app sidebar leaves too little room for a list beside the question.
   const narrow = useMediaQuery("max-lg");
   const groups = questionsByStatus(state.questions);
-  const exists = (id: string | null) => state.questions.some((item) => item.id === id);
+  const plan = planGroups(state);
+  const exists = (id: string | null) =>
+    id !== null &&
+    (state.questions.some((item) => item.id === id) ||
+      state.proposals.some((item) => item.id === id) ||
+      state.contributions.some((item) => item.id === id));
   const chosen = exists(requested) ? requested : exists(remembered) ? remembered : null;
-  const fallback = narrow ? null : (groups.open[0] ?? groups.recorded[0] ?? state.questions[0])?.id;
+  const fallback = narrow
+    ? null
+    : (plan.proposals[0] ?? groups.open[0] ?? groups.recorded[0] ?? state.questions[0])?.id;
+  const proposalRow = (item: QuestPlanProposal): DecisionRow => ({
+    id: item.id,
+    title: item.title,
+    badge: item.status === "proposed" ? null : planStatusLabels[item.status].split(" ")[0]!,
+    preview: `${item.edits.length} ${item.edits.length === 1 ? "change" : "changes"}${item.source ? ` · ${conversationName(item.source.threadId)}` : ""}`,
+  });
+  const resultRow = (item: QuestContribution): DecisionRow => ({
+    id: item.id,
+    title: item.title,
+    badge: item.disposition === "open" ? null : resultDispositionLabels[item.disposition],
+    preview: item.source ? conversationName(item.source.threadId) : item.summary,
+  });
+  function conversationName(threadId: string) {
+    const conversation = state.conversations.find((item) => item.threadId === threadId);
+    return conversation?.purpose || conversation?.title || "Discussion no longer in the Quest";
+  }
   const selectedId = chosen ?? fallback ?? null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- records the shown decision in the Quest store so returning to Decisions reopens it
   useEffect(() => {
@@ -71,6 +104,8 @@ export function QuestDecisions({ requested }: { requested: string | null }) {
   }
 
   const showList = !narrow || selectedId === null;
+  const selectedProposal = state.proposals.find((item) => item.id === selectedId);
+  const selectedResult = state.contributions.find((item) => item.id === selectedId);
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
       {showList ? (
@@ -82,37 +117,77 @@ export function QuestDecisions({ requested }: { requested: string | null }) {
           )}
         >
           <DecisionGroup
+            title="Plan changes"
+            rows={plan.proposals.map(proposalRow)}
+            selectedId={selectedId}
+            onSelect={select}
+          />
+          <DecisionGroup
             title="To answer"
-            questions={groups.open}
+            rows={questionRows(state, groups.open)}
             selectedId={selectedId}
             onSelect={select}
           />
           <DecisionGroup
             title="To apply"
-            questions={groups.recorded}
+            rows={questionRows(state, groups.recorded)}
             selectedId={selectedId}
             onSelect={select}
           />
-          {groups.open.length + groups.recorded.length === 0 ? (
+          {groups.open.length + groups.recorded.length + plan.proposals.length === 0 ? (
             <p className="px-2 text-sm text-muted-foreground">Nothing waiting for you.</p>
           ) : null}
           <DecisionGroup
+            title="New results"
+            rows={plan.results.map(resultRow)}
+            selectedId={selectedId}
+            onSelect={select}
+          />
+          <DecisionGroup
             title="Deferred"
-            questions={groups.deferred}
+            rows={questionRows(state, groups.deferred)}
             selectedId={selectedId}
             onSelect={select}
             collapsible
           />
           <DecisionGroup
             title="Applied"
-            questions={groups.applied}
+            rows={questionRows(state, groups.applied)}
+            selectedId={selectedId}
+            onSelect={select}
+            collapsible
+          />
+          <DecisionGroup
+            title="Decided plan changes"
+            rows={plan.decided.map(proposalRow)}
+            selectedId={selectedId}
+            onSelect={select}
+            collapsible
+          />
+          <DecisionGroup
+            title="Earlier results"
+            rows={plan.earlierResults.map(resultRow)}
             selectedId={selectedId}
             onSelect={select}
             collapsible
           />
         </nav>
       ) : null}
-      {selectedId !== null ? (
+      {selectedProposal ? (
+        <ProposalWorkspace
+          key={selectedProposal.id}
+          proposal={selectedProposal}
+          onBack={narrow ? () => select(null) : null}
+          onSelect={select}
+        />
+      ) : selectedResult ? (
+        <ResultWorkspace
+          key={selectedResult.id}
+          result={selectedResult}
+          onBack={narrow ? () => select(null) : null}
+          onSelect={select}
+        />
+      ) : selectedId !== null ? (
         <QuestionWorkspace
           key={selectedId}
           id={selectedId}
@@ -125,23 +200,41 @@ export function QuestDecisions({ requested }: { requested: string | null }) {
   );
 }
 
+interface DecisionRow {
+  readonly id: string;
+  readonly title: string;
+  readonly badge: string | null;
+  readonly preview: string;
+}
+
+function questionRows(
+  state: QuestState,
+  questions: ReadonlyArray<QuestQuestion>,
+): ReadonlyArray<DecisionRow> {
+  return questions.map((question) => ({
+    id: question.id,
+    title: question.title,
+    badge: question.proposal ? "Proposed" : null,
+    preview: rowPreview(question, state.work.find((item) => item.id === question.workId)?.title),
+  }));
+}
+
 function DecisionGroup({
   title,
-  questions,
+  rows,
   selectedId,
   onSelect,
   collapsible = false,
 }: {
   title: string;
-  questions: ReadonlyArray<QuestQuestion>;
+  rows: ReadonlyArray<DecisionRow>;
   selectedId: string | null;
   onSelect: (id: string) => void;
   collapsible?: boolean;
 }) {
-  const { state } = useQuest();
-  const holdsSelection = questions.some((question) => question.id === selectedId);
+  const holdsSelection = rows.some((row) => row.id === selectedId);
   const [open, setOpen] = useState(!collapsible || holdsSelection);
-  if (questions.length === 0) return null;
+  if (rows.length === 0) return null;
   const expanded = open || holdsSelection;
   return (
     <section aria-label={title}>
@@ -156,40 +249,37 @@ function DecisionGroup({
             aria-hidden
             className={cn("size-3 transition-transform", expanded && "rotate-90")}
           />
-          {title} · {questions.length}
+          {title} · {rows.length}
         </button>
       ) : (
         <h3 className="mb-1 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {title} · {questions.length}
+          {title} · {rows.length}
         </h3>
       )}
       {expanded ? (
         <ul>
-          {questions.map((question) => {
-            const isSelected = question.id === selectedId;
-            const work = state.work.find((item) => item.id === question.workId);
+          {rows.map((row) => {
+            const isSelected = row.id === selectedId;
             return (
-              <li key={question.id}>
+              <li key={row.id}>
                 <button
                   type="button"
                   aria-current={isSelected ? "page" : undefined}
-                  onClick={() => onSelect(question.id)}
+                  onClick={() => onSelect(row.id)}
                   className={cn(
                     "w-full cursor-pointer rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
                     isSelected && "bg-accent",
                   )}
                 >
                   <span className="block">
-                    {question.title}
-                    {question.proposal ? (
+                    {row.title}
+                    {row.badge ? (
                       <Badge className="ms-1.5" variant="outline" size="sm">
-                        Proposed
+                        {row.badge}
                       </Badge>
                     ) : null}
                   </span>
-                  <span className="line-clamp-2 text-xs text-muted-foreground">
-                    {rowPreview(question, work?.title)}
-                  </span>
+                  <span className="line-clamp-2 text-xs text-muted-foreground">{row.preview}</span>
                 </button>
               </li>
             );

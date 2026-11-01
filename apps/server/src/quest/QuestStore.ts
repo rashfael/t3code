@@ -11,11 +11,15 @@ import {
   questAppliedUnderstanding,
   type ModelSelection,
   type QuestActor,
+  type QuestContribution,
   type QuestConversation,
   type QuestFileContent,
   type QuestHistoryEntry,
   type QuestMembership,
   type QuestOpenConversationInput,
+  type QuestPlanEdit,
+  type QuestPlanProposal,
+  type QuestProvenance,
   type QuestQuestion,
   type QuestReconstruction,
   type QuestRecoverWriteInput,
@@ -29,6 +33,12 @@ import {
   type QuestWriteDocumentInput,
   type QuestWriteResult,
 } from "@t3tools/contracts";
+import {
+  questFollowsId,
+  questPlanEditChecks,
+  questPlanEditSummary,
+  questPlanWorkBase,
+} from "@t3tools/shared/questPlan";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -50,6 +60,16 @@ import {
 } from "./questFiles.ts";
 import { migrateQuestV1, migrateQuestV2, QuestStateV1, QuestStateV2 } from "./questMigration.ts";
 import { questSeedV1 } from "./questSeed.ts";
+
+/** What an agent may add without the owner: a result or a plan proposal, never a decision. */
+export interface QuestContributeInput {
+  readonly operationId?: string;
+  readonly source: QuestResultSource;
+  readonly change: Extract<
+    QuestUpdateInput["change"],
+    { readonly type: "contribution-record" | "plan-propose" }
+  >;
+}
 
 export interface QuestReservation {
   readonly state: QuestState;
@@ -74,6 +94,11 @@ export class QuestStore extends Context.Service<
       input: QuestUpdateInput,
       actor: QuestActor,
     ) => Effect.Effect<QuestState, QuestError>;
+    /** Returns the new record's id, or the earlier one when the operation was already saved. */
+    readonly contribute: (
+      input: QuestContributeInput,
+      actor: QuestActor,
+    ) => Effect.Effect<{ readonly state: QuestState; readonly id: string | null }, QuestError>;
     /** Persists a conversation identity before any thread exists, or returns the one to resume. */
     readonly reserveConversation: (
       input: QuestOpenConversationInput,
@@ -191,12 +216,449 @@ function nextQuestionId(state: QuestState): string {
   return `question-${index}`;
 }
 
+const WORK_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/** Observed only when an agent's own thread is the source; anything a client supplies is reported. */
+function provenanceOf(actor: QuestActor, source: QuestResultSource | null): QuestProvenance {
+  return actor.kind === "agent" && source !== null && actor.id === source.threadId
+    ? "observed"
+    : "reported";
+}
+
+function nextRecordId(prefix: string, existing: ReadonlyArray<{ readonly id: string }>): string {
+  let index = existing.length + 1;
+  while (existing.some((item) => item.id === `${prefix}-${index}`)) index += 1;
+  return `${prefix}-${index}`;
+}
+
+type Changed = { readonly state: QuestState; readonly entry: Entry | null };
+type Refused = { readonly refused: string };
+
+/** Fills each proposed edit with the exact values it replaces, or says why it cannot be proposed. */
+function proposeEdits(
+  current: QuestState,
+  drafts: Extract<Change, { type: "plan-propose" }>["proposal"]["edits"],
+): ReadonlyArray<QuestPlanEdit> | Refused {
+  const added = new Set<string>();
+  const exists = (id: string) => added.has(id) || current.work.some((item) => item.id === id);
+  const edits: Array<QuestPlanEdit> = [];
+  for (const [index, draft] of drafts.entries()) {
+    const id = `edit-${index + 1}`;
+    const refuse = (detail: string) => ({ refused: `Change ${index + 1}: ${detail}` });
+    switch (draft.type) {
+      case "add-work": {
+        const work = draft.work;
+        if (!WORK_ID.test(work.id))
+          return refuse("new work ids use lowercase letters, digits and dashes.");
+        if (exists(work.id)) return refuse(`work “${work.id}” already exists.`);
+        if (!work.title.trim()) return refuse("new work needs a title.");
+        if (work.focus !== null && !isQuestFocus(work.focus))
+          return refuse("planned focus is 1 to 5.");
+        if (work.parentId !== null && !exists(work.parentId))
+          return refuse(`parent “${work.parentId}” is not in the plan.`);
+        added.add(work.id);
+        edits.push({ id, type: "add-work", work: { ...work, title: work.title.trim() } });
+        break;
+      }
+      case "change-work": {
+        const work = current.work.find((item) => item.id === draft.workId);
+        if (!work) return refuse(`work “${draft.workId}” is not in the Quest.`);
+        const after = draft.after;
+        if (after.title !== undefined && !after.title.trim()) return refuse("titles are required.");
+        if (after.focus !== undefined && after.focus !== null && !isQuestFocus(after.focus))
+          return refuse("planned focus is 1 to 5.");
+        if (after.parentId !== undefined && after.parentId !== null) {
+          if (after.parentId === work.id || !exists(after.parentId))
+            return refuse(`parent “${after.parentId}” is not valid here.`);
+        }
+        const before = questPlanWorkBase(work, after);
+        if (Object.keys(before).length === 0 || JSON.stringify(before) === JSON.stringify(after))
+          return refuse(`nothing would change on “${work.title}”.`);
+        edits.push({ id, type: "change-work", workId: work.id, before, after });
+        break;
+      }
+      case "add-follows": {
+        if (draft.from === draft.to || !exists(draft.from) || !exists(draft.to))
+          return refuse("both ends of a dependency must be different work in the plan.");
+        if (current.relations.some((item) => item.id === questFollowsId(draft.from, draft.to)))
+          return refuse("that dependency already exists.");
+        edits.push({ id, type: "add-follows", from: draft.from, to: draft.to });
+        break;
+      }
+      case "remove-relation": {
+        const relation = current.relations.find((item) => item.id === draft.relationId);
+        if (!relation) return refuse(`relation “${draft.relationId}” is not in the Quest.`);
+        edits.push({ id, type: "remove-relation", relationId: relation.id, before: relation });
+        break;
+      }
+      case "set-current": {
+        if (!exists(draft.workId)) return refuse(`work “${draft.workId}” is not in the plan.`);
+        edits.push({
+          id,
+          type: "set-current",
+          workId: draft.workId,
+          before: current.currentWorkId,
+        });
+        break;
+      }
+      case "associate-conversation": {
+        const conversation = current.conversations.find((item) => item.threadId === draft.threadId);
+        if (!conversation) return refuse("that discussion is not in the Quest.");
+        if (draft.workId !== null && !exists(draft.workId))
+          return refuse(`work “${draft.workId}” is not in the plan.`);
+        edits.push({
+          id,
+          type: "associate-conversation",
+          threadId: draft.threadId,
+          workId: draft.workId,
+          before: conversation.workId,
+        });
+        break;
+      }
+    }
+  }
+  return edits;
+}
+
+/** Applies checked edits in proposal order. Business validation already ran. */
+function applyEdits(
+  state: QuestState,
+  proposal: QuestPlanProposal,
+  edits: ReadonlyArray<QuestPlanEdit>,
+): QuestState {
+  const work = [...state.work];
+  const relations = [...state.relations];
+  const conversations = [...state.conversations];
+  let currentWorkId = state.currentWorkId;
+  for (const edit of edits) {
+    switch (edit.type) {
+      case "add-work": {
+        const { focus, ...added } = edit.work;
+        work.push({
+          ...added,
+          kind: "work",
+          owner: "",
+          agent: "",
+          documentIds: [],
+          priorAttempts: "",
+          findings: "",
+          handoff: "",
+          ...(focus === null ? {} : { focus }),
+        });
+        break;
+      }
+      case "change-work": {
+        const index = work.findIndex((item) => item.id === edit.workId);
+        const { focus, ...patch } = edit.after;
+        const { focus: previous, ...rest } = { ...work[index]!, ...patch };
+        const next = focus === undefined ? previous : focus;
+        work[index] = next === null || next === undefined ? rest : { ...rest, focus: next };
+        break;
+      }
+      case "add-follows": {
+        const id = questFollowsId(edit.from, edit.to);
+        if (relations.some((item) => item.id === id)) break;
+        relations.push({
+          id,
+          type: "follows",
+          from: edit.from,
+          to: edit.to,
+          provenance: "plan",
+          documentId: null,
+          excerpt: `${proposal.id} · ${proposal.title}`,
+        });
+        break;
+      }
+      case "remove-relation": {
+        const index = relations.findIndex((item) => item.id === edit.relationId);
+        if (index >= 0) relations.splice(index, 1);
+        break;
+      }
+      case "set-current":
+        currentWorkId = edit.workId;
+        break;
+      case "associate-conversation": {
+        const index = conversations.findIndex((item) => item.threadId === edit.threadId);
+        conversations[index] = { ...conversations[index]!, workId: edit.workId };
+        break;
+      }
+    }
+  }
+  return { ...state, work, relations, conversations, currentWorkId };
+}
+
+function contributionChange(
+  current: QuestState,
+  change: Extract<Change, { type: "contribution-record" }>,
+  at: string,
+  source: QuestResultSource | null,
+  actor: QuestActor,
+): Changed | Refused | null {
+  const draft = change.contribution;
+  if (!draft.title.trim() || !draft.summary.trim()) return null;
+  const missing = draft.affectedWorkIds.filter(
+    (id) => !current.work.some((item) => item.id === id),
+  );
+  if (missing.length > 0) return { refused: `Unknown affected work: ${missing.join(", ")}.` };
+  const replaced = draft.supersedes
+    ? current.contributions.find((item) => item.id === draft.supersedes)
+    : undefined;
+  if (draft.supersedes !== null) {
+    if (!replaced || replaced.disposition === "superseded")
+      return { refused: `Result “${draft.supersedes}” cannot be superseded.` };
+    if (replaced.source?.threadId !== source?.threadId)
+      return { refused: "Only the discussion that recorded a result can supersede it." };
+  }
+  const conversation = current.conversations.find((item) => item.threadId === source?.threadId);
+  const revision = current.revision + 1;
+  const created: QuestContribution = {
+    title: draft.title.trim(),
+    summary: draft.summary,
+    candidate: draft.candidate,
+    evidence: draft.evidence,
+    limitations: draft.limitations,
+    openQuestions: draft.openQuestions,
+    affectedWorkIds: draft.affectedWorkIds,
+    supersedes: draft.supersedes,
+    contextRevision: draft.contextRevision,
+    id: nextRecordId("result", current.contributions),
+    workId: conversation?.workId ?? null,
+    source,
+    provenance: provenanceOf(actor, source),
+    sources: conversation?.sources ?? [],
+    recordedAt: at,
+    recordedRevision: revision,
+    disposition: "open",
+    dispositionBy: null,
+  };
+  const title = (id: string) => current.work.find((item) => item.id === id)?.title ?? id;
+  return {
+    state: {
+      ...current,
+      contributions: [
+        ...current.contributions.map((item) =>
+          item === replaced
+            ? {
+                ...item,
+                disposition: "superseded" as const,
+                dispositionBy: { proposalId: null, contributionId: created.id, revision, note: "" },
+              }
+            : item,
+        ),
+        created,
+      ],
+    },
+    entry: {
+      kind: "contribution",
+      targetId: created.id,
+      summary: `Recorded the result “${created.title}”${conversation ? ` from “${conversation.purpose || conversation.title}”` : ""}`,
+      changes: [
+        { label: "Result", before: replaced?.summary ?? null, after: created.summary },
+        {
+          label: "Affects",
+          before: null,
+          after: created.affectedWorkIds.map(title).join(", ") || null,
+        },
+        { label: "Limitations", before: null, after: created.limitations || null },
+      ].filter((item) => item.after !== null),
+    },
+  };
+}
+
+function proposalChange(
+  current: QuestState,
+  change: Extract<Change, { type: "plan-propose" }>,
+  at: string,
+  source: QuestResultSource | null,
+  actor: QuestActor,
+): Changed | Refused | null {
+  const draft = change.proposal;
+  if (!draft.title.trim() || draft.edits.length === 0) return null;
+  const unknown = draft.contributionIds.filter(
+    (id) => !current.contributions.some((item) => item.id === id),
+  );
+  if (unknown.length > 0) return { refused: `Unknown results: ${unknown.join(", ")}.` };
+  const replaced = draft.supersedes
+    ? current.proposals.find((item) => item.id === draft.supersedes)
+    : undefined;
+  if (
+    draft.supersedes !== null &&
+    (!replaced || !["proposed", "deferred"].includes(replaced.status))
+  )
+    return { refused: `Proposal “${draft.supersedes}” is not open, so it cannot be superseded.` };
+  const edits = proposeEdits(current, draft.edits);
+  if ("refused" in edits) return edits;
+  const revision = current.revision + 1;
+  const proposal: QuestPlanProposal = {
+    id: nextRecordId("proposal", current.proposals),
+    title: draft.title.trim(),
+    rationale: draft.rationale,
+    contributionIds: draft.contributionIds,
+    supersedes: draft.supersedes,
+    edits,
+    baseRevision: current.revision,
+    source,
+    provenance: provenanceOf(actor, source),
+    proposedAt: at,
+    status: "proposed",
+    decisions: [],
+  };
+  return {
+    state: {
+      ...current,
+      proposals: [
+        ...current.proposals.map((item) =>
+          item === replaced
+            ? {
+                ...item,
+                status: "superseded" as const,
+                decisions: [
+                  ...item.decisions,
+                  {
+                    status: "superseded" as const,
+                    at,
+                    revision,
+                    note: "",
+                    selectedEditIds: [],
+                    byProposalId: proposal.id,
+                  },
+                ],
+              }
+            : item,
+        ),
+        proposal,
+      ],
+    },
+    entry: {
+      kind: "proposal",
+      targetId: proposal.id,
+      summary: `Proposed the plan change “${proposal.title}” (not applied)`,
+      changes: edits.map((edit) => questPlanEditSummary(current, edit)),
+    },
+  };
+}
+
+const DECIDABLE: Record<"apply" | "defer" | "decline" | "reopen", ReadonlyArray<string>> = {
+  apply: ["proposed", "deferred"],
+  defer: ["proposed"],
+  decline: ["proposed", "deferred"],
+  reopen: ["deferred", "declined"],
+};
+
+function planDecision(
+  current: QuestState,
+  change: Extract<Change, { type: "plan-decide" }>,
+  at: string,
+  actor: QuestActor,
+): Changed | Refused | null {
+  if (actor.kind === "agent")
+    return { refused: "Only the Quest owner decides plan proposals. Agents may only propose." };
+  const proposal = current.proposals.find((item) => item.id === change.proposalId);
+  if (!proposal) return null;
+  if (!DECIDABLE[change.decision].includes(proposal.status))
+    return { refused: `This proposal is ${proposal.status}.` };
+  const revision = current.revision + 1;
+  const status = (
+    { apply: "applied", defer: "deferred", decline: "declined", reopen: "proposed" } as const
+  )[change.decision];
+  const note = change.note.trim();
+  const selected = change.decision === "apply" ? change.selectedEditIds : [];
+  const decided: QuestPlanProposal = {
+    ...proposal,
+    status,
+    decisions: [
+      ...proposal.decisions,
+      { status, at, revision, note, selectedEditIds: selected, byProposalId: null },
+    ],
+  };
+  const withProposal = (state: QuestState) => ({
+    ...state,
+    proposals: state.proposals.map((item) => (item.id === proposal.id ? decided : item)),
+  });
+  if (change.decision !== "apply") {
+    const lead = { defer: "Deferred", decline: "Declined", reopen: "Reopened" }[change.decision];
+    return {
+      state: withProposal(current),
+      entry: {
+        kind: "proposal",
+        targetId: proposal.id,
+        summary: `${lead} the plan change “${proposal.title}”`,
+        changes: note ? [{ label: "Note", before: null, after: note }] : [],
+      },
+    };
+  }
+  const chosen = new Set(selected);
+  if (chosen.size === 0 || chosen.size !== selected.length)
+    return { refused: "Select the changes to apply." };
+  if ([...chosen].some((id) => !proposal.edits.some((edit) => edit.id === id))) return null;
+  const checks = questPlanEditChecks(current, proposal.edits, chosen);
+  const blocked = proposal.edits.filter((edit) => {
+    const check = checks.get(edit.id);
+    return (
+      chosen.has(edit.id) &&
+      check !== undefined &&
+      (check.status === "stale" || check.status === "invalid")
+    );
+  });
+  if (blocked.length > 0)
+    return {
+      refused: `Nothing was applied. ${blocked
+        .map(
+          (edit) => `${questPlanEditSummary(current, edit).label}: ${checks.get(edit.id)?.detail}`,
+        )
+        .join(" ")}`,
+    };
+  const applied = proposal.edits.filter((edit) => chosen.has(edit.id));
+  const planned = applyEdits(current, proposal, applied);
+  for (const edit of applied) {
+    if (edit.type !== "change-work" || edit.after.parentId === undefined) continue;
+    const work = planned.work.find((item) => item.id === edit.workId);
+    if (!work || !validParent(planned, work))
+      return { refused: "Nothing was applied. A new parent would make the plan circular." };
+  }
+  const skipped = proposal.edits.filter((edit) => !chosen.has(edit.id));
+  return {
+    state: withProposal({
+      ...planned,
+      contributions: planned.contributions.map((item) =>
+        proposal.contributionIds.includes(item.id) &&
+        (item.disposition === "open" || item.disposition === "set-aside")
+          ? {
+              ...item,
+              disposition: "incorporated" as const,
+              dispositionBy: { proposalId: proposal.id, contributionId: null, revision, note: "" },
+            }
+          : item,
+      ),
+    }),
+    entry: {
+      kind: "plan",
+      targetId: proposal.id,
+      summary: `Applied the plan change “${proposal.title}” (${applied.length} of ${proposal.edits.length} changes)`,
+      changes: [
+        ...applied.map((edit) => questPlanEditSummary(current, edit)),
+        ...(skipped.length > 0
+          ? [
+              {
+                label: "Not applied",
+                before: null,
+                after: skipped.map((edit) => questPlanEditSummary(current, edit).label).join("\n"),
+              },
+            ]
+          : []),
+        ...(note ? [{ label: "Note", before: null, after: note }] : []),
+      ],
+    },
+  };
+}
+
 function changeState(
   current: QuestState,
   change: Change,
   at: string,
   source: QuestResultSource | null,
-): { readonly state: QuestState; readonly entry: Entry | null } | null {
+  actor: QuestActor,
+): Changed | Refused | null {
   const question =
     "questionId" in change && change.questionId !== null
       ? current.questions.find((item) => item.id === change.questionId)
@@ -539,6 +1001,51 @@ function changeState(
         },
       };
     }
+    case "contribution-record":
+      return contributionChange(current, change, at, source, actor);
+    case "contribution-dispose": {
+      if (actor.kind === "agent") return { refused: "Only the Quest owner sets results aside." };
+      const result = current.contributions.find((item) => item.id === change.contributionId);
+      if (
+        !result ||
+        result.disposition === change.disposition ||
+        (result.disposition !== "open" && result.disposition !== "set-aside")
+      )
+        return null;
+      const note = change.note.trim();
+      return {
+        state: {
+          ...current,
+          contributions: current.contributions.map((item) =>
+            item === result
+              ? {
+                  ...item,
+                  disposition: change.disposition,
+                  dispositionBy: {
+                    proposalId: null,
+                    contributionId: null,
+                    revision: nextRevision,
+                    note,
+                  },
+                }
+              : item,
+          ),
+        },
+        entry: {
+          kind: "contribution",
+          targetId: result.id,
+          summary:
+            change.disposition === "set-aside"
+              ? `Set aside the result “${result.title}”`
+              : `Reopened the result “${result.title}”`,
+          changes: note ? [{ label: "Note", before: null, after: note }] : [],
+        },
+      };
+    }
+    case "plan-propose":
+      return proposalChange(current, change, at, source, actor);
+    case "plan-decide":
+      return planDecision(current, change, at, actor);
   }
 }
 
@@ -694,6 +1201,25 @@ const make = Effect.gen(function* () {
     return change;
   });
 
+  const applyChange = Effect.fn("QuestStore.applyChange")(function* (
+    loaded: Loaded,
+    input: Omit<QuestUpdateInput, "expectedRevision">,
+    actor: QuestActor,
+  ) {
+    const change = yield* prepare(loaded.state, input.change);
+    const source = input.source ?? null;
+    const changed = changeState(loaded.state, change, yield* now, source, actor);
+    if (!changed) return yield* invalid();
+    if ("refused" in changed) return yield* invalid(changed.refused);
+    if (changed.entry === null) return loaded.state;
+    return yield* commit(loaded, changed.state, changed.entry, {
+      operationId: input.operationId ?? null,
+      operation: change.type,
+      actor,
+      source,
+    });
+  });
+
   const update = Effect.fn("QuestStore.update")(function* (
     input: QuestUpdateInput,
     actor: QuestActor,
@@ -702,16 +1228,31 @@ const make = Effect.gen(function* () {
     if (replayed(loaded, input.operationId)) return loaded.state;
     if (input.expectedRevision !== loaded.state.revision)
       return yield* new QuestError({ reason: "conflict" });
-    const change = yield* prepare(loaded.state, input.change);
-    const changed = changeState(loaded.state, change, yield* now, input.source ?? null);
-    if (!changed) return yield* invalid();
-    if (changed.entry === null) return loaded.state;
-    return yield* commit(loaded, changed.state, changed.entry, {
-      operationId: input.operationId ?? null,
-      operation: change.type,
-      actor,
-      source: input.source ?? null,
-    });
+    return yield* applyChange(loaded, input, actor);
+  }, mutex.withPermits(1));
+
+  /**
+   * Adds an agent's result or plan proposal to whatever the Quest holds now. Both only add
+   * records and capture their own base, so they need no expected revision; deciding stays with
+   * `update`, which the owner's client drives.
+   */
+  const contribute = Effect.fn("QuestStore.contribute")(function* (
+    input: QuestContributeInput,
+    actor: QuestActor,
+  ) {
+    const loaded = yield* load();
+    const collection = input.change.type === "plan-propose" ? "proposals" : "contributions";
+    const earlier = loaded.archive?.records.find(
+      (record) => input.operationId !== undefined && record.operationId === input.operationId,
+    );
+    if (earlier) {
+      const created = earlier.changes.find(
+        (item) => item.collection === collection && item.before === null,
+      );
+      return { state: loaded.state, id: created?.id ?? null };
+    }
+    const state = yield* applyChange(loaded, input, actor);
+    return { state, id: state === loaded.state ? null : (state[collection].at(-1)?.id ?? null) };
   }, mutex.withPermits(1));
 
   /** Pins exact current bytes of a subject's documents; unreadable sources are named, not skipped. */
@@ -1390,6 +1931,7 @@ const make = Effect.gen(function* () {
     threadLink,
     reconstruct,
     update,
+    contribute,
     reserveConversation,
     finalizeConversation,
     readDocument,

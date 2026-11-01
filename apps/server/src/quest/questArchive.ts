@@ -15,6 +15,8 @@ const COLLECTIONS = {
   corePredecessors: (item: QuestDomain["corePredecessors"][number]) => item.conversation.threadId,
   files: (item: QuestDomain["files"][number]) => item.id,
   pendingWrites: (item: QuestDomain["pendingWrites"][number]) => item.id,
+  contributions: (item: QuestDomain["contributions"][number]) => item.id,
+  proposals: (item: QuestDomain["proposals"][number]) => item.id,
 } as const;
 type Collection = keyof typeof COLLECTIONS;
 const COLLECTION_NAMES = Object.keys(COLLECTIONS) as ReadonlyArray<Collection>;

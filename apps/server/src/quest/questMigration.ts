@@ -122,6 +122,8 @@ export function migrateQuestV2(saved: QuestStateV2): QuestState {
     workspace: null,
     files: [],
     pendingWrites: [],
+    contributions: [],
+    proposals: [],
   };
 }
 

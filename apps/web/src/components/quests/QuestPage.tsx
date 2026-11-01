@@ -253,7 +253,10 @@ function QuestWorkspaceView({
   }
 
   const decisions = questionsByStatus(state.questions);
-  const waitingDecisions = decisions.open.length + decisions.recorded.length;
+  const waitingDecisions =
+    decisions.open.length +
+    decisions.recorded.length +
+    state.proposals.filter((item) => item.status === "proposed").length;
   const current = panel.at(-1) ?? null;
   // A preview belongs to the view it was started in; switching views drops it.
   const previewWorkId = preview?.view === view ? preview.id : null;

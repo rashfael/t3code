@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./questPlan": {
+      "types": "./src/questPlan.ts",
+      "import": "./src/questPlan.ts"
+    },
     "./changedFileKind": {
       "types": "./src/changedFileKind.ts",
       "import": "./src/changedFileKind.ts"

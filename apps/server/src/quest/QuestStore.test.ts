@@ -1532,3 +1532,360 @@ describe("QuestStore documents", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
+
+describe("QuestStore plan coordination", () => {
+  const mapThread = "thread-map-semantics";
+  const docsThread = "thread-decisions-documents";
+  const agentOf = (threadId: string) => ({ kind: "agent", id: threadId }) as const;
+
+  it.effect(
+    "carries one discussion's result into another's plan proposal and applies only what the owner selects on an unchanged base",
+    () =>
+      Effect.gen(function* () {
+        const { layer } = yield* harness;
+        yield* Effect.gen(function* () {
+          const store = yield* QuestStore.QuestStore;
+          let state = yield* store.get;
+          const save = (change: QuestUpdateInput["change"], operationId?: string) =>
+            store.update(
+              {
+                expectedRevision: state.revision,
+                change,
+                ...(operationId === undefined ? {} : { operationId }),
+              },
+              actor,
+            );
+          for (const [threadId, workId] of [
+            [mapThread, "a4-demonstration"],
+            [docsThread, "n1a-navigation"],
+          ] as const)
+            state = yield* save({
+              type: "link",
+              threadId,
+              projectId: null,
+              title: threadId,
+              workId,
+              questionId: null,
+              purposeKind: "discuss-work",
+              purpose: threadId,
+              context: "fork",
+            });
+          const mapContextRevision = state.conversations.find(
+            (item) => item.threadId === mapThread,
+          )!.sourceRevision!;
+
+          const recorded = yield* store.contribute(
+            {
+              source: { threadId: docsThread, runId: "run-docs-1" },
+              change: {
+                type: "contribution-record",
+                contribution: {
+                  title: "Decisions and documents delivered",
+                  summary: "Decisions answer in the main area; documents read as one pane.",
+                  candidate: "cebec1c641..2de8dfe196",
+                  evidence: [{ kind: "commit", ref: "2de8dfe196", note: "real diff refresh" }],
+                  limitations: "Drafts are session-only.",
+                  openQuestions: "",
+                  affectedWorkIds: ["a4-demonstration"],
+                  supersedes: null,
+                  contextRevision: mapContextRevision,
+                },
+              },
+            },
+            agentOf(docsThread),
+          );
+          state = recorded.state;
+          const result = state.contributions.find((item) => item.id === recorded.id)!;
+          expect(result).toMatchObject({
+            provenance: "observed",
+            source: { threadId: docsThread, runId: "run-docs-1" },
+            workId: "n1a-navigation",
+            disposition: "open",
+          });
+          // A client cannot claim an agent's identity: the same record from it is only reported.
+          const reported = yield* store.contribute(
+            {
+              source: { threadId: docsThread, runId: null },
+              change: {
+                type: "contribution-record",
+                contribution: {
+                  title: "Reported copy",
+                  summary: result.summary,
+                  candidate: "",
+                  evidence: [],
+                  limitations: "",
+                  openQuestions: "",
+                  affectedWorkIds: [],
+                  supersedes: null,
+                  contextRevision: null,
+                },
+              },
+            },
+            actor,
+          );
+          expect(reported.state.contributions.at(-1)).toMatchObject({
+            id: "result-2",
+            provenance: "reported",
+          });
+          state = reported.state;
+
+          const mapView = questAgentContext(state, mapThread);
+          expect(mapView.results.find((item) => item.id === result.id)).toMatchObject({
+            affectsYourWork: true,
+            newSinceYourContext: true,
+            fromYou: false,
+          });
+
+          const proposalInput = {
+            source: { threadId: mapThread, runId: "run-map-1" },
+            operationId: "propose-once",
+            change: {
+              type: "plan-propose",
+              proposal: {
+                title: "Two discussions, one plan",
+                rationale: "The delivered documents flow is the base for map semantics.",
+                contributionIds: [result.id],
+                supersedes: null,
+                edits: [
+                  {
+                    type: "add-work",
+                    work: {
+                      id: "two-discussions",
+                      parentId: "milestone-a",
+                      title: "Two discussions, one plan",
+                      state: "planned",
+                      understanding: "Reconcile parallel discussions into one plan.",
+                      focus: 4,
+                    },
+                  },
+                  { type: "add-follows", from: "two-discussions", to: "n1a-navigation" },
+                  { type: "set-current", workId: "two-discussions" },
+                  {
+                    type: "associate-conversation",
+                    threadId: mapThread,
+                    workId: "two-discussions",
+                  },
+                  { type: "change-work", workId: "a4-demonstration", after: { state: "deferred" } },
+                ],
+              },
+            },
+          } as const;
+          const proposed = yield* store.contribute(proposalInput, agentOf(mapThread));
+          const retried = yield* store.contribute(proposalInput, agentOf(mapThread));
+          expect(retried.id).toBe(proposed.id);
+          expect(retried.state.proposals).toHaveLength(1);
+          state = proposed.state;
+          const proposal = state.proposals[0]!;
+          expect(proposal).toMatchObject({ provenance: "observed", status: "proposed" });
+          expect(state.work.some((item) => item.id === "two-discussions")).toBe(false);
+
+          const agentApply = yield* store
+            .update(
+              {
+                expectedRevision: state.revision,
+                change: {
+                  type: "plan-decide",
+                  proposalId: proposal.id,
+                  decision: "apply",
+                  selectedEditIds: ["edit-1"],
+                  note: "",
+                },
+              },
+              agentOf(mapThread),
+            )
+            .pipe(Effect.flip);
+          expect(agentApply.message).toContain("Only the Quest owner");
+
+          // Unrelated to edit-5's field: does not block. Its own field: makes it stale.
+          const a4 = state.work.find((item) => item.id === "a4-demonstration")!;
+          state = yield* save({ type: "work", work: { ...a4, title: "A4 renamed by the owner" } });
+          state = yield* save({
+            type: "work",
+            work: { ...state.work.find((item) => item.id === a4.id)!, state: "review" },
+          });
+          const all = proposal.edits.map((edit) => edit.id);
+          const refused = yield* save({
+            type: "plan-decide",
+            proposalId: proposal.id,
+            decision: "apply",
+            selectedEditIds: all,
+            note: "",
+          }).pipe(Effect.flip);
+          expect(refused.message).toContain("Nothing was applied");
+          expect(refused.message).toContain("Changed since proposed: state");
+          expect((yield* store.get).revision).toBe(state.revision);
+
+          const before = state;
+          const selected = all.filter((id) => id !== "edit-5");
+          const decide = {
+            type: "plan-decide",
+            proposalId: proposal.id,
+            decision: "apply",
+            selectedEditIds: selected,
+            note: "A4 stays in review.",
+          } as const;
+          state = yield* save(decide, "apply-once");
+          const replay = yield* store.update(
+            { expectedRevision: before.revision, operationId: "apply-once", change: decide },
+            actor,
+          );
+          expect(replay.revision).toBe(state.revision);
+          const twice = yield* save(decide).pipe(Effect.flip);
+          expect(twice.message).toContain("applied");
+
+          expect(state.work.find((item) => item.id === "two-discussions")).toMatchObject({
+            parentId: "milestone-a",
+            focus: 4,
+          });
+          expect(state.work.find((item) => item.id === a4.id)?.state).toBe("review");
+          expect(state.currentWorkId).toBe("two-discussions");
+          expect(state.relations.at(-1)).toMatchObject({
+            id: "follows:two-discussions:n1a-navigation",
+            provenance: "plan",
+          });
+          const moved = state.conversations.find((item) => item.threadId === mapThread)!;
+          expect(moved).toMatchObject({ workId: "two-discussions", origin: null });
+          expect(state.proposals[0]).toMatchObject({ status: "applied" });
+          expect(state.proposals[0]!.decisions.at(-1)?.selectedEditIds).toEqual(selected);
+          expect(state.contributions.find((item) => item.id === result.id)).toMatchObject({
+            disposition: "incorporated",
+            dispositionBy: { proposalId: proposal.id, revision: state.revision },
+          });
+          expect(state.history.at(-1)?.changes.at(-2)).toMatchObject({ label: "Not applied" });
+
+          for (const threadId of [mapThread, docsThread]) {
+            const view = questAgentContext(state, threadId);
+            expect(view.plan.currentWorkId).toBe("two-discussions");
+            expect(view.proposals[0]).toMatchObject({ status: "applied" });
+            expect(view.sinceYourContext?.appliedPlanChanges).toEqual([proposal.id]);
+            expect(view.results.find((item) => item.id === result.id)?.disposition).toBe(
+              "incorporated",
+            );
+          }
+          const past = yield* store.reconstruct(proposal.baseRevision);
+          expect(past.domain.currentWorkId).toBe("milestone-a");
+          expect(past.domain.contributions.find((item) => item.id === result.id)).toMatchObject({
+            disposition: "open",
+            contextRevision: mapContextRevision,
+          });
+        }).pipe(Effect.provide(layer));
+
+        yield* Effect.gen(function* () {
+          const reopened = yield* (yield* QuestStore.QuestStore).get;
+          expect(reopened.proposals[0]?.status).toBe("applied");
+          expect(reopened.contributions[0]?.provenance).toBe("observed");
+        }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("supersedes only open records and only from the discussion that recorded them", () =>
+    Effect.gen(function* () {
+      const { layer } = yield* harness;
+      yield* Effect.gen(function* () {
+        const store = yield* QuestStore.QuestStore;
+        const draft = {
+          title: "First result",
+          summary: "First",
+          candidate: "",
+          evidence: [],
+          limitations: "",
+          openQuestions: "",
+          affectedWorkIds: [],
+          supersedes: null,
+          contextRevision: null,
+        };
+        const source = { threadId: docsThread, runId: null };
+        const first = yield* store.contribute(
+          { source, change: { type: "contribution-record", contribution: draft } },
+          agentOf(docsThread),
+        );
+        const foreign = yield* store
+          .contribute(
+            {
+              source: { threadId: mapThread, runId: null },
+              change: {
+                type: "contribution-record",
+                contribution: { ...draft, supersedes: first.id },
+              },
+            },
+            agentOf(mapThread),
+          )
+          .pipe(Effect.flip);
+        expect(foreign.message).toContain("Only the discussion that recorded");
+        const second = yield* store.contribute(
+          {
+            source,
+            change: {
+              type: "contribution-record",
+              contribution: { ...draft, title: "Second", supersedes: first.id },
+            },
+          },
+          agentOf(docsThread),
+        );
+        expect(second.state.contributions.map((item) => item.disposition)).toEqual([
+          "superseded",
+          "open",
+        ]);
+        expect(second.state.contributions[0]?.summary).toBe("First");
+
+        const propose = (supersedes: string | null) =>
+          store.contribute(
+            {
+              source,
+              change: {
+                type: "plan-propose",
+                proposal: {
+                  title: supersedes ? "Revised" : "Original",
+                  rationale: "",
+                  contributionIds: [],
+                  supersedes,
+                  edits: [{ type: "set-current", workId: "a4-demonstration" }],
+                },
+              },
+            },
+            agentOf(docsThread),
+          );
+        const original = yield* propose(null);
+        const revised = yield* propose(original.id);
+        expect(revised.state.proposals.map((item) => item.status)).toEqual([
+          "superseded",
+          "proposed",
+        ]);
+        expect(revised.state.proposals[0]?.decisions[0]).toMatchObject({
+          byProposalId: revised.id,
+        });
+        const declined = yield* store.update(
+          {
+            expectedRevision: revised.state.revision,
+            change: {
+              type: "plan-decide",
+              proposalId: revised.id!,
+              decision: "decline",
+              selectedEditIds: [],
+              note: "Not now",
+            },
+          },
+          actor,
+        );
+        const reopened = yield* store.update(
+          {
+            expectedRevision: declined.revision,
+            change: {
+              type: "plan-decide",
+              proposalId: revised.id!,
+              decision: "reopen",
+              selectedEditIds: [],
+              note: "",
+            },
+          },
+          actor,
+        );
+        expect(reopened.proposals[1]?.decisions.map((item) => item.status)).toEqual([
+          "declined",
+          "proposed",
+        ]);
+        expect((yield* propose(original.id).pipe(Effect.flip)).message).toContain("not open");
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});

@@ -3,6 +3,9 @@ import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
 import {
   questAppliedUnderstanding,
+  type QuestContribution,
+  type QuestConversation,
+  type QuestPlanProposal,
   type QuestState,
   type EnvironmentId,
   type QuestThreadLink,
@@ -320,6 +323,8 @@ function setup() {
     workspace: null,
     files: [],
     pendingWrites: [],
+    contributions: [],
+    proposals: [],
     history: [
       {
         id: "baseline-0",
@@ -477,6 +482,150 @@ it("records, previews, applies and reopens a decision without losing its earlier
     "apply",
     "reopen",
   ]);
+});
+
+it("previews a discussion's plan change against the current plan and applies only the selected, unchanged edits", async () => {
+  const initial = setup();
+  const discussion = (threadId: string, purpose: string, workId: string): QuestConversation => ({
+    threadId,
+    projectId: null,
+    title: purpose,
+    workId,
+    questionId: null,
+    linkedAt: at,
+    role: "focused",
+    purposeKind: "discuss-work",
+    purpose,
+    sourceRevision: 0,
+    sources: [],
+    context: "packet",
+    prepared: null,
+    origin: null,
+    creation: null,
+  });
+  const result: QuestContribution = {
+    id: "result-1",
+    title: "Documents delivered",
+    summary: "Documents read as one pane.",
+    candidate: "abc123..def456",
+    evidence: [{ kind: "commit", ref: "def456", note: "delivery head" }],
+    limitations: "Drafts are session-only.",
+    openQuestions: "",
+    affectedWorkIds: ["part-b"],
+    supersedes: null,
+    contextRevision: 0,
+    workId: "part-a",
+    source: { threadId: "thread-docs", runId: "run-docs" },
+    provenance: "observed",
+    sources: [],
+    recordedAt: at,
+    recordedRevision: 1,
+    disposition: "open",
+    dispositionBy: null,
+  };
+  const proposal: QuestPlanProposal = {
+    id: "proposal-1",
+    title: "Two discussions, one plan",
+    rationale: "Builds on the delivered documents.",
+    contributionIds: [result.id],
+    supersedes: null,
+    edits: [
+      {
+        id: "edit-1",
+        type: "add-work",
+        work: {
+          id: "next",
+          parentId: "quest",
+          title: "Next milestone",
+          state: "planned",
+          understanding: "",
+          focus: null,
+        },
+      },
+      { id: "edit-2", type: "add-follows", from: "next", to: "milestone" },
+      // Part B is planned now; the proposal expected it active, so this edit is stale.
+      {
+        id: "edit-3",
+        type: "change-work",
+        workId: "part-b",
+        before: { state: "active" },
+        after: { state: "review" },
+      },
+    ],
+    baseRevision: 1,
+    source: { threadId: "thread-map", runId: "run-map" },
+    provenance: "observed",
+    proposedAt: at,
+    status: "proposed",
+    decisions: [],
+  };
+  const proposed: QuestState = {
+    ...initial,
+    revision: 2,
+    conversations: [
+      discussion("thread-docs", "Documents", "part-a"),
+      discussion("thread-map", "Map semantics", "part-b"),
+    ],
+    contributions: [result],
+    proposals: [proposal],
+  };
+  harness.quests = { "example-environment": proposed };
+  const applied: QuestState = {
+    ...proposed,
+    revision: 3,
+    proposals: [
+      {
+        ...proposal,
+        status: "applied",
+        decisions: [
+          {
+            status: "applied",
+            at,
+            revision: 3,
+            note: "",
+            selectedEditIds: ["edit-1", "edit-2"],
+            byProposalId: null,
+          },
+        ],
+      },
+    ],
+    contributions: [
+      {
+        ...result,
+        disposition: "incorporated",
+        dispositionBy: { proposalId: proposal.id, contributionId: null, revision: 3, note: "" },
+      },
+    ],
+  };
+  harness.run.mockResolvedValueOnce({ _tag: "Success", value: applied });
+  await using screen = await renderQuest();
+  await screen.getByRole("button", { name: /^Decisions/ }).click();
+  await screen
+    .getByRole("navigation", { name: "Decisions" })
+    .getByRole("button", { name: /Two discussions, one plan/ })
+    .click();
+  const article = screen.getByRole("article", { name: "Two discussions, one plan" });
+  await expect.element(article.getByText("Changed since proposed")).toBeVisible();
+  const stale = article.getByRole("checkbox", { name: /Part B/ });
+  await expect.element(stale).not.toBeChecked();
+  // The dependency cannot apply without the work it points to.
+  await article.getByRole("checkbox", { name: /New work/ }).click();
+  await expect.element(article.getByText("Can't apply")).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Apply 1 of 3" })).toBeDisabled();
+  await article.getByRole("checkbox", { name: /New work/ }).click();
+  await screen.getByRole("button", { name: "Apply 2 of 3" }).click();
+  expect(harness.run.mock.calls[0]?.[0].input.change).toEqual({
+    type: "plan-decide",
+    proposalId: "proposal-1",
+    decision: "apply",
+    selectedEditIds: ["edit-1", "edit-2"],
+    note: "",
+  });
+  await expect.element(article.getByText("Not applied", { exact: true })).toBeVisible();
+  await article.getByRole("button", { name: "Documents delivered" }).click();
+  const shown = screen.getByRole("article", { name: "Documents delivered" });
+  await expect.element(shown.getByText(/Used in the plan/)).toBeVisible();
+  await expect.element(shown.getByText("def456")).toBeVisible();
 });
 
 it("keeps a rejected work draft and discards it only on an explicit reload", async () => {

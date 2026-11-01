@@ -1,9 +1,11 @@
 import {
   questQuestionStatus,
+  type QuestContribution,
   type QuestConversation,
   type QuestSourcePin,
   type QuestState,
 } from "@t3tools/contracts";
+import { questPlanEditChecks, questPlanEditSummary } from "@t3tools/shared/questPlan";
 
 export const QUEST_ID = "market-tracking";
 export const QUEST_TITLE = "Market tracking";
@@ -105,6 +107,122 @@ export function questContextPacket(
   return `${lines.join("\n")}\n\n`;
 }
 
+const RESULT_LIMIT = 20;
+const PROPOSAL_LIMIT = 10;
+
+/** Work ids on the path from `workId` to the root, so results about a parent or child count. */
+function lineage(state: QuestState, workId: string | null): ReadonlySet<string> {
+  const ids = new Set<string>();
+  let id = workId;
+  while (id !== null && !ids.has(id)) {
+    ids.add(id);
+    id = state.work.find((item) => item.id === id)?.parentId ?? null;
+  }
+  return ids;
+}
+
+function touches(state: QuestState, result: QuestContribution, workId: string | null): boolean {
+  if (workId === null) return false;
+  const mine = lineage(state, workId);
+  return [result.workId, ...result.affectedWorkIds].some(
+    (id) => id !== null && (mine.has(id) || lineage(state, id).has(workId)),
+  );
+}
+
+/**
+ * Results, plan proposals and the plan itself as one discussion sees them. Everything here is
+ * read on request; nothing is pushed to a discussion when another one records something.
+ */
+function questCoordination(state: QuestState, threadId: string | null, workId: string | null) {
+  const member = state.conversations.find((item) => item.threadId === threadId) ?? null;
+  const since = member?.sourceRevision ?? null;
+  const proposals = state.proposals.slice(-PROPOSAL_LIMIT);
+  return {
+    plan: {
+      currentWorkId: state.currentWorkId,
+      work: state.work
+        .filter((item) => item.kind === "work")
+        .map((item) => ({
+          id: item.id,
+          parentId: item.parentId,
+          title: item.title,
+          state: item.state,
+          ...(item.focus === undefined ? {} : { focus: item.focus }),
+        })),
+      follows: state.relations
+        .filter((item) => item.type === "follows")
+        .map((item) => ({ id: item.id, from: item.from, to: item.to })),
+    },
+    results: state.contributions.slice(-RESULT_LIMIT).map((item) => ({
+      id: item.id,
+      title: item.title,
+      disposition: item.disposition,
+      dispositionBy: item.dispositionBy,
+      fromYou: threadId !== null && item.source?.threadId === threadId,
+      affectsYourWork: touches(state, item, workId),
+      newSinceYourContext: since !== null && item.recordedRevision > since,
+      source: item.source,
+      provenance: item.provenance,
+      workId: item.workId,
+      affectedWorkIds: item.affectedWorkIds,
+      recordedRevision: item.recordedRevision,
+      contextRevision: item.contextRevision,
+      summary: bounded(item.summary),
+      candidate: bounded(item.candidate),
+      evidence: item.evidence,
+      limitations: bounded(item.limitations),
+      openQuestions: bounded(item.openQuestions),
+      supersedes: item.supersedes,
+      sources: item.sources.map((pin) => ({
+        documentId: pin.documentId,
+        path: pin.path,
+        pinnedSha256: pin.sha256,
+      })),
+    })),
+    proposals: proposals.map((item) => {
+      const decided = item.decisions.at(-1) ?? null;
+      const open = item.status === "proposed" || item.status === "deferred";
+      const checks = open
+        ? questPlanEditChecks(state, item.edits, new Set(item.edits.map((edit) => edit.id)))
+        : null;
+      return {
+        id: item.id,
+        title: item.title,
+        status: item.status,
+        fromYou: threadId !== null && item.source?.threadId === threadId,
+        source: item.source,
+        provenance: item.provenance,
+        baseRevision: item.baseRevision,
+        rationale: bounded(item.rationale),
+        contributionIds: item.contributionIds,
+        supersedes: item.supersedes,
+        edits: item.edits.map((edit) => ({
+          id: edit.id,
+          ...questPlanEditSummary(state, edit),
+          ...(checks ? { check: checks.get(edit.id)?.status ?? null } : {}),
+          ...(decided?.status === "applied"
+            ? { applied: decided.selectedEditIds.includes(edit.id) }
+            : {}),
+        })),
+        lastDecision: decided,
+      };
+    }),
+    sinceYourContext:
+      since === null
+        ? null
+        : {
+            sourceRevision: since,
+            appliedPlanChanges: state.proposals
+              .filter((item) =>
+                item.decisions.some(
+                  (decision) => decision.status === "applied" && decision.revision > since,
+                ),
+              )
+              .map((item) => item.id),
+          },
+  };
+}
+
 /** Current, bounded context for an agent in a Quest conversation. History is a separate read. */
 export function questAgentContext(state: QuestState, threadId: string | null) {
   const member = state.conversations.find((item) => item.threadId === threadId) ?? null;
@@ -186,5 +304,6 @@ export function questAgentContext(state: QuestState, threadId: string | null) {
       path: item.path,
       status: item.status,
     })),
+    ...questCoordination(state, threadId, workId),
   };
 }

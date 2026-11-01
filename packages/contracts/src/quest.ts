@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { ModelSelection } from "./modelSelection.ts";
@@ -47,7 +48,8 @@ export const QuestRelation = Schema.Struct({
   type: Schema.Literals(["follows", "retries"]),
   from: Schema.String,
   to: Schema.String,
-  provenance: Schema.Literals(["capture", "example"]),
+  /** `plan`: added by applying a plan proposal; its excerpt names the proposal. */
+  provenance: Schema.Literals(["capture", "example", "plan"]),
   documentId: Schema.NullOr(Schema.String),
   excerpt: Schema.String,
 });
@@ -207,6 +209,197 @@ export const QuestPendingWrite = Schema.Struct({
 });
 export type QuestPendingWrite = typeof QuestPendingWrite.Type;
 
+/**
+ * `observed`: the server knew the caller (an agent's own thread and run). `reported`: a client
+ * supplied the attribution, which the server cannot confirm.
+ */
+export const QuestProvenance = Schema.Literals(["observed", "reported"]);
+export type QuestProvenance = typeof QuestProvenance.Type;
+
+/** An exact reference a result rests on: a commit, a file at a hash, a thread, a Quest revision. */
+export const QuestEvidenceRef = Schema.Struct({
+  kind: Schema.Literals(["commit", "file", "document", "thread", "revision", "other"]),
+  ref: Schema.String,
+  note: Schema.String,
+});
+export type QuestEvidenceRef = typeof QuestEvidenceRef.Type;
+
+const QuestContributionFields = {
+  title: Schema.String,
+  /** What was delivered or learned, in the publisher's words. */
+  summary: Schema.String,
+  /** The candidate or artifact change it rests on, such as a commit range. */
+  candidate: Schema.String,
+  evidence: Schema.Array(QuestEvidenceRef),
+  limitations: Schema.String,
+  openQuestions: Schema.String,
+  /** Work this result may change, beyond the work it was produced for. */
+  affectedWorkIds: Schema.Array(Schema.String),
+  /** An earlier result of the same discussion that this one replaces. */
+  supersedes: Schema.NullOr(Schema.String),
+  /** The Quest revision the publisher was working from, when it said so. */
+  contextRevision: Schema.NullOr(Schema.Number),
+};
+
+export const QuestContributionDraft = Schema.Struct(QuestContributionFields);
+export type QuestContributionDraft = typeof QuestContributionDraft.Type;
+
+/**
+ * A scoped result one discussion hands back to the Quest. Recording it changes no plan; a plan
+ * proposal that uses it and its explicit application do. Changed inputs make it possibly stale,
+ * not invalid.
+ */
+export const QuestContribution = Schema.Struct({
+  id: Schema.String,
+  ...QuestContributionFields,
+  /** The work the publishing discussion was associated with when it recorded this. */
+  workId: Schema.NullOr(Schema.String),
+  source: Schema.NullOr(QuestResultSource),
+  provenance: QuestProvenance,
+  /** The publishing discussion's pinned sources, copied so later file changes stay visible. */
+  sources: Schema.Array(QuestSourcePin),
+  recordedAt: Schema.String,
+  recordedRevision: Schema.Number,
+  disposition: Schema.Literals(["open", "incorporated", "superseded", "set-aside"]),
+  /** What last changed the disposition: a proposal's application, a successor or the owner. */
+  dispositionBy: Schema.NullOr(
+    Schema.Struct({
+      proposalId: Schema.NullOr(Schema.String),
+      contributionId: Schema.NullOr(Schema.String),
+      revision: Schema.Number,
+      note: Schema.String,
+    }),
+  ),
+});
+export type QuestContribution = typeof QuestContribution.Type;
+
+const QuestPlanWorkPatch = Schema.Struct({
+  title: Schema.optionalKey(Schema.String),
+  state: Schema.optionalKey(QuestWorkState),
+  parentId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  understanding: Schema.optionalKey(Schema.String),
+  focus: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+});
+export type QuestPlanWorkPatch = typeof QuestPlanWorkPatch.Type;
+
+const QuestPlanNewWork = Schema.Struct({
+  id: Schema.String,
+  parentId: Schema.NullOr(Schema.String),
+  title: Schema.String,
+  state: QuestWorkState,
+  understanding: Schema.String,
+  focus: Schema.NullOr(Schema.Number),
+});
+
+/** A plan edit as proposed. The server adds the base values each edit replaces. */
+export const QuestPlanEditDraft = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("add-work"), work: QuestPlanNewWork }),
+  Schema.Struct({
+    type: Schema.Literal("change-work"),
+    workId: Schema.String,
+    after: QuestPlanWorkPatch,
+  }),
+  /** `from` comes after `to`. */
+  Schema.Struct({ type: Schema.Literal("add-follows"), from: Schema.String, to: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("remove-relation"), relationId: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("set-current"), workId: Schema.String }),
+  /** Moves a discussion's current work association; its fork origin is unchanged. */
+  Schema.Struct({
+    type: Schema.Literal("associate-conversation"),
+    threadId: Schema.String,
+    workId: Schema.NullOr(Schema.String),
+  }),
+]);
+export type QuestPlanEditDraft = typeof QuestPlanEditDraft.Type;
+
+/** One proposed edit with the exact values it replaces, so application can refuse a moved base. */
+export const QuestPlanEdit = Schema.Union([
+  Schema.Struct({ id: Schema.String, type: Schema.Literal("add-work"), work: QuestPlanNewWork }),
+  Schema.Struct({
+    id: Schema.String,
+    type: Schema.Literal("change-work"),
+    workId: Schema.String,
+    before: QuestPlanWorkPatch,
+    after: QuestPlanWorkPatch,
+  }),
+  Schema.Struct({
+    id: Schema.String,
+    type: Schema.Literal("add-follows"),
+    from: Schema.String,
+    to: Schema.String,
+  }),
+  Schema.Struct({
+    id: Schema.String,
+    type: Schema.Literal("remove-relation"),
+    relationId: Schema.String,
+    before: QuestRelation,
+  }),
+  Schema.Struct({
+    id: Schema.String,
+    type: Schema.Literal("set-current"),
+    workId: Schema.String,
+    before: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
+    id: Schema.String,
+    type: Schema.Literal("associate-conversation"),
+    threadId: Schema.String,
+    workId: Schema.NullOr(Schema.String),
+    before: Schema.NullOr(Schema.String),
+  }),
+]);
+export type QuestPlanEdit = typeof QuestPlanEdit.Type;
+
+export const QuestPlanProposalDraft = Schema.Struct({
+  title: Schema.String,
+  rationale: Schema.String,
+  contributionIds: Schema.Array(Schema.String),
+  /** An earlier open or deferred proposal this one replaces. */
+  supersedes: Schema.NullOr(Schema.String),
+  edits: Schema.Array(QuestPlanEditDraft),
+});
+export type QuestPlanProposalDraft = typeof QuestPlanProposalDraft.Type;
+
+export const QuestPlanStatus = Schema.Literals([
+  "proposed",
+  "deferred",
+  "declined",
+  "applied",
+  "superseded",
+]);
+export type QuestPlanStatus = typeof QuestPlanStatus.Type;
+
+/**
+ * A proposed plan revision. Its content never changes after it is recorded; a revision is a new
+ * proposal that supersedes it. `decisions` keeps every owner decision, including what was selected.
+ */
+export const QuestPlanProposal = Schema.Struct({
+  id: Schema.String,
+  title: Schema.String,
+  rationale: Schema.String,
+  contributionIds: Schema.Array(Schema.String),
+  supersedes: Schema.NullOr(Schema.String),
+  edits: Schema.Array(QuestPlanEdit),
+  baseRevision: Schema.Number,
+  source: Schema.NullOr(QuestResultSource),
+  provenance: QuestProvenance,
+  proposedAt: Schema.String,
+  status: QuestPlanStatus,
+  decisions: Schema.Array(
+    Schema.Struct({
+      status: QuestPlanStatus,
+      at: Schema.String,
+      revision: Schema.Number,
+      note: Schema.String,
+      /** Edits the owner chose to apply; empty for every other decision. */
+      selectedEditIds: Schema.Array(Schema.String),
+      /** Set when a later proposal replaced this one. */
+      byProposalId: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
+export type QuestPlanProposal = typeof QuestPlanProposal.Type;
+
 /** What the thread route needs to show a linked thread's Quest context, without the whole Quest. */
 export const QuestThreadLink = Schema.Struct({
   threadId: Schema.String,
@@ -257,6 +450,9 @@ export const QuestHistoryEntry = Schema.Struct({
     "core",
     "workspace",
     "file",
+    "contribution",
+    "proposal",
+    "plan",
   ]),
   targetId: Schema.NullOr(Schema.String),
   summary: Schema.String,
@@ -282,6 +478,10 @@ const QuestDomainFields = {
   workspace: Schema.NullOr(QuestWorkspace),
   files: Schema.Array(QuestFile),
   pendingWrites: Schema.Array(QuestPendingWrite),
+  contributions: Schema.Array(QuestContribution).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  proposals: Schema.Array(QuestPlanProposal).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 };
 /** The saved meaning of a Quest at one revision, without its prose change log. */
 export const QuestDomain = Schema.Struct(QuestDomainFields);
@@ -405,6 +605,26 @@ export const QuestUpdateInput = Schema.Struct({
     }),
     /** Gives up a pending or conflicting write. Retained versions stay in the history. */
     Schema.Struct({ type: Schema.Literal("write-discard"), writeId: Schema.String }),
+    Schema.Struct({
+      type: Schema.Literal("contribution-record"),
+      contribution: QuestContributionDraft,
+    }),
+    /** The owner sets a result aside or back to open; incorporation only comes from applying a plan. */
+    Schema.Struct({
+      type: Schema.Literal("contribution-dispose"),
+      contributionId: Schema.String,
+      disposition: Schema.Literals(["open", "set-aside"]),
+      note: Schema.String,
+    }),
+    Schema.Struct({ type: Schema.Literal("plan-propose"), proposal: QuestPlanProposalDraft }),
+    /** Owner only. `apply` applies exactly `selectedEditIds`; `reopen` returns a deferred or declined proposal. */
+    Schema.Struct({
+      type: Schema.Literal("plan-decide"),
+      proposalId: Schema.String,
+      decision: Schema.Literals(["apply", "defer", "decline", "reopen"]),
+      selectedEditIds: Schema.Array(Schema.String),
+      note: Schema.String,
+    }),
   ]),
 });
 export type QuestUpdateInput = typeof QuestUpdateInput.Type;
