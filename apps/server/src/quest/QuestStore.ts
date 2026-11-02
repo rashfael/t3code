@@ -71,13 +71,16 @@ import {
 import { migrateQuestV1, migrateQuestV2, QuestStateV1, QuestStateV2 } from "./questMigration.ts";
 import { questSeedV1 } from "./questSeed.ts";
 
-/** What an agent may add without the owner: a result or a plan proposal, never a decision. */
+/**
+ * What an agent may do without the owner: add a result or a plan proposal, or withdraw and restore
+ * its own proposals. Never a decision.
+ */
 export interface QuestContributeInput {
   readonly operationId?: string;
   readonly source: QuestResultSource;
   readonly change: Extract<
     QuestUpdateInput["change"],
-    { readonly type: "contribution-record" | "plan-propose" }
+    { readonly type: "contribution-record" | "plan-propose" | "plan-withdraw" | "plan-restore" }
   >;
 }
 
@@ -104,11 +107,17 @@ export interface QuestRecord {
     input: QuestUpdateInput,
     actor: QuestActor,
   ) => Effect.Effect<QuestState, QuestError>;
-  /** Returns the new record's id, or the earlier one when the operation was already saved. */
+  /**
+   * Returns the new record's id, or the earlier one when the operation was already saved, and
+   * whether this call saved a revision.
+   */
   readonly contribute: (
     input: QuestContributeInput,
     actor: QuestActor,
-  ) => Effect.Effect<{ readonly state: QuestState; readonly id: string | null }, QuestError>;
+  ) => Effect.Effect<
+    { readonly state: QuestState; readonly id: string | null; readonly changed: boolean },
+    QuestError
+  >;
   /** Persists a conversation identity before any thread exists, or returns the one to resume. */
   readonly reserveConversation: (
     input: QuestOpenConversationInput,
@@ -728,6 +737,166 @@ function planDecision(
   };
 }
 
+const WITHDRAW_LIMIT = 20;
+
+/** The thread that observably authored a proposal; reported sources never confer authorship. */
+function authoredBy(proposal: QuestPlanProposal, actor: QuestActor): boolean {
+  return (
+    actor.kind === "agent" &&
+    actor.id !== null &&
+    proposal.provenance === "observed" &&
+    proposal.source?.threadId === actor.id
+  );
+}
+
+/**
+ * An author retiring or restoring its own proposals. All named proposals change together or none
+ * do; ones already in the requested state are left as they are, so a retry adds no decision.
+ */
+function proposalAuthorChange(
+  current: QuestState,
+  change: Extract<Change, { type: "plan-withdraw" | "plan-restore" }>,
+  at: string,
+  actor: QuestActor,
+): Changed | Refused {
+  const withdraw = change.type === "plan-withdraw";
+  if (actor.kind !== "agent")
+    return {
+      refused: withdraw
+        ? "Only a proposal's own discussion withdraws it. The owner declines proposals in Decisions."
+        : "Only a proposal's own discussion restores its withdrawal.",
+    };
+  const ids = [...new Set(change.proposalIds)];
+  if (ids.length === 0 || ids.length > WITHDRAW_LIMIT)
+    return { refused: `Name between 1 and ${WITHDRAW_LIMIT} proposals.` };
+  const text = (withdraw ? change.reason : change.note).trim();
+  if (withdraw && !text) return { refused: "Give the reason for withdrawing." };
+  const named = ids.map((id) => current.proposals.find((item) => item.id === id));
+  const unknown = ids.filter((_, index) => named[index] === undefined);
+  if (unknown.length > 0)
+    return { refused: `Nothing changed. Unknown proposals in this Quest: ${unknown.join(", ")}.` };
+  const proposals = named.filter((item) => item !== undefined);
+  const foreign = proposals.filter((item) => !authoredBy(item, actor));
+  if (foreign.length > 0)
+    return {
+      refused: `Nothing changed. ${foreign.map((item) => item.id).join(", ")} ${foreign.length === 1 ? "was" : "were"} not proposed by this discussion; only its author may ${withdraw ? "withdraw" : "restore"} a proposal.`,
+    };
+  const target = withdraw ? "withdrawn" : null;
+  const movable = withdraw ? ["proposed", "deferred"] : ["withdrawn"];
+  const blocked = proposals.filter(
+    (item) => item.status !== target && !movable.includes(item.status),
+  );
+  if (blocked.length > 0)
+    return {
+      refused: `Nothing changed. ${blocked.map((item) => `${item.id} is ${item.status}`).join("; ")}. ${withdraw ? "Only open or deferred proposals can be withdrawn; owner decisions stay as they are." : "Only withdrawn proposals can be restored."}`,
+    };
+  const replacementId = withdraw ? change.replacementId : null;
+  const replacement =
+    replacementId === null
+      ? null
+      : (current.proposals.find((item) => item.id === replacementId) ?? null);
+  if (replacementId !== null) {
+    if (replacement === null)
+      return {
+        refused: `Nothing changed. Replacement “${replacementId}” is not a proposal in this Quest.`,
+      };
+    if (ids.includes(replacementId))
+      return { refused: "Nothing changed. A proposal cannot replace itself." };
+    if (!["proposed", "deferred", "applied"].includes(replacement.status))
+      return {
+        refused: `Nothing changed. Replacement ${replacement.id} is ${replacement.status}; name an open, deferred or applied proposal.`,
+      };
+  }
+  const moving = proposals.filter((item) =>
+    withdraw ? item.status !== "withdrawn" : item.status === "withdrawn",
+  );
+  if (moving.length === 0) return { state: current, entry: null };
+  if (!withdraw) {
+    const stale = moving.flatMap((item) => {
+      const checks = questPlanEditChecks(
+        current,
+        item.edits,
+        new Set(item.edits.map((edit) => edit.id)),
+      );
+      return item.edits.some((edit) => {
+        const status = checks.get(edit.id)?.status;
+        return status === "stale" || status === "invalid";
+      })
+        ? [item.id]
+        : [];
+    });
+    if (stale.length > 0)
+      return {
+        refused: `Nothing changed. The plan moved since ${stale.join(", ")} ${stale.length === 1 ? "was" : "were"} proposed, so restoring would offer the owner changes that cannot apply. Propose a revised plan change instead.`,
+      };
+  }
+  const revision = current.revision + 1;
+  const statusOf = (item: QuestPlanProposal): QuestPlanProposal["status"] => {
+    if (withdraw) return "withdrawn";
+    const before = item.decisions.at(-2)?.status;
+    return before === "deferred" ? "deferred" : "proposed";
+  };
+  const next = new Map(
+    moving.map((item) => {
+      const status = statusOf(item);
+      const note = withdraw
+        ? text
+        : text
+          ? `Restored by its author: ${text}`
+          : "Restored by its author.";
+      return [
+        item.id,
+        {
+          ...item,
+          status,
+          decisions: [
+            ...item.decisions,
+            {
+              status,
+              at,
+              revision,
+              note,
+              selectedEditIds: [],
+              byProposalId: replacement?.id ?? null,
+            },
+          ],
+        } satisfies QuestPlanProposal,
+      ];
+    }),
+  );
+  const titles = moving.map((item) => `“${item.title}”`).join(", ");
+  return {
+    state: {
+      ...current,
+      proposals: current.proposals.map((item) => next.get(item.id) ?? item),
+    },
+    entry: {
+      kind: "proposal",
+      targetId: moving.length === 1 ? moving[0]!.id : (replacement?.id ?? moving[0]!.id),
+      summary: withdraw
+        ? `Its author withdrew ${moving.length === 1 ? "the plan change" : `${moving.length} plan changes`} ${titles}${replacement ? ` in favour of “${replacement.title}” (still ${replacement.status})` : ""}`
+        : `Its author restored ${titles}`,
+      changes: [
+        ...moving.map((item) => ({
+          label: item.id,
+          before: item.status,
+          after: next.get(item.id)!.status,
+        })),
+        ...(text ? [{ label: withdraw ? "Reason" : "Note", before: null, after: text }] : []),
+        ...(replacement
+          ? [
+              {
+                label: "Replacement",
+                before: null,
+                after: `${replacement.id}: ${replacement.title}`,
+              },
+            ]
+          : []),
+      ],
+    },
+  };
+}
+
 function changeState(
   current: QuestState,
   change: Change,
@@ -1188,6 +1357,9 @@ function changeState(
       return proposalChange(current, change, at, source, actor);
     case "plan-decide":
       return planDecision(current, change, at, actor);
+    case "plan-withdraw":
+    case "plan-restore":
+      return proposalAuthorChange(current, change, at, actor);
   }
 }
 
@@ -1391,15 +1563,17 @@ function makeRecord(
   }, mutex.withPermits(1));
 
   /**
-   * Adds an agent's result or plan proposal to whatever the Quest holds now. Both only add
-   * records and capture their own base, so they need no expected revision; deciding stays with
-   * `update`, which the owner's client drives.
+   * Adds an agent's result or plan proposal to whatever the Quest holds now, or withdraws or
+   * restores its own proposals. None depends on a base the caller saw, so they need no expected
+   * revision; deciding stays with `update`, which the owner's client drives.
    */
   const contribute = Effect.fn("QuestStore.contribute")(function* (
     input: QuestContributeInput,
     actor: QuestActor,
   ) {
     const loaded = yield* load();
+    const adds =
+      input.change.type === "plan-propose" || input.change.type === "contribution-record";
     const collection = input.change.type === "plan-propose" ? "proposals" : "contributions";
     const earlier = loaded.archive?.records.find(
       (record) => input.operationId !== undefined && record.operationId === input.operationId,
@@ -1408,10 +1582,12 @@ function makeRecord(
       const created = earlier.changes.find(
         (item) => item.collection === collection && item.before === null,
       );
-      return { state: loaded.state, id: created?.id ?? null };
+      return { state: loaded.state, id: adds ? (created?.id ?? null) : null, changed: false };
     }
     const state = yield* applyChange(loaded, input, actor);
-    return { state, id: state === loaded.state ? null : (state[collection].at(-1)?.id ?? null) };
+    const changed = state !== loaded.state;
+    if (!adds) return { state, id: null, changed };
+    return { state, id: changed ? (state[collection].at(-1)?.id ?? null) : null, changed };
   }, mutex.withPermits(1));
 
   /** Pins exact current bytes of a subject's documents; unreadable sources are named, not skipped. */

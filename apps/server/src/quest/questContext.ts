@@ -294,13 +294,27 @@ function questCoordination(
     })),
     proposals: state.proposals.slice(-PROPOSAL_LIMIT).map((item) => {
       const decided = item.decisions.at(-1) ?? null;
-      if (!isOpenProposal(item))
+      if (!isOpenProposal(item)) {
+        const replacement =
+          item.status === "withdrawn" && decided?.byProposalId
+            ? state.proposals.find((other) => other.id === decided.byProposalId)
+            : undefined;
         return {
           id: item.id,
           link: link("proposal", item.id, item.title),
           status: item.status,
           decidedRevision: decided?.revision ?? null,
+          ...(item.status === "withdrawn"
+            ? {
+                fromYou: threadId !== null && item.source?.threadId === threadId,
+                withdrawnReason: oneLine(decided?.note ?? "", EXCERPT_LIMIT),
+                ...(replacement
+                  ? { replacedBy: link("proposal", replacement.id, replacement.title) }
+                  : {}),
+              }
+            : {}),
         };
+      }
       const checks = questPlanEditChecks(
         state,
         item.edits,

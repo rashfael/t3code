@@ -123,8 +123,41 @@ const QuestProposePlanTool = Tool.make("t3_quest_propose_plan", {
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false);
 
+const QuestProposalLink = Schema.Struct({
+  id: Schema.String,
+  title: Schema.String,
+  status: Schema.String,
+  link: Schema.String,
+});
+
+const QuestWithdrawProposalsTool = Tool.make("t3_quest_withdraw_proposals", {
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: questWriteDependencies,
+  description:
+    "Withdraw plan proposals your own discussion made that are obsolete, with a reason and optionally the existing proposal of this Quest that replaces them; their content and history stay. This is not the owner declining them, and the replacement is not accepted by it. Withdrawing several at once is one change. With `restore: true`, return your withdrawn proposals to review instead. Give the user the returned links.",
+  parameters: Schema.Struct({
+    proposalIds: Schema.Array(Schema.String).annotate({ description: "Your own proposal ids." }),
+    reason: Schema.String.annotate({ description: "Why, or the note when restoring." }),
+    replacementId: Schema.optional(
+      Schema.String.annotate({ description: "Existing proposal that replaces them." }),
+    ),
+    restore: Schema.optional(Schema.Boolean),
+  }),
+  success: Schema.Struct({
+    revision: Schema.Number,
+    changed: Schema.Boolean,
+    note: Schema.String,
+    proposals: Schema.Array(QuestProposalLink),
+    replacement: Schema.optional(QuestProposalLink),
+  }),
+})
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false);
+
 export const QuestToolkit = Toolkit.make(
   QuestContextTool,
   QuestPublishResultTool,
   QuestProposePlanTool,
+  QuestWithdrawProposalsTool,
 );

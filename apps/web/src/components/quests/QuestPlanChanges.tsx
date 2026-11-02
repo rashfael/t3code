@@ -28,6 +28,7 @@ export const planStatusLabels: Record<QuestPlanStatus, string> = {
   declined: "Declined plan change",
   applied: "Applied plan change",
   superseded: "Superseded plan change",
+  withdrawn: "Withdrawn plan change",
 };
 
 export const resultDispositionLabels: Record<QuestContribution["disposition"], string> = {
@@ -202,7 +203,11 @@ export function ProposalWorkspace({
   const appliedIds = proposal.decisions.findLast(
     (item) => item.status === "applied",
   )?.selectedEditIds;
-  const successor = proposal.decisions.findLast((item) => item.byProposalId !== null)?.byProposalId;
+  const successor =
+    proposal.status === "superseded" || proposal.status === "withdrawn"
+      ? proposal.decisions.at(-1)?.byProposalId
+      : null;
+  const withdrawal = proposal.status === "withdrawn" ? proposal.decisions.at(-1) : undefined;
   const needsRevision =
     open && proposal.edits.some((edit) => checks.get(edit.id)?.status === "stale");
 
@@ -291,7 +296,9 @@ export function ProposalWorkspace({
                 <p className="text-xs text-muted-foreground">
                   {proposal.status === "applied"
                     ? "Applied changes stay in the plan. A later proposal can change them again."
-                    : "Superseded proposals stay as they were proposed."}
+                    : proposal.status === "withdrawn"
+                      ? "Withdrawn by the discussion that proposed it. Only that discussion can restore it."
+                      : "Superseded proposals stay as they were proposed."}
                 </p>
               )}
             </div>
@@ -383,9 +390,14 @@ export function ProposalWorkspace({
           </div>
         ) : null}
       </Section>
+      {withdrawal ? (
+        <p className="mt-4 text-sm">
+          Withdrawn by its author{withdrawal.note ? `: ${withdrawal.note}` : "."}
+        </p>
+      ) : null}
       {successor ? (
         <p className="mt-4 text-sm">
-          Replaced by{" "}
+          {withdrawal ? "In favour of" : "Replaced by"}{" "}
           <button
             type="button"
             className="cursor-pointer underline underline-offset-2"

@@ -73,6 +73,30 @@ it.effect(
           .pipe(Stream.unwrap, Stream.runCollect);
         const outsider = (yield* publish).at(-1)?.result;
         expect(outsider).toMatchObject({ code: "invalid_request" });
+        const propose = (title: string) =>
+          toolkit
+            .handle("t3_quest_propose_plan", {
+              title,
+              rationale: "",
+              edits: [{ type: "set-current", workId: "a4-demonstration" }],
+            })
+            .pipe(Stream.unwrap, Stream.runCollect);
+        const withdrawCall = (params: {
+          proposalIds: ReadonlyArray<string>;
+          reason: string;
+          replacementId?: string;
+          restore?: boolean;
+        }) =>
+          toolkit.handle("t3_quest_withdraw_proposals", params).pipe(
+            Stream.unwrap,
+            Stream.runCollect,
+            Effect.map((items) => items.at(-1)?.result),
+          );
+        const withdraw = { proposalIds: ["proposal-1"], reason: "Folded in." };
+        expect(yield* withdrawCall(withdraw)).toMatchObject({
+          code: "invalid_request",
+          message: expect.stringContaining("not a discussion in any Quest"),
+        });
 
         // The caller's own membership picks the Quest, not the historical default.
         const store = yield* QuestStore.QuestStore;
@@ -145,6 +169,42 @@ it.effect(
           message: expect.stringMatching(/"current".*Omit threadId/),
         });
         expect(yield* read({})).toMatchObject({ questId: "t3-quests" });
+
+        for (const title of ["Obsolete take", "Reconciled take"]) yield* propose(title);
+        const proposalLink = (id: string, title: string) =>
+          `[${title}](t3-quest://v1/${encodeURIComponent(environmentId)}/t3-quests/proposal/${id})`;
+        const retired = yield* withdrawCall({
+          ...withdraw,
+          replacementId: "proposal-2",
+        });
+        const retiredRevision = (yield* real.get).revision;
+        expect(retired).toMatchObject({
+          changed: true,
+          proposals: [
+            {
+              id: "proposal-1",
+              status: "withdrawn",
+              link: proposalLink("proposal-1", "Obsolete take"),
+            },
+          ],
+          replacement: { id: "proposal-2", status: "proposed" },
+          note: expect.stringContaining("The owner has not declined them"),
+        });
+        expect(yield* withdrawCall({ ...withdraw, replacementId: "proposal-2" })).toMatchObject({
+          changed: false,
+          revision: retiredRevision,
+        });
+        expect(
+          yield* withdrawCall({
+            ...withdraw,
+            restore: true,
+            replacementId: "proposal-2",
+          }),
+        ).toMatchObject({ code: "invalid_request" });
+        expect(yield* withdrawCall({ ...withdraw, restore: true })).toMatchObject({
+          changed: true,
+          proposals: [{ id: "proposal-1", status: "proposed" }],
+        });
       }).pipe(
         Effect.provide(
           McpToolAccess.HandlersLayer.layer(QuestHandlers.layer).pipe(

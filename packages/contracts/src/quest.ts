@@ -418,6 +418,8 @@ export const QuestPlanStatus = Schema.Literals([
   "declined",
   "applied",
   "superseded",
+  /** Retired by its own author; only that author restores it. Not an owner decision. */
+  "withdrawn",
 ]);
 export type QuestPlanStatus = typeof QuestPlanStatus.Type;
 
@@ -445,7 +447,7 @@ export const QuestPlanProposal = Schema.Struct({
       note: Schema.String,
       /** Edits the owner chose to apply; empty for every other decision. */
       selectedEditIds: Schema.Array(Schema.String),
-      /** Set when a later proposal replaced this one. */
+      /** The proposal that replaced this one, or that its author withdrew it in favour of. */
       byProposalId: Schema.NullOr(Schema.String),
     }),
   ),
@@ -713,6 +715,22 @@ export const QuestUpdateInput = Schema.Struct({
       proposalId: Schema.String,
       decision: Schema.Literals(["apply", "defer", "decline", "reopen"]),
       selectedEditIds: Schema.Array(Schema.String),
+      note: Schema.String,
+    }),
+    /**
+     * Author only: retires the caller's own open or deferred proposals, optionally in favour of
+     * one existing proposal of this Quest. The replacement keeps its own status.
+     */
+    Schema.Struct({
+      type: Schema.Literal("plan-withdraw"),
+      proposalIds: Schema.Array(Schema.String),
+      reason: Schema.String,
+      replacementId: Schema.NullOr(Schema.String),
+    }),
+    /** Author only: returns the caller's own withdrawn proposals to the status they had before. */
+    Schema.Struct({
+      type: Schema.Literal("plan-restore"),
+      proposalIds: Schema.Array(Schema.String),
       note: Schema.String,
     }),
   ]),

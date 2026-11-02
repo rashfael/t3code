@@ -1,7 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
 
-import { OrchestratorMcpFailure, questQuestionStatus, type QuestError } from "@t3tools/contracts";
+import {
+  OrchestratorMcpFailure,
+  questQuestionStatus,
+  type QuestError,
+  type QuestPlanProposal,
+} from "@t3tools/contracts";
 import { formatQuestLink } from "@t3tools/shared/questLinks";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -47,7 +52,7 @@ function questLinker(
  * The calling discussion as the server knows it: its own thread and active run, never a thread the
  * agent names. The operation id makes a repeated identical call in one run a no-op.
  */
-const contribute = Effect.fn("QuestMcp.contribute")(function* (
+const saveAsCaller = Effect.fn("QuestMcp.saveAsCaller")(function* (
   name: string,
   params: unknown,
   change: QuestStore.QuestContributeInput["change"],
@@ -76,7 +81,18 @@ const contribute = Effect.fn("QuestMcp.contribute")(function* (
       { kind: "agent", id: threadId },
     )
     .pipe(Effect.mapError(toFailure));
-  const link = questLinker(scope, store.identity.id);
+  return { saved, link: questLinker(scope, store.identity.id) };
+});
+
+const contribute = Effect.fn("QuestMcp.contribute")(function* (
+  name: string,
+  params: unknown,
+  change: Extract<
+    QuestStore.QuestContributeInput["change"],
+    { readonly type: "contribution-record" | "plan-propose" }
+  >,
+) {
+  const { saved, link } = yield* saveAsCaller(name, params, change);
   const result = saved.state.contributions.find((item) => item.id === saved.id);
   if (result)
     return {
@@ -104,6 +120,40 @@ const contribute = Effect.fn("QuestMcp.contribute")(function* (
     code: "orchestration_error",
     message: "The record was not found after saving.",
   });
+});
+
+/** An author's own withdrawal or restore, answered with titled links and current statuses. */
+const withdraw = Effect.fn("QuestMcp.withdraw")(function* (
+  params: unknown,
+  change: Extract<
+    QuestStore.QuestContributeInput["change"],
+    { readonly type: "plan-withdraw" | "plan-restore" }
+  >,
+) {
+  const { saved, link } = yield* saveAsCaller("t3_quest_withdraw_proposals", params, change);
+  const describe = (item: QuestPlanProposal) => ({
+    id: item.id,
+    title: item.title,
+    status: item.status,
+    link: link("proposal", item.id, item.title),
+  });
+  const replacement =
+    change.type === "plan-withdraw" && change.replacementId !== null
+      ? saved.state.proposals.find((item) => item.id === change.replacementId)
+      : undefined;
+  const meaning =
+    change.type === "plan-withdraw"
+      ? "Withdrawn by you as their author, with content and history kept. The owner has not declined them, and the replacement keeps its own status: nothing is accepted or applied."
+      : "Back with the owner in Decisions with their earlier status. Nothing is accepted or applied.";
+  return {
+    revision: saved.state.revision,
+    changed: saved.changed,
+    note: saved.changed ? meaning : `Already in that state; nothing changed. ${meaning}`,
+    proposals: saved.state.proposals
+      .filter((item) => change.proposalIds.includes(item.id))
+      .map(describe),
+    ...(replacement ? { replacement: describe(replacement) } : {}),
+  };
 });
 
 export const layer = McpToolAccess.toLayer(QuestToolkit, {
@@ -134,6 +184,26 @@ export const layer = McpToolAccess.toLayer(QuestToolkit, {
         edits: params.edits,
       },
     }),
+  ),
+  t3_quest_withdraw_proposals: McpToolAccess.actsAsCaller((params) =>
+    params.restore && params.replacementId !== undefined
+      ? Effect.fail(
+          new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "replacementId applies only when withdrawing. Nothing changed.",
+          }),
+        )
+      : withdraw(
+          params,
+          params.restore
+            ? { type: "plan-restore", proposalIds: params.proposalIds, note: params.reason }
+            : {
+                type: "plan-withdraw",
+                proposalIds: params.proposalIds,
+                reason: params.reason,
+                replacementId: params.replacementId ?? null,
+              },
+        ),
   ),
   t3_quest_context: McpToolAccess.reads((input) =>
     Effect.gen(function* () {

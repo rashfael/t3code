@@ -3,7 +3,9 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   ProviderInstanceId,
   ThreadId,
+  type QuestActor,
   type QuestOpenConversationInput,
+  type QuestPlanProposalDraft,
   type QuestUpdateInput,
 } from "@t3tools/contracts";
 import { QUEST_DEFAULT_ID } from "@t3tools/contracts";
@@ -20,6 +22,7 @@ import {
   LEGACY_QUEST,
   questAgentContext,
   questAgentDetails,
+  questProposalOverlaps,
   questTurnOrientation,
   type QuestLinker,
 } from "./questContext.ts";
@@ -2034,6 +2037,206 @@ describe("QuestStore plan coordination", () => {
         expect((yield* propose(original.id).pipe(Effect.flip)).message).toContain("not open");
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "lets an author withdraw and restore only its own open proposals, keeping owner decisions",
+    () =>
+      Effect.gen(function* () {
+        const { layer } = yield* harness;
+        yield* Effect.gen(function* () {
+          const store = yield* legacyQuest;
+          const docs = { threadId: docsThread, runId: "run-docs-2" };
+          const propose = (
+            source: { threadId: string; runId: string | null },
+            title: string,
+            edits: QuestPlanProposalDraft["edits"],
+            by: QuestActor = agentOf(source.threadId),
+          ) =>
+            store
+              .contribute(
+                {
+                  source,
+                  change: {
+                    type: "plan-propose",
+                    proposal: {
+                      title,
+                      rationale: "",
+                      contributionIds: [],
+                      supersedes: null,
+                      edits,
+                    },
+                  },
+                },
+                by,
+              )
+              .pipe(Effect.map((saved) => saved.id!));
+          const understanding = (text: string) =>
+            [
+              { type: "change-work", workId: "a4-demonstration", after: { understanding: text } },
+            ] as const;
+          const first = yield* propose(docs, "First take", understanding("First"));
+          const second = yield* propose(docs, "Second take", [
+            { type: "set-current", workId: "a4-demonstration" },
+          ]);
+          const peer = yield* propose(
+            { threadId: mapThread, runId: null },
+            "Reconciled plan",
+            understanding("Reconciled"),
+          );
+          const reported = yield* propose(
+            docs,
+            "Reported for docs",
+            [{ type: "set-current", workId: "milestone-a" }],
+            actor,
+          );
+          const applied = yield* propose(docs, "Applied take", [
+            { type: "change-work", workId: "milestone-a", after: { shortTitle: "Corpus" } },
+          ]);
+          let state = yield* store.get;
+          const owner = (change: QuestUpdateInput["change"]) =>
+            store.update({ expectedRevision: state.revision, change }, actor);
+          const decide = (proposalId: string, decision: "apply" | "defer" | "decline" | "reopen") =>
+            owner({
+              type: "plan-decide",
+              proposalId,
+              decision,
+              selectedEditIds: decision === "apply" ? ["edit-1"] : [],
+              note: "",
+            });
+          state = yield* decide(second, "defer");
+          state = yield* decide(applied, "apply");
+          expect(
+            questProposalOverlaps(
+              state,
+              state.proposals.find((p) => p.id === peer)!,
+            ),
+          ).toEqual([{ proposalId: first, fields: ["a4-demonstration.understanding"] }]);
+
+          const withdraw = (
+            proposalIds: ReadonlyArray<string>,
+            options: { by?: QuestActor; replacementId?: string | null; operationId?: string } = {},
+          ) =>
+            store.contribute(
+              {
+                source: docs,
+                ...(options.operationId === undefined ? {} : { operationId: options.operationId }),
+                change: {
+                  type: "plan-withdraw",
+                  proposalIds,
+                  reason: "Folded into the reconciled plan.",
+                  replacementId: options.replacementId === undefined ? peer : options.replacementId,
+                },
+              },
+              options.by ?? agentOf(docsThread),
+            );
+          const refusal = (attempt: ReturnType<typeof withdraw>) =>
+            attempt.pipe(
+              Effect.flip,
+              Effect.map((error) => error.message),
+            );
+          expect(yield* refusal(withdraw([first], { by: agentOf(mapThread) }))).toContain(
+            "only its author",
+          );
+          expect(yield* refusal(withdraw([first], { by: actor }))).toContain("owner declines");
+          expect(yield* refusal(withdraw([first, reported]))).toContain(reported);
+          expect(yield* refusal(withdraw([first, applied]))).toContain(`${applied} is applied`);
+          expect(yield* refusal(withdraw([first, "proposal-missing"]))).toContain(
+            "proposal-missing",
+          );
+          expect(
+            yield* refusal(withdraw([first], { replacementId: "proposal-missing" })),
+          ).toContain("not a proposal in this Quest");
+          expect(yield* refusal(withdraw([first], { replacementId: first }))).toContain("itself");
+          expect((yield* store.get).revision).toBe(state.revision);
+
+          const withdrawn = yield* withdraw([first, second], { operationId: "withdraw-once" });
+          expect(withdrawn.changed).toBe(true);
+          state = withdrawn.state;
+          const byId = (id: string) => state.proposals.find((item) => item.id === id)!;
+          expect([first, second, peer, applied].map((id) => byId(id).status)).toEqual([
+            "withdrawn",
+            "withdrawn",
+            "proposed",
+            "applied",
+          ]);
+          expect(byId(first).decisions.at(-1)).toMatchObject({
+            status: "withdrawn",
+            note: "Folded into the reconciled plan.",
+            byProposalId: peer,
+          });
+          expect(byId(first).edits[0]).toMatchObject({ after: { understanding: "First" } });
+          expect(state.history.at(-1)).toMatchObject({
+            kind: "proposal",
+            summary: expect.stringContaining("(still proposed)"),
+          });
+          expect(questProposalOverlaps(state, byId(peer))).toEqual([]);
+          expect(
+            questAgentContext(state, docsThread, LEGACY_QUEST, link).proposals.find(
+              (item) => item.id === first,
+            ),
+          ).toMatchObject({
+            status: "withdrawn",
+            fromYou: true,
+            withdrawnReason: "Folded into the reconciled plan.",
+            replacedBy: `[Reconciled plan](proposal:${peer})`,
+          });
+
+          // Retries add no decision: the same operation replays, a new one finds nothing to move.
+          for (const operationId of ["withdraw-once", "withdraw-again"]) {
+            const retried = yield* withdraw([first, second], { operationId });
+            expect(retried.changed).toBe(false);
+            expect(retried.state.revision).toBe(state.revision);
+          }
+          expect(yield* refusal(withdraw([applied], { replacementId: first }))).toContain(
+            `${applied} is applied`,
+          );
+          for (const decision of ["decline", "reopen", "apply"] as const)
+            expect((yield* decide(first, decision).pipe(Effect.flip)).message).toContain(
+              "withdrawn",
+            );
+
+          const restore = (proposalIds: ReadonlyArray<string>, by = agentOf(docsThread)) =>
+            store.contribute(
+              { source: docs, change: { type: "plan-restore", proposalIds, note: "" } },
+              by,
+            );
+          expect(
+            (yield* restore([second], agentOf(mapThread)).pipe(Effect.flip)).message,
+          ).toContain("only its author");
+          const a4 = state.work.find((item) => item.id === "a4-demonstration")!;
+          state = yield* owner({
+            type: "work",
+            work: { ...a4, understanding: "Owner rewrote it" },
+          });
+          const stale = yield* restore([first, second]).pipe(Effect.flip);
+          expect(stale.message).toContain(`since ${first} was proposed`);
+          expect((yield* store.get).revision).toBe(state.revision);
+          state = (yield* restore([second])).state;
+          expect(byId(second)).toMatchObject({ status: "deferred" });
+          expect(byId(second).decisions.map((item) => item.status)).toEqual([
+            "deferred",
+            "withdrawn",
+            "deferred",
+          ]);
+          expect(byId(first).status).toBe("withdrawn");
+          state = yield* decide(second, "decline");
+          expect((yield* restore([second]).pipe(Effect.flip)).message).toContain(
+            `${second} is declined`,
+          );
+        }).pipe(Effect.provide(layer));
+
+        yield* Effect.gen(function* () {
+          const reloaded = yield* (yield* legacyQuest).get;
+          expect(reloaded.proposals.map((item) => item.status)).toEqual([
+            "withdrawn",
+            "declined",
+            "proposed",
+            "proposed",
+            "applied",
+          ]);
+        }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
 
