@@ -151,7 +151,7 @@ export function questOrientationText(input: QuestOrientationInput): string {
   if (input.purpose.trim()) lines.push(`Purpose: ${oneLine(input.purpose, 300)}`);
   if (input.subject) lines.push(`Subject: ${oneLine(input.subject, 200)}`);
   lines.push(
-    "Before Quest work, such as answering about the subject, planning, deciding or changing code for it, call `t3_quest_context` for the plan, decisions, pinned sources and other discussions' results. Call it again before you reconcile their results or plan changes. Nothing from other discussions reaches this thread unless you read it.",
+    "Before Quest work, such as answering about the subject, planning, deciding or changing code for it, call `t3_quest_context` without arguments for the plan, decisions, pinned sources and other discussions' results. Call it again before you reconcile their results or plan changes. Nothing from other discussions reaches this thread unless you read it.",
     "Record what you deliver or learn with `t3_quest_publish_result` and plan edits with `t3_quest_propose_plan`; only the owner applies answers and plan changes.",
     "T3 Code adds this note to every turn while the thread is a Quest member. A later turn without it means the thread has left the Quest; then ignore earlier Quest notes.",
   );

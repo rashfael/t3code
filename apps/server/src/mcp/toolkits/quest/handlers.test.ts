@@ -51,7 +51,15 @@ it.effect(
         Layer.mock(ThreadManagement.ThreadManagementService)({
           getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
         }),
-        Layer.mock(Environment.ServerEnvironment)({}),
+        Layer.mock(Environment.ServerEnvironment)({
+          getDescriptor: Effect.succeed({
+            environmentId,
+            label: "Test environment",
+            platform: { os: "linux", arch: "x64" },
+            serverVersion: "0.0.0-test",
+            capabilities: { repositoryIdentity: true },
+          }),
+        }),
       );
       yield* Effect.gen(function* () {
         const toolkit = yield* QuestToolkit;
@@ -120,6 +128,19 @@ it.effect(
           source: { threadId, runId: "run:mcp-test" },
           workId: "n1a-navigation",
         });
+
+        // A real Claude turn passed the literal "current"; the refusal must point back to omitting it.
+        const read = (params: { threadId?: ThreadId }) =>
+          toolkit.handle("t3_quest_context", { environmentId, ...params }).pipe(
+            Stream.unwrap,
+            Stream.runCollect,
+            Effect.map((items) => items.at(-1)?.result),
+          );
+        expect(yield* read({ threadId: ThreadId.make("current") })).toMatchObject({
+          code: "invalid_request",
+          message: expect.stringMatching(/"current".*Omit threadId/),
+        });
+        expect(yield* read({})).toMatchObject({ questId: "t3-quests" });
       }).pipe(
         Effect.provide(
           McpToolAccess.HandlersLayer.layer(QuestHandlers.layer).pipe(

@@ -114,7 +114,10 @@ export const layer = McpToolAccess.toLayer(QuestToolkit, {
       if (store === null)
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
-          message: "This thread is not a discussion in any Quest on this environment.",
+          message:
+            input.threadId === undefined
+              ? "This thread is not a discussion in any Quest on this environment."
+              : `Thread "${input.threadId}" is not a discussion in any Quest on this environment. Omit threadId to read your own thread's Quest.`,
         });
       if (input.revision === undefined) {
         const state = yield* store.get.pipe(Effect.mapError(toFailure));
