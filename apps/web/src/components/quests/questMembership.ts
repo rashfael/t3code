@@ -62,7 +62,16 @@ export function useQuestMembership(): QuestMembershipIndex {
 
 /** Where a thread opens: its Quest when the Quest owns it, else its own route. */
 export function threadNavigationTarget(ref: ScopedThreadRef) {
-  const member = appAtomRegistry.get(questMembershipAtom).members.get(scopedThreadKey(ref));
+  return navigationTargetFor(ref, appAtomRegistry.get(questMembershipAtom));
+}
+
+/** `threadNavigationTarget` for a rendered link, which follows membership as it loads. */
+export function useThreadNavigationTarget(ref: ScopedThreadRef) {
+  return navigationTargetFor(ref, useQuestMembership());
+}
+
+function navigationTargetFor(ref: ScopedThreadRef, index: QuestMembershipIndex) {
+  const member = index.members.get(scopedThreadKey(ref));
   if (member)
     return {
       to: "/quests",

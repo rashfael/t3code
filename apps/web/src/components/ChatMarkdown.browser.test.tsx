@@ -101,6 +101,55 @@ vi.mock(import("../hooks/useSettings"), async (original) => {
   return { ...actual, useClientSettings };
 });
 
+// One Quest member and one standalone thread on one connected environment.
+const questLinks = vi.hoisted(() => ({
+  environmentId: "env-quest",
+  shells: {
+    "member-thread": { title: "Member discussion", projectId: "project-1" },
+    "standalone-thread": { title: "Standalone thread", projectId: "project-1" },
+  } as Record<string, { title: string; projectId: string }>,
+}));
+vi.mock(import("../state/entities"), async (original) => ({
+  ...(await original()),
+  useThreadShell: ((ref: { environmentId: string; threadId: string } | null) => {
+    const shell =
+      ref && ref.environmentId === questLinks.environmentId && questLinks.shells[ref.threadId];
+    return shell ? { ...shell, id: ref.threadId, environmentId: ref.environmentId } : null;
+  }) as never,
+  useProject: (() => null) as never,
+}));
+vi.mock(import("../state/presentation"), async (original) => {
+  const actual = await original();
+  const { Atom } = await import("effect/reactivity");
+  return {
+    ...actual,
+    environmentSummaries: {
+      ...actual.environmentSummaries,
+      connectedEnvironmentIdsAtom: Atom.make([questLinks.environmentId]) as never,
+    },
+  };
+});
+vi.mock(import("./quests/questEnvironment"), async (original) => {
+  const actual = await original();
+  const { Atom, AsyncResult: Result } = await import("effect/reactivity");
+  const catalog = Result.success({
+    quests: [
+      {
+        questId: "t3-quests",
+        title: "Quests in T3",
+        revision: 1,
+        members: [{ threadId: "member-thread", role: "focused", title: "Member discussion" }],
+      },
+    ],
+  });
+  return {
+    questEnvironment: {
+      ...actual.questEnvironment,
+      membership: (() => Atom.make(catalog)) as never,
+    },
+  };
+});
+
 import ChatMarkdown from "./ChatMarkdown";
 import { AudioPreview } from "./files/AudioPreview";
 
@@ -457,4 +506,21 @@ describe("ChatMarkdown Windows file links", () => {
       expect(fileHrefs(container)).toEqual([]);
     }
   });
+});
+
+it("opens a linked Quest member in its Quest and a standalone thread on its own route", async () => {
+  setup();
+  await using screen = await renderText(
+    "See <t3-thread://v2/env-quest/member-thread> and <t3-thread://v2/env-quest/standalone-thread>.",
+    { environmentId: EnvironmentId.make("env-quest") },
+  );
+  await expect
+    .element(screen.getByRole("link", { name: "Thread, Member discussion" }))
+    .toHaveAttribute(
+      "href",
+      "/quests?env=env-quest&quest=t3-quests&view=conversation&thread=member-thread",
+    );
+  await expect
+    .element(screen.getByRole("link", { name: "Thread, Standalone thread" }))
+    .toHaveAttribute("href", "/env-quest/standalone-thread");
 });
