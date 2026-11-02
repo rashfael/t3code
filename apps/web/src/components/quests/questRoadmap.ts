@@ -42,12 +42,11 @@ export type RoadmapNeed =
 
 export interface RoadmapPath {
   readonly id: string;
-  /** `within`: a milestone inside a larger one leads into it, as decomposition rather than order. */
-  readonly kind: "fork" | "follows" | "within";
+  readonly kind: "fork" | "follows";
   readonly source: string;
   readonly target: string;
   readonly width: number;
-  /** Leads into work not yet started, planned or deferred, whatever state its source is in. */
+  /** Leads into or out of work not yet started, planned or deferred: flow that has not happened. */
   readonly planned: boolean;
   /** Ribbon centre where it leaves the source bar and enters the target bar. */
   readonly sourceY: number;
@@ -93,10 +92,9 @@ type Placement = readonly [
 ];
 
 /**
- * Every milestone at any depth, past, current and planned. Order comes only from `follows`
- * relations lifted to the nearest milestone holding each end, and from a milestone leading into
- * the larger milestone that contains it. Milestones nothing relates to stand alone; workstream
- * membership groups rows but never adds a path.
+ * Every milestone at any depth, past, current and planned. Paths come only from recorded `follows`
+ * relations lifted to the nearest milestone holding each end. Containment and workstream
+ * membership never add a path: a nested milestone leads into its container only when recorded.
  */
 function layoutMilestones(state: QuestState): Placement {
   const byId = new Map(state.work.map((item) => [item.id, item]));
@@ -112,33 +110,16 @@ function layoutMilestones(state: QuestState): Placement {
     }
     return null;
   };
-  const enclosing = (id: string) => milestoneOf(byId.get(id)?.parentId ?? null);
-  const contains = (outer: string, inner: string) => {
-    const seen = new Set<string>();
-    for (let at = enclosing(inner); at !== null && !seen.has(at); at = enclosing(at)) {
-      if (at === outer) return true;
-      seen.add(at);
-    }
-    return false;
-  };
   const current = milestoneOf(state.currentWorkId);
 
-  const edges = new Map<string, { kind: "follows" | "within"; source: string; target: string }>();
-  const link = (kind: "follows" | "within", source: string, target: string) => {
-    const id = `${kind}:${source}:${target}`;
-    if (!edges.has(id)) edges.set(id, { kind, source, target });
-  };
-  for (const milestone of milestones) {
-    const outer = enclosing(milestone.id);
-    if (outer !== null) link("within", milestone.id, outer);
-  }
+  const edges = new Map<string, { kind: "follows"; source: string; target: string }>();
   for (const relation of state.relations) {
     if (relation.type !== "follows") continue;
     const before = milestoneOf(relation.to);
     const after = milestoneOf(relation.from);
     if (before === null || after === null || before === after) continue;
-    if (contains(before, after) || contains(after, before)) continue;
-    link("follows", before, after);
+    const id = `follows:${before}:${after}`;
+    if (!edges.has(id)) edges.set(id, { kind: "follows", source: before, target: after });
   }
   // A dependency another path already implies is still true, but drawing it again only adds a
   // crossing; the details panel keeps every recorded relation.
@@ -524,6 +505,8 @@ function layoutCurrentWork(state: QuestState): Placement | null {
 export const FOCUS_UNIT = 4;
 /** Drawing weight for work whose focus is not set: structural, deliberately not zero. */
 export const NEUTRAL_FOCUS = 3;
+/** Narrowest ribbon; when equal shares get thinner, every width is scaled up together. */
+const MIN_RIBBON = 4;
 export const ROADMAP_BAR = 6;
 const LABEL_ROOM = 56;
 
@@ -532,10 +515,9 @@ function focusWeight(work: QuestWork): number {
 }
 
 /**
- * Flow is conserved like a Sankey: a stop needs its own planned focus or what it passes on,
- * whichever is larger, and that need arrives in equal shares from its prerequisites. So what leaves
- * a stop never exceeds what enters it; only stops nothing enters supply flow, as the total so far.
- * Widths are a projection of planned focus, not measured effort.
+ * Conserved flow: no record retains or ends flow at a stop that leads on, so it carries exactly
+ * what it passes on and its own focus does not size it. Only where flow ends does focus (or the
+ * neutral width) set the need, which arrives in equal shares from prerequisites. Illustrative.
  */
 function arrange(
   placed: ReadonlyArray<PlacedStop>,
@@ -561,13 +543,18 @@ function arrange(
       if (link.source === id)
         forwarded += needOf(link.target, visiting) / incomingCount.get(link.target)!;
     visiting.delete(id);
-    const value = Math.max(own, forwarded);
+    const value = links.some((link) => link.source === id) ? forwarded : own;
     need.set(id, value);
     return value;
   };
   for (const stop of placed) needOf(stop.work.id, new Set());
-  const linkWidth = (link: PlacedLink) => need.get(link.target)! / incomingCount.get(link.target)!;
-  const barHeight = (id: string) => need.get(id)!;
+  const thinnest = Math.min(
+    ...links.map((link) => need.get(link.target)! / incomingCount.get(link.target)!),
+  );
+  const scale = thinnest > 0 ? Math.max(1, MIN_RIBBON / thinnest) : 1;
+  const linkWidth = (link: PlacedLink) =>
+    (need.get(link.target)! / incomingCount.get(link.target)!) * scale;
+  const barHeight = (id: string) => need.get(id)! * scale;
   const pitch = Math.max(...placed.map((stop) => barHeight(stop.work.id))) + LABEL_ROOM;
   const column = Math.max(MIN_COLUMN, pitch + LABEL_CLEARANCE);
   const allRows = [
@@ -587,8 +574,7 @@ function arrange(
     height: barHeight(stop.work.id),
   }));
   const stopsById = new Map(stops.map((stop) => [stop.work.id, stop]));
-  // Ribbons stack from the top of each side of a bar in the vertical order of where they go next,
-  // so what a stop keeps stays visible below what it passes on.
+  // Ribbons stack from the top of each side of a bar in the vertical order of where they go next.
   const offsets = new Map<string, { sourceY: number; targetY: number; width: number }>();
   const nextY = (link: PlacedLink, side: "source" | "target") => {
     const point = side === "source" ? link.via[0] : link.via.at(-1);
@@ -616,7 +602,9 @@ function arrange(
   const paths: Array<RoadmapPath> = links.map((link) => ({
     ...link,
     ...offsets.get(link.id)!,
-    planned: ["planned", "deferred"].includes(byId.get(link.target)!.work.state),
+    planned: [link.source, link.target].some((id) =>
+      ["planned", "deferred"].includes(byId.get(id)!.work.state),
+    ),
     via: link.via.map((point) => ({ x: xOf(point.column), y: yOf(point.row) })),
   }));
   const lowest = Math.max(...stops.map((stop) => stop.y + barHeight(stop.work.id) / 2));

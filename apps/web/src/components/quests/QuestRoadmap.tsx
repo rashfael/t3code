@@ -59,8 +59,8 @@ function ribbonStream(source: QuestWork, target: QuestWork): string | null {
 
 /**
  * Milestone overview as a Sankey: explicit milestones and the dependencies between them, or for
- * older Quests the current work fanning out to its parts. Ribbons carry conserved flow derived from
- * planned focus; a ribbon into work not yet started is a dashed outline.
+ * older Quests the current work fanning out to its parts. Ribbons carry conserved flow; a ribbon
+ * into or out of work not yet started is a dashed outline.
  */
 export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null }) {
   const { state, openPanel, previewWorkId } = useQuest();
@@ -257,7 +257,8 @@ export function QuestRoadmap({ selectedWorkId }: { selectedWorkId: string | null
             </span>
           ) : null}
           <p className="absolute bottom-1 left-3 text-2xs text-muted-foreground">
-            Width: planned focus as flow, not effort · dashed outline: planned
+            Width: illustrative conserved flow, not effort · focus sizes only where flow ends ·
+            dashed outline: planned
           </p>
         </div>
       </div>
