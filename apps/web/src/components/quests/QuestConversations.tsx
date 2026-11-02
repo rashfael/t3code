@@ -261,13 +261,6 @@ function useOpenQuestConversation() {
     }
     operations.current.delete(intent);
     adopt(result.value.state);
-    const conversation = result.value.state.conversations.find(
-      (item) => item.threadId === result.value.threadId,
-    );
-    // Whether this request reserved it or finished an earlier reservation, the prepared context
-    // goes to an empty composer unsent; the owner edits or discards it.
-    if (conversation?.prepared)
-      restorePreparedContext(environmentId, result.value.threadId, conversation.prepared);
     showView("conversation", { thread: result.value.threadId });
     return result.value.threadId;
   }
@@ -637,8 +630,9 @@ function StartDiscussion({
             onChange={(event) => setPurpose(event.target.value)}
           />
           <p className="text-xs text-muted-foreground">
-            Creates an ordinary thread with the subject, open decisions and pinned sources prepared
-            in its composer. Nothing is sent until you send it.
+            Creates an ordinary thread with an empty composer. Its agent is told on every turn which
+            Quest and subject it belongs to and reads the plan, decisions and pinned sources itself.
+            Nothing is sent until you send it.
           </p>
           <div>
             <Button type="submit" size="sm" disabled={busy || !purpose.trim()}>
@@ -929,7 +923,7 @@ function ConversationHeader({
         .getComposerDraft(scopeThreadRef(environmentId, conversation.threadId as ThreadId))
         ?.prompt.trim(),
   );
-  // Another client, or a lost response, can open an unsent conversation without its context.
+  // Optional: agents already get orientation each turn; this copies the full briefing for the owner.
   const insertable =
     canWrite &&
     thread !== null &&
@@ -984,7 +978,7 @@ function ConversationHeader({
             <Button
               size="xs"
               variant="ghost"
-              title="Puts the subject, open decisions and pinned sources in the composer, unsent"
+              title="Optional: puts the subject, open decisions and pinned sources in the composer, unsent. The agent is oriented without it."
               onClick={() =>
                 restorePreparedContext(environmentId, conversation.threadId, insertable)
               }

@@ -459,6 +459,8 @@ export interface ProviderAdapterV2TurnInput {
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
   readonly appContext?: ReadonlyArray<{ readonly key: string; readonly text: string }>;
+  /** Trusted T3 context about the thread, resolved when this turn starts, such as Quest membership. */
+  readonly threadContext?: string;
 }
 
 export interface ProviderAdapterV2SteerInput {

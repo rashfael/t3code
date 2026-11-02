@@ -7551,6 +7551,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 pullRequestLinking:
                   sessionSetup === null ||
                   flavor.sessionCarriesPullRequestLinking?.(sessionSetup.initializeResult) !== true,
+                threadContext: instructionState.hasT3Mcp ? turnInput.threadContext : undefined,
               }),
             });
           }

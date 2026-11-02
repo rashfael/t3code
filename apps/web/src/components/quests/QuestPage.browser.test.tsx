@@ -834,12 +834,9 @@ it("starts a purpose-bound discussion without sending, then resumes it instead o
       modelSelection: { instanceId: "replay", model: "replay-model" },
     },
   });
-  // The prepared context waits in the composer; no draft is reused and nothing is sent.
+  // The composer stays the owner's: no briefing is inserted, no draft is reused, nothing is sent.
   const ref = scopeThreadRef("example-environment" as EnvironmentId, "thread-1" as ThreadId);
-  expect(useComposerDraftStore.getState().getComposerDraft(ref)?.prompt).toBe(
-    "Quest: prepared context",
-  );
-  useComposerDraftStore.getState().setPrompt(ref, "");
+  expect(useComposerDraftStore.getState().getComposerDraft(ref)?.prompt ?? "").toBe("");
   expect(harness.newThread).not.toHaveBeenCalled();
   expect(router.state.location.search).toMatchObject({ view: "conversation", thread: "thread-1" });
   await expect.element(screen.getByRole("button", { name: "About Part A" })).toBeVisible();
@@ -850,7 +847,7 @@ it("starts a purpose-bound discussion without sending, then resumes it instead o
   expect(harness.run).toHaveBeenCalledTimes(1);
 });
 
-it("finishes exactly the selected reservation and restores its context without overwriting the composer", async () => {
+it("finishes exactly the selected reservation and offers its context only on request, never over a draft", async () => {
   const initial = setup();
   const reserved = conversation("thread-a", "Example · Unblock Part A", {
     workId: "part-a",
@@ -901,8 +898,7 @@ it("finishes exactly the selected reservation and restores its context without o
     purpose: "Unblock Part A",
   });
   const ref = scopeThreadRef("example-environment" as EnvironmentId, "thread-a" as ThreadId);
-  // This request only finished the reservation, yet the context still reaches the composer.
-  expect(useComposerDraftStore.getState().getComposerDraft(ref)?.prompt).toBe("Prepared A");
+  expect(useComposerDraftStore.getState().getComposerDraft(ref)?.prompt ?? "").toBe("");
 
   // On another client the unsent thread offers its context; an edited draft is never replaced.
   harness.quests = {

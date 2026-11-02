@@ -63,8 +63,10 @@ import { ThreadToolkit } from "../../apps/server/src/mcp/toolkits/thread/tools.t
 import { WorktreeToolkit } from "../../apps/server/src/mcp/toolkits/worktree/tools.ts";
 import {
   CLAUDE_PROVIDER,
+  claudeTurnContextText,
   makeClaudeQueryOptions,
 } from "../../apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { questOrientationText } from "../../apps/server/src/quest/questContext.ts";
 import { proxyConfig } from "../shared/proxy.ts";
 import { changeRequestsCreatedBy } from "../../apps/server/src/orchestration-v2/PullRequestSyncReactor.ts";
 import { DeviceExpect, gradeDevice } from "./device-grading.ts";
@@ -266,6 +268,20 @@ export const McpToolUseCase = Schema.Struct({
      * device tool, a T3 `DeviceError` (`{"_tag": ..., "cause": null}`) fails it inside T3.
      */
     mocks: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+    /**
+     * The thread's recorded Quest membership. T3 builds the turn's orientation from it, and
+     * Claude Code shows it as UserPromptSubmit hook context after the prompt.
+     */
+    questMembership: Schema.optional(
+      Schema.Struct({
+        questId: Schema.String,
+        title: Schema.String,
+        historical: Schema.Boolean,
+        role: Schema.Literals(["core", "focused"]),
+        purpose: Schema.String,
+        subject: Schema.NullOr(Schema.String),
+      }),
+    ),
     /** Regexes on one part of a shell command. A match wins over the shell simulator. */
     shellMocks: Schema.optional(
       Schema.Array(Schema.Struct({ match: Schema.String, output: Schema.String })),
@@ -940,6 +956,16 @@ export const buildMessages = (sample: Sample) => {
         );
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   push("user", text(role === "delegated-child" ? childPrompt() : prompt));
+  const membership = testCase.setup.questMembership;
+  if (membership !== undefined) {
+    if (base.codex) throw new Error(`${testCase.id}: questMembership is modeled for Claude only.`);
+    push(
+      "user",
+      reminder(
+        `UserPromptSubmit hook additional context: ${claudeTurnContextText(questOrientationText(membership))}`,
+      ),
+    );
+  }
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {
     push("user", reminder(`SubagentStart hook additional context: ${base.subagentContext}`));

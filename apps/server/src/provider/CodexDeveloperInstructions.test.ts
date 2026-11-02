@@ -7,6 +7,17 @@ import {
   buildCodexAdditionalContext,
   CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
 } from "./CodexDeveloperInstructions.ts";
+import { questOrientationText } from "../quest/questContext.ts";
+
+// Every free-text field at its bound.
+const LONGEST_ORIENTATION = questOrientationText({
+  questId: "q".repeat(64),
+  title: "🦊".repeat(500),
+  historical: true,
+  role: "focused",
+  purpose: "🦊".repeat(500),
+  subject: "🦊".repeat(500),
+});
 
 describe("buildCodexAdditionalContext", () => {
   describe.each([
@@ -15,7 +26,7 @@ describe("buildCodexAdditionalContext", () => {
     it.each([undefined, { browser: true, device: true }])(
       "keeps every entry within Codex's per-entry cap with tools %j",
       (availability) => {
-        const context = buildCodexAdditionalContext(runtime, availability);
+        const context = buildCodexAdditionalContext(runtime, availability, LONGEST_ORIENTATION);
 
         for (const [key, entry] of Object.entries(context)) {
           // Codex counts ceil(UTF-8 bytes / 4) tokens, excluding keys and wrappers.

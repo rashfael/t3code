@@ -1465,6 +1465,27 @@ const subagentDeviceInstructions: HookCallback = () =>
     },
   });
 
+/** Claude defers MCP tools, so its copy of a turn's thread context says how to load the tool. */
+export const claudeTurnContextText = (context: string) =>
+  `${context}\nT3 tools are deferred: load \`t3_quest_context\` with ToolSearch \`select:mcp__t3-code__t3_quest_context\` before calling it.`;
+
+/** Delivers a turn's thread context, such as Quest membership, with its prompt, then clears it. */
+const turnContextHook =
+  (take: () => string | undefined): HookCallback =>
+  () => {
+    const context = take();
+    return Promise.resolve(
+      context === undefined
+        ? {}
+        : {
+            hookSpecificOutput: {
+              hookEventName: "UserPromptSubmit" as const,
+              additionalContext: claudeTurnContextText(context),
+            },
+          },
+    );
+  };
+
 export function makeClaudeQueryOptions(input: {
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
@@ -1478,6 +1499,8 @@ export function makeClaudeQueryOptions(input: {
   readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
   /** The thread's T3 MCP session holds the `device` capability. */
   readonly deviceToolsAvailable?: boolean;
+  /** Takes the pending turn's thread context once; only offered with T3's MCP server. */
+  readonly takeTurnContext?: () => string | undefined;
   readonly tools?: ClaudeAgentSdkQueryTools;
   readonly allowedTools?: ReadonlyArray<string>;
   readonly disallowedTools?: ReadonlyArray<string>;
@@ -1546,6 +1569,7 @@ export function makeClaudeQueryOptions(input: {
           env: { ...compactQuerySettings?.env, ENABLE_TOOL_SEARCH: input.toolSearchOverride },
         } as ClaudeSdkSettings);
   const deviceInstructions = input.mcpServers !== undefined && input.deviceToolsAvailable === true;
+  const turnContext = input.mcpServers === undefined ? undefined : input.takeTurnContext;
   const options: ClaudeAgentSdkQueryOptions = {
     model: compiledSelection.apiModelId,
     tools: claudeAgentSdkQueryToolsForSdk(selectedTools),
@@ -1607,8 +1631,17 @@ export function makeClaudeQueryOptions(input: {
         ...launchAppendSystemPrompt,
       ].join("\n\n"),
     },
-    ...(deviceInstructions
-      ? { hooks: { SubagentStart: [{ hooks: [subagentDeviceInstructions] }] } }
+    ...(deviceInstructions || turnContext !== undefined
+      ? {
+          hooks: {
+            ...(deviceInstructions
+              ? { SubagentStart: [{ hooks: [subagentDeviceInstructions] }] }
+              : {}),
+            ...(turnContext === undefined
+              ? {}
+              : { UserPromptSubmit: [{ hooks: [turnContextHook(turnContext)] }] }),
+          },
+        }
       : {}),
     ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
   };
@@ -4124,6 +4157,8 @@ interface ClaudeLiveQueryContext {
   selection: CompiledClaudeModelSelection;
   readonly closed: Deferred.Deferred<void, never>;
   lastTurn: ActiveClaudeTurnContext | null;
+  /** The next prompt's thread context, taken once by the UserPromptSubmit hook. */
+  readonly turnContext: { pending: string | undefined };
   // "early" echoes on the first frame; "acknowledged" confirms uuid acceptance, but resume turns can still precede the prompt.
   promptEchoMode: "unknown" | "acknowledged" | "early" | "result_only";
   // The CLI may fall back from the requested mode on its first init frame.
@@ -10346,6 +10381,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.runtimePolicy.cwd,
             launchArgSettings,
           );
+          const turnContext: { pending: string | undefined } = { pending: undefined };
           const queryOptions = makeClaudeQueryOptions({
             modelSelection: turnInput.modelSelection,
             nativeThreadId,
@@ -10372,6 +10408,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { mcpServers: mcpOverrides.mcpServers }),
             deviceToolsAvailable: mcpSession?.capabilities?.has("device") === true,
+            takeTurnContext: () => {
+              const pending = turnContext.pending;
+              turnContext.pending = undefined;
+              return pending;
+            },
             permissionMode: queryPolicy.permissionMode,
             ...(queryPolicy.allowDangerouslySkipPermissions === undefined
               ? {}
@@ -10427,6 +10468,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             selection: compiledSelection,
             closed,
             lastTurn: null,
+            turnContext,
             promptEchoMode: "unknown",
             openedPermissionMode: queryOptions.permissionMode,
             receivedInit: false,
@@ -10585,6 +10627,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     Effect.provideService(Path.Path, path),
                   );
             const querySession = yield* openQuery(turnInput, nativeThreadId);
+            // Set per prompt, so a turn without membership clears an earlier one.
+            querySession.turnContext.pending =
+              userMessage === null ? undefined : turnInput.threadContext;
             const context: ActiveClaudeTurnContext = {
               input: turnInput,
               queryPolicy: querySession.queryPolicy,

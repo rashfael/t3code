@@ -52,6 +52,7 @@ import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
+import * as ThreadTurnContext from "./ThreadTurnContext.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
 const driver = ProviderDriverKind.make("codex");
@@ -826,7 +827,7 @@ it.effect("rechecks run ownership immediately before calling the provider", () =
   }).pipe(Effect.provide(layerRunExecutionTest)),
 );
 
-it.effect("passes the thread's MCP app context to the provider under a safe key", () =>
+it.effect("passes the thread's MCP app context and turn context to the provider", () =>
   Effect.gen(function* () {
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const started = yield* Deferred.make<ProviderAdapter.ProviderAdapterV2TurnInput>();
@@ -878,12 +879,16 @@ it.effect("passes the thread's MCP app context to the provider under a safe key"
     assert.deepEqual(input.appContext, [
       { key: "mcp_app_turn-item_provider_codex_native-item_call-1", text: "2 overdue" },
     ]);
+    assert.equal(input.threadContext, `member ${threadId}`);
   }).pipe(
     Effect.provide(
       RunExecutionService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
             PreviewAgentActivity.layer,
+            Layer.succeed(ThreadTurnContext.ThreadTurnContext, (threadId) =>
+              Effect.succeed(`member ${threadId}`),
+            ),
             Layer.mock(McpAppModelContext.McpAppModelContext)({
               forThread: () =>
                 Effect.succeed([

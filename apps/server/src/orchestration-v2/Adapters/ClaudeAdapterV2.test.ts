@@ -729,6 +729,61 @@ describe("ClaudeAdapterV2 device instructions", () => {
   });
 });
 
+describe("ClaudeAdapterV2 turn context", () => {
+  it("delivers a turn's thread context once with its prompt, and only with T3 tools", async () => {
+    let pending: string | undefined = "<t3_quest_membership>m</t3_quest_membership>";
+    const take = () => {
+      const value = pending;
+      pending = undefined;
+      return value;
+    };
+    const submit = (mcp: boolean) =>
+      Promise.all(
+        (
+          ClaudeAdapterV2.makeClaudeQueryOptions({
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: "claude-opus-5-5",
+            },
+            nativeThreadId: "native-thread-claude-quest",
+            resume: false,
+            cwd: "/workspace",
+            ...(mcp
+              ? {
+                  mcpServers: { "t3-code": { type: "http" as const, url: "http://127.0.0.1/mcp" } },
+                }
+              : {}),
+            takeTurnContext: take,
+            environment: {},
+          }).hooks?.UserPromptSubmit ?? []
+        ).flatMap((matcher) =>
+          matcher.hooks.map((hook) =>
+            hook(
+              {
+                hook_event_name: "UserPromptSubmit",
+                prompt: "Continue",
+                session_id: "native-thread-claude-quest",
+                transcript_path: "/transcript.jsonl",
+                cwd: "/workspace",
+              },
+              undefined,
+              { signal: new AbortController().signal },
+            ),
+          ),
+        ),
+      );
+    assert.deepEqual(await submit(false), []);
+    const [first] = await submit(true);
+    assert.include(
+      (first as { hookSpecificOutput?: { additionalContext?: string } }).hookSpecificOutput
+        ?.additionalContext,
+      "<t3_quest_membership>m</t3_quest_membership>",
+    );
+    // A steer or a turn without membership gets nothing.
+    assert.deepEqual(await submit(true), [{}]);
+  });
+});
+
 describe("ClaudeAdapterV2 context usage", () => {
   it("dates cache expiry from the request start, not the response end", () => {
     const usage = ClaudeAdapterV2.claudeProviderTurnTokenUsage(

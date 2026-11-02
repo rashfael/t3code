@@ -121,6 +121,75 @@ export function questContextPacket(
   return `${lines.join("\n")}\n\n`;
 }
 
+export interface QuestOrientationInput {
+  readonly questId: string;
+  readonly title: string;
+  readonly historical: boolean;
+  readonly role: QuestConversation["role"];
+  readonly purpose: string;
+  /** What a focused discussion is about, or the work the core coordinates now. */
+  readonly subject: string | null;
+}
+
+const oneLine = (text: string, limit: number) => {
+  const flat = text.replaceAll(/\s+/g, " ").trim();
+  return flat.length <= limit ? flat : `${flat.slice(0, limit)}…`;
+};
+
+/**
+ * Per-turn orientation for a Quest member, derived from recorded membership. It names the
+ * Quest and subject and points at `t3_quest_context`; the plan and documents stay out of it.
+ */
+export function questOrientationText(input: QuestOrientationInput): string {
+  const quest = `"${oneLine(input.title, 120)}" (questId ${input.questId})`;
+  const lines = [
+    input.role === "core"
+      ? `This thread is the core coordination conversation of the T3 Code Quest ${quest}.`
+      : `This thread is a focused discussion in the T3 Code Quest ${quest}.`,
+  ];
+  if (input.historical) lines.push("It is a historical example; do not resume its original work.");
+  if (input.purpose.trim()) lines.push(`Purpose: ${oneLine(input.purpose, 300)}`);
+  if (input.subject) lines.push(`Subject: ${oneLine(input.subject, 200)}`);
+  lines.push(
+    "Before Quest work, such as answering about the subject, planning, deciding or changing code for it, call `t3_quest_context` for the plan, decisions, pinned sources and other discussions' results. Call it again before you reconcile their results or plan changes. Nothing from other discussions reaches this thread unless you read it.",
+    "Record what you deliver or learn with `t3_quest_publish_result` and plan edits with `t3_quest_propose_plan`; only the owner applies answers and plan changes.",
+    "T3 Code adds this note to every turn while the thread is a Quest member. A later turn without it means the thread has left the Quest; then ignore earlier Quest notes.",
+  );
+  return `<t3_quest_membership>\n${lines.join("\n")}\n</t3_quest_membership>`;
+}
+
+/** Orientation for `threadId` from current state, or undefined when it is not a member. */
+export function questTurnOrientation(
+  state: QuestState,
+  threadId: string,
+  identity: QuestIdentity,
+): string | undefined {
+  const member = state.conversations.find((item) => item.threadId === threadId);
+  if (member === undefined) return undefined;
+  const question = state.questions.find((item) => item.id === member.questionId);
+  const work = state.work.find(
+    (item) =>
+      item.id ===
+      (member.role === "core"
+        ? state.currentWorkId
+        : subjectWorkId(state, member.workId, member.questionId)),
+  );
+  const subject =
+    member.role === "core"
+      ? work && `current work "${work.title}"`
+      : question
+        ? `decision "${question.title}"${work ? ` in work "${work.title}"` : ""}`
+        : work && `work "${work.title}"`;
+  return questOrientationText({
+    questId: identity.id,
+    title: identity.title,
+    historical: identity.historical,
+    role: member.role,
+    purpose: member.purpose,
+    subject: subject ?? null,
+  });
+}
+
 const RESULT_LIMIT = 20;
 const PROPOSAL_LIMIT = 10;
 

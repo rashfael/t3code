@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
   ProviderInstanceId,
+  ThreadId,
   type QuestOpenConversationInput,
   type QuestUpdateInput,
 } from "@t3tools/contracts";
@@ -14,10 +15,12 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 
 import * as ServerConfig from "../config.ts";
-import { LEGACY_QUEST, questAgentContext } from "./questContext.ts";
+import * as ThreadTurnContext from "../orchestration-v2/ThreadTurnContext.ts";
+import { LEGACY_QUEST, questAgentContext, questTurnOrientation } from "./questContext.ts";
 import { migrateQuestV1 } from "./questMigration.ts";
 import { questSeedV1 } from "./questSeed.ts";
 import * as QuestStore from "./QuestStore.ts";
+import * as QuestTurnContext from "./QuestTurnContext.ts";
 
 const legacyQuest = Effect.gen(function* () {
   const store = yield* QuestStore.QuestStore;
@@ -876,6 +879,21 @@ describe("QuestStore", () => {
           expect(questAgentContext(moveBack, coreId, LEGACY_QUEST).work?.id).toBe(
             "review-deliveries",
           );
+          // Turn orientation names the Quest and subject and points at the context tool.
+          const focusedNote = questTurnOrientation(
+            moveBack,
+            discussion.conversation.threadId,
+            LEGACY_QUEST,
+          );
+          expect(focusedNote).toContain(`questId ${QUEST_DEFAULT_ID}`);
+          expect(focusedNote).toContain("focused discussion");
+          expect(focusedNote).toContain('decision "How should the conflicting summaries appear?"');
+          expect(focusedNote).toContain("call `t3_quest_context`");
+          expect(focusedNote).not.toContain("older planning summary");
+          expect(questTurnOrientation(moveBack, coreId, LEGACY_QUEST)).toContain(
+            'current work "Nine older deliveries · awaiting review"',
+          );
+          expect(questTurnOrientation(moveBack, "not-in-the-quest", LEGACY_QUEST)).toBeUndefined();
           expect((yield* store.reconstruct(moved.revision)).domain.currentWorkId).toBe(
             "summary-gap",
           );
@@ -2098,6 +2116,14 @@ describe("QuestStore several Quests", () => {
           expect((yield* legacy.get).work.some((item) => item.id === "milestone")).toBe(false);
           expect((yield* store.memberQuest("thread-shared"))?.identity.id).toBe(QUEST_DEFAULT_ID);
           expect(yield* store.memberQuest("thread-original")).toBeNull();
+          // Dispatch resolves recorded membership; an external reference gets no orientation.
+          const orient = yield* ThreadTurnContext.ThreadTurnContext.pipe(
+            Effect.provide(QuestTurnContext.layer),
+          );
+          expect(yield* orient(ThreadId.make("thread-shared"))).toContain(
+            `questId ${QUEST_DEFAULT_ID}`,
+          );
+          expect(yield* orient(ThreadId.make("thread-original"))).toBeUndefined();
           expect((yield* store.threadLink("thread-shared"))?.questId).toBe(QUEST_DEFAULT_ID);
           expect(
             (yield* store.catalog).quests.map((item) => [item.questId, item.revision]),
