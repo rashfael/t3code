@@ -68,6 +68,7 @@ const VIEWS: ReadonlyArray<{ value: QuestView; label: string }> = [
 function resolveView(scope: QuestScopeKey, search: QuestSearch): QuestView {
   if (search.view) return search.view;
   if (search.question) return "decisions";
+  if (search.document) return "documents";
   const { env: _env, quest: _quest, ...rest } = search;
   if (Object.keys(rest).length > 0) return "overview";
   return readQuestView(scope) ?? "overview";
@@ -202,6 +203,18 @@ function QuestWorkspaceView({
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- records the shown view in the Quest store so returning to the bare Quest route reopens it
   useEffect(() => rememberQuestView(scope, view), [scope, view]);
+
+  const routedDocument = search.document ?? null;
+  const routedDocumentExists =
+    routedDocument !== null &&
+    [...state.files, ...state.documents].some(
+      (item) => item.id === routedDocument.replace(/@[0-9a-f]{64}$/, ""),
+    );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- opens a routed document in the Quest's tab store, which also holds the tabs the user opened
+  useEffect(() => {
+    if (routedDocument !== null && routedDocumentExists)
+      openQuestDocumentTab(scope, routedDocument, false);
+  }, [scope, routedDocument, routedDocumentExists]);
 
   function setPanel(next: ReadonlyArray<PanelEntry>) {
     setPanelState(next);

@@ -15,6 +15,8 @@ export interface QuestSearch {
   readonly about?: string;
   /** The linked conversation shown in the Conversation view. */
   readonly thread?: string;
+  /** A registered document, or `<id>@<sha256>` for a retained version, opened in Documents. */
+  readonly document?: string;
 }
 
 const VIEWS: ReadonlyArray<QuestView> = [
@@ -38,6 +40,7 @@ export function parseQuestSearch(raw: Record<string, unknown>): QuestSearch {
   const question = searchText(raw.question);
   const about = searchText(raw.about);
   const thread = searchText(raw.thread);
+  const document = searchText(raw.document);
   return {
     ...(env ? { env } : {}),
     ...(quest ? { quest } : {}),
@@ -46,6 +49,7 @@ export function parseQuestSearch(raw: Record<string, unknown>): QuestSearch {
     ...(question ? { question } : {}),
     ...(about ? { about } : {}),
     ...(thread ? { thread } : {}),
+    ...(document ? { document } : {}),
   };
 }
 

@@ -7,6 +7,10 @@
       "types": "./src/questPlan.ts",
       "import": "./src/questPlan.ts"
     },
+    "./questLinks": {
+      "types": "./src/questLinks.ts",
+      "import": "./src/questLinks.ts"
+    },
     "./changedFileKind": {
       "types": "./src/changedFileKind.ts",
       "import": "./src/changedFileKind.ts"

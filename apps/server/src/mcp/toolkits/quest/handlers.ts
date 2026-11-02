@@ -2,12 +2,19 @@
 import * as NodeCrypto from "node:crypto";
 
 import { OrchestratorMcpFailure, questQuestionStatus, type QuestError } from "@t3tools/contracts";
+import { formatQuestLink } from "@t3tools/shared/questLinks";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import * as Environment from "../../../environment/ServerEnvironment.ts";
-import { questAgentContext } from "../../../quest/questContext.ts";
+import {
+  questAgentContext,
+  questAgentDetails,
+  questProposalOverlaps,
+  type QuestLinker,
+} from "../../../quest/questContext.ts";
 import * as QuestStore from "../../../quest/QuestStore.ts";
+import type { McpInvocationScope } from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { loadCaller, readCaller } from "../../threadAccess.ts";
 import { QuestToolkit } from "./tools.ts";
@@ -22,6 +29,19 @@ const toFailure = (error: QuestError) =>
   });
 
 const encodeParams = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+
+/** Links into the Quest the caller can open: T3 links, or web URLs on a client's own origin. */
+function questLinker(
+  scope: Pick<McpInvocationScope, "environmentId" | "client">,
+  questId: string,
+): QuestLinker {
+  return (kind, id, label) =>
+    formatQuestLink(
+      { environmentId: scope.environmentId, questId, kind, id },
+      label,
+      scope.client?.webOrigin,
+    );
+}
 
 /**
  * The calling discussion as the server knows it: its own thread and active run, never a thread the
@@ -56,12 +76,34 @@ const contribute = Effect.fn("QuestMcp.contribute")(function* (
       { kind: "agent", id: threadId },
     )
     .pipe(Effect.mapError(toFailure));
-  if (saved.id === null)
-    return yield* new OrchestratorMcpFailure({
-      code: "orchestration_error",
-      message: "The record was not found after saving.",
-    });
-  return { id: saved.id, revision: saved.state.revision };
+  const link = questLinker(scope, store.identity.id);
+  const result = saved.state.contributions.find((item) => item.id === saved.id);
+  if (result)
+    return {
+      id: result.id,
+      revision: saved.state.revision,
+      title: result.title,
+      status: "recorded" as const,
+      link: link("result", result.id, result.title),
+      note: "Recorded for the owner and other discussions. Nothing is accepted or applied until the owner applies a plan change that uses it.",
+    };
+  const proposal = saved.state.proposals.find((item) => item.id === saved.id);
+  if (proposal) {
+    const overlaps = questProposalOverlaps(saved.state, proposal);
+    return {
+      id: proposal.id,
+      revision: saved.state.revision,
+      title: proposal.title,
+      status: "proposed" as const,
+      link: link("proposal", proposal.id, proposal.title),
+      note: "Waiting for the owner in Decisions. Nothing in the plan changed.",
+      ...(overlaps.length > 0 ? { overlapsOpenProposals: overlaps } : {}),
+    };
+  }
+  return yield* new OrchestratorMcpFailure({
+    code: "orchestration_error",
+    message: "The record was not found after saving.",
+  });
 });
 
 export const layer = McpToolAccess.toLayer(QuestToolkit, {
@@ -121,7 +163,10 @@ export const layer = McpToolAccess.toLayer(QuestToolkit, {
         });
       if (input.revision === undefined) {
         const state = yield* store.get.pipe(Effect.mapError(toFailure));
-        return questAgentContext(state, threadId, store.identity);
+        const link = questLinker(context.scope, store.identity.id);
+        if (input.resultIds || input.proposalIds || input.plan)
+          return questAgentDetails(state, store.identity, link, input);
+        return questAgentContext(state, threadId, store.identity, link);
       }
       const past = yield* store.reconstruct(input.revision).pipe(Effect.mapError(toFailure));
       return {

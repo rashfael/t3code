@@ -118,7 +118,11 @@ it.effect(
         );
         const first = (yield* publish).at(-1)?.result;
         const again = (yield* publish).at(-1)?.result;
-        expect(first).toMatchObject({ id: "result-1" });
+        expect(first).toMatchObject({
+          id: "result-1",
+          status: "recorded",
+          link: `[Documents delivered](t3-quest://v1/${encodeURIComponent(environmentId)}/t3-quests/result/result-1)`,
+        });
         expect(again).toEqual(first);
         expect((yield* quest.get).contributions).toHaveLength(0);
         const saved = yield* real.get;

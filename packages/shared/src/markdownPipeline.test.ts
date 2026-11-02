@@ -118,7 +118,7 @@ it.each([
   }
 });
 
-it("preserves in-app thread links through the shared Markdown sanitizer", () => {
+it("preserves in-app thread and Quest links through the shared Markdown sanitizer", () => {
   const processor = unified()
     .use(remarkParse)
     .use(CHAT_MARKDOWN_REMARK_PLUGINS)
@@ -126,7 +126,7 @@ it("preserves in-app thread links through the shared Markdown sanitizer", () => 
     .use(CHAT_MARKDOWN_REHYPE_PLUGINS);
   const tree = processor.runSync(
     processor.parse(
-      '[Open thread](t3-thread://v1/thread)\n\n<t3-thread://v2/environment/thread:a%3A1>\n\n<a href="javascript:alert(1)">Unsafe</a>',
+      '[Open thread](t3-thread://v1/thread)\n\n<t3-thread://v2/environment/thread:a%3A1>\n\n<a href="javascript:alert(1)">Unsafe</a>\n\n[Plan](t3-quest://v1/env/quest/proposal/proposal-1)',
     ),
   );
   expect(tree.children[0]).toMatchObject({
@@ -147,6 +147,11 @@ it("preserves in-app thread links through the shared Markdown sanitizer", () => 
         properties: { href: "t3-thread://v2/environment/thread:a%3A1" },
         children: [{ type: "text", value: "t3-thread://v2/environment/thread:a%3A1" }],
       },
+    ],
+  });
+  expect(tree.children[6]).toMatchObject({
+    children: [
+      { tagName: "a", properties: { href: "t3-quest://v1/env/quest/proposal/proposal-1" } },
     ],
   });
   expect(JSON.stringify(tree)).not.toContain("javascript:");

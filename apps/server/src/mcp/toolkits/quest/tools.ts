@@ -23,7 +23,7 @@ const QuestContextTool = Tool.make("t3_quest_context", {
     QuestStore.QuestStore,
   ],
   description:
-    "Read the Quest a thread belongs to: its role and purpose there, subject work, open decisions, pinned sources, sibling conversations, the current plan, and results and plan proposals other discussions recorded. Current state only; pass `revision` to read one earlier saved revision. Read sibling discussions with `t3_thread_read`. Nothing here sends messages or applies answers.",
+    "Read the Quest a thread belongs to: its role and purpose there, subject work, open decisions, pinned sources, the workspace and its registered documents, sibling conversations, the current plan, and results and plan proposals other discussions recorded. Without selectors it returns a bounded orientation with excerpts and titled links; pass `resultIds` or `proposalIds` for full records with exact edit before-values, `plan: true` for dependencies, or `revision` for one earlier saved revision. Read sibling discussions with `t3_thread_read`. Nothing here sends messages or applies answers.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(
@@ -33,6 +33,17 @@ const QuestContextTool = Tool.make("t3_quest_context", {
       Schema.Int.annotate({
         description: "Earlier saved revision to reconstruct. Omit for current.",
       }),
+    ),
+    resultIds: Schema.optional(
+      Schema.Array(Schema.String).annotate({ description: "Results to read in full." }),
+    ),
+    proposalIds: Schema.optional(
+      Schema.Array(Schema.String).annotate({
+        description: "Plan proposals to read in full, with each edit's exact before and after.",
+      }),
+    ),
+    plan: Schema.optional(
+      Schema.Boolean.annotate({ description: "Every work item with its dependencies." }),
     ),
   }),
   success: Schema.Record(Schema.String, Schema.Unknown),
@@ -47,14 +58,25 @@ const questWriteDependencies = [
   QuestStore.QuestStore,
 ];
 
-const QuestRecorded = Schema.Struct({ id: Schema.String, revision: Schema.Number });
+const QuestRecorded = Schema.Struct({
+  id: Schema.String,
+  revision: Schema.Number,
+  title: Schema.String,
+  status: Schema.Literals(["recorded", "proposed"]),
+  /** A titled link that opens this record in the Quest; cite it to the user. */
+  link: Schema.String,
+  note: Schema.String,
+  overlapsOpenProposals: Schema.optional(
+    Schema.Array(Schema.Struct({ proposalId: Schema.String, fields: Schema.Array(Schema.String) })),
+  ),
+});
 
 const QuestPublishResultTool = Tool.make("t3_quest_publish_result", {
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies: questWriteDependencies,
   description:
-    "Record a result of your Quest discussion for the Quest: what was delivered or learned, exact evidence, limitations and the work it affects. Other discussions see it on their next t3_quest_context read; nothing is sent to them. It changes no plan.",
+    "Record a result of your Quest discussion for the Quest: what was delivered or learned, exact evidence, limitations and the work it affects. Other discussions see it on their next t3_quest_context read; nothing is sent to them. It changes no plan. Give the user the returned link.",
   parameters: Schema.Struct({
     title: Schema.String,
     summary: Schema.String.annotate({ description: "What was delivered or learned." }),
@@ -84,7 +106,7 @@ const QuestProposePlanTool = Tool.make("t3_quest_propose_plan", {
   failureMode: "return",
   dependencies: questWriteDependencies,
   description:
-    "Propose concrete Quest plan edits from your discussion, citing the results they use. Only the owner applies, defers or declines it in Decisions; proposing changes no work.",
+    "Propose concrete Quest plan edits from your discussion, citing the results they use. Only the owner applies, defers or declines it in Decisions; proposing changes no work. Give the user the returned link; reconcile any listed overlapping open proposal instead of leaving both.",
   parameters: Schema.Struct({
     title: Schema.String,
     rationale: Schema.String,

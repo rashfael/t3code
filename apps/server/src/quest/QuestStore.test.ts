@@ -16,7 +16,13 @@ import * as PlatformError from "effect/PlatformError";
 
 import * as ServerConfig from "../config.ts";
 import * as ThreadTurnContext from "../orchestration-v2/ThreadTurnContext.ts";
-import { LEGACY_QUEST, questAgentContext, questTurnOrientation } from "./questContext.ts";
+import {
+  LEGACY_QUEST,
+  questAgentContext,
+  questAgentDetails,
+  questTurnOrientation,
+  type QuestLinker,
+} from "./questContext.ts";
 import { migrateQuestV1 } from "./questMigration.ts";
 import { questSeedV1 } from "./questSeed.ts";
 import * as QuestStore from "./QuestStore.ts";
@@ -28,6 +34,7 @@ const legacyQuest = Effect.gen(function* () {
 });
 
 const actor = { kind: "client", id: null } as const;
+const link: QuestLinker = (kind, id, label) => `[${label}](${kind}:${id})`;
 
 const harness = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -844,7 +851,7 @@ describe("QuestStore", () => {
           // The core's current context follows the current milestone; a focused one keeps its subject.
           const coreId = core[0]!.threadId;
           const atReservation = yield* store.get;
-          expect(questAgentContext(atReservation, coreId, LEGACY_QUEST)).toMatchObject({
+          expect(questAgentContext(atReservation, coreId, LEGACY_QUEST, link)).toMatchObject({
             currentWorkId: "milestone-a",
             work: { id: "milestone-a" },
             caller: { role: "core" },
@@ -856,7 +863,7 @@ describe("QuestStore", () => {
             },
             actor,
           );
-          const asCore = questAgentContext(moved, coreId, LEGACY_QUEST);
+          const asCore = questAgentContext(moved, coreId, LEGACY_QUEST, link);
           expect(asCore).toMatchObject({
             currentWorkId: "summary-gap",
             work: { id: "summary-gap" },
@@ -870,13 +877,13 @@ describe("QuestStore", () => {
             actor,
           );
           expect(
-            questAgentContext(moveBack, discussion.conversation.threadId, LEGACY_QUEST),
+            questAgentContext(moveBack, discussion.conversation.threadId, LEGACY_QUEST, link),
           ).toMatchObject({
             currentWorkId: "review-deliveries",
             work: { id: "summary-gap" },
             caller: { role: "focused", sourceRevision: discussion.conversation.sourceRevision },
           });
-          expect(questAgentContext(moveBack, coreId, LEGACY_QUEST).work?.id).toBe(
+          expect(questAgentContext(moveBack, coreId, LEGACY_QUEST, link).work?.id).toBe(
             "review-deliveries",
           );
           // Turn orientation names the Quest and subject and points at the context tool.
@@ -1714,7 +1721,7 @@ describe("QuestStore plan coordination", () => {
           });
           state = reported.state;
 
-          const mapView = questAgentContext(state, mapThread, LEGACY_QUEST);
+          const mapView = questAgentContext(state, mapThread, LEGACY_QUEST, link);
           expect(mapView.results.find((item) => item.id === result.id)).toMatchObject({
             affectsYourWork: true,
             newSinceYourContext: true,
@@ -1770,6 +1777,42 @@ describe("QuestStore plan coordination", () => {
           const proposal = state.proposals[0]!;
           expect(proposal).toMatchObject({ provenance: "observed", status: "proposed" });
           expect(state.work.some((item) => item.id === "two-discussions")).toBe(false);
+
+          // The orientation lists records; their full text and exact before-values are a detail read.
+          const rival = {
+            ...proposal,
+            id: "proposal-rival",
+            source: { threadId: docsThread, runId: null },
+          };
+          const competing = { ...state, proposals: [...state.proposals, rival] };
+          const oriented = questAgentContext(competing, docsThread, LEGACY_QUEST, link);
+          expect(oriented.results.find((item) => item.id === result.id)).not.toHaveProperty(
+            "summary",
+          );
+          expect(oriented.proposals[0]).toMatchObject({
+            link: `[${proposal.title}](proposal:${proposal.id})`,
+            overlapsOpenProposals: [
+              {
+                proposalId: "proposal-rival",
+                fields: ["a4-demonstration.state", "milestone-a.role", "milestone-a.shortTitle"],
+              },
+            ],
+          });
+          expect(JSON.stringify(oriented.proposals)).not.toContain(
+            "Reconcile parallel discussions",
+          );
+          const details = questAgentDetails(competing, LEGACY_QUEST, link, {
+            proposalIds: [proposal.id],
+            resultIds: [result.id, "result-missing"],
+          });
+          expect(details.missing).toEqual(["result-missing"]);
+          expect(details.results?.[0]?.summary).toBe(
+            state.contributions.find((item) => item.id === result.id)?.summary,
+          );
+          expect(details.proposals?.[0]?.edits[4]).toMatchObject({
+            type: "change-work",
+            before: proposal.edits[4]!.type === "change-work" ? proposal.edits[4]!.before : null,
+          });
 
           const agentApply = yield* store
             .update(
@@ -1858,7 +1901,7 @@ describe("QuestStore plan coordination", () => {
           expect(state.history.at(-1)?.changes.at(-2)).toMatchObject({ label: "Not applied" });
 
           for (const threadId of [mapThread, docsThread]) {
-            const view = questAgentContext(state, threadId, LEGACY_QUEST);
+            const view = questAgentContext(state, threadId, LEGACY_QUEST, link);
             expect(view.plan.currentWorkId).toBe("two-discussions");
             expect(view.proposals[0]).toMatchObject({ status: "applied" });
             expect(view.sinceYourContext?.appliedPlanChanges).toEqual([proposal.id]);
@@ -2131,7 +2174,7 @@ describe("QuestStore several Quests", () => {
             [QUEST_DEFAULT_ID, historical.revision],
             ["t3-quests", referenced.revision],
           ]);
-          const context = questAgentContext(referenced, null, real.identity);
+          const context = questAgentContext(referenced, null, real.identity, link);
           expect(context).toMatchObject({
             questId: "t3-quests",
             caller: null,

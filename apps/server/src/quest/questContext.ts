@@ -3,9 +3,11 @@ import {
   questQuestionStatus,
   type QuestContribution,
   type QuestConversation,
+  type QuestPlanProposal,
   type QuestSourcePin,
   type QuestState,
 } from "@t3tools/contracts";
+import type { QuestLinkKind } from "@t3tools/shared/questLinks";
 import { questPlanEditChecks, questPlanEditSummary } from "@t3tools/shared/questPlan";
 
 export interface QuestIdentity {
@@ -192,6 +194,10 @@ export function questTurnOrientation(
 
 const RESULT_LIMIT = 20;
 const PROPOSAL_LIMIT = 10;
+const EXCERPT_LIMIT = 280;
+
+/** Writes a titled link to one Quest record; T3 clients open it, others still read the label. */
+export type QuestLinker = (kind: QuestLinkKind, id: string, label: string) => string;
 
 /** Work ids on the path from `workId` to the root, so results about a parent or child count. */
 function lineage(state: QuestState, workId: string | null): ReadonlySet<string> {
@@ -212,14 +218,48 @@ function touches(state: QuestState, result: QuestContribution, workId: string | 
   );
 }
 
+const isOpenProposal = (item: QuestPlanProposal) =>
+  item.status === "proposed" || item.status === "deferred";
+
+/** Field-level targets of a proposal's work changes, e.g. `p-nav.understanding`. */
+function changedFields(proposal: QuestPlanProposal): ReadonlyArray<string> {
+  return proposal.edits.flatMap((edit) =>
+    edit.type === "change-work"
+      ? Object.keys(edit.after).map((key) => `${edit.workId}.${key}`)
+      : [],
+  );
+}
+
 /**
- * Results, plan proposals and the plan itself as one discussion sees them. Everything here is
- * read on request; nothing is pushed to a discussion when another one records something.
+ * Open proposals that replace the same work field. Applying one makes the other's recorded
+ * before-value stale, so they need one reconciled proposal, not both.
  */
-function questCoordination(state: QuestState, threadId: string | null, workId: string | null) {
+export function questProposalOverlaps(
+  state: QuestState,
+  proposal: QuestPlanProposal,
+): ReadonlyArray<{ readonly proposalId: string; readonly fields: ReadonlyArray<string> }> {
+  const mine = new Set(changedFields(proposal));
+  return state.proposals
+    .filter((item) => item.id !== proposal.id && isOpenProposal(item))
+    .map((item) => ({
+      proposalId: item.id,
+      fields: changedFields(item).filter((field) => mine.has(field)),
+    }))
+    .filter((item) => item.fields.length > 0);
+}
+
+/**
+ * Results, plan proposals and the plan as one discussion first sees them: titles, status and
+ * links, with full records behind `questAgentDetails`. Nothing is pushed to a discussion.
+ */
+function questCoordination(
+  state: QuestState,
+  threadId: string | null,
+  workId: string | null,
+  link: QuestLinker,
+) {
   const member = state.conversations.find((item) => item.threadId === threadId) ?? null;
   const since = member?.sourceRevision ?? null;
-  const proposals = state.proposals.slice(-PROPOSAL_LIMIT);
   return {
     plan: {
       currentWorkId: state.currentWorkId,
@@ -231,63 +271,61 @@ function questCoordination(state: QuestState, threadId: string | null, workId: s
           title: item.title,
           state: item.state,
           ...(item.focus === undefined ? {} : { focus: item.focus }),
+          ...(item.role === "workstream" ? { role: item.role } : {}),
         })),
-      follows: state.relations
-        .filter((item) => item.type === "follows")
-        .map((item) => ({ id: item.id, from: item.from, to: item.to })),
+      follows: state.relations.filter((item) => item.type === "follows").length,
     },
     results: state.contributions.slice(-RESULT_LIMIT).map((item) => ({
       id: item.id,
-      title: item.title,
+      link: link("result", item.id, item.title),
       disposition: item.disposition,
-      dispositionBy: item.dispositionBy,
       fromYou: threadId !== null && item.source?.threadId === threadId,
       affectsYourWork: touches(state, item, workId),
       newSinceYourContext: since !== null && item.recordedRevision > since,
-      source: item.source,
+      sourceThreadId: item.source?.threadId ?? null,
       provenance: item.provenance,
       workId: item.workId,
       affectedWorkIds: item.affectedWorkIds,
       recordedRevision: item.recordedRevision,
-      contextRevision: item.contextRevision,
-      summary: bounded(item.summary),
-      candidate: bounded(item.candidate),
-      evidence: item.evidence,
-      limitations: bounded(item.limitations),
-      openQuestions: bounded(item.openQuestions),
       supersedes: item.supersedes,
-      sources: item.sources.map((pin) => ({
-        documentId: pin.documentId,
-        path: pin.path,
-        pinnedSha256: pin.sha256,
-      })),
+      ...(item.disposition === "open"
+        ? { summaryExcerpt: oneLine(item.summary, EXCERPT_LIMIT) }
+        : {}),
     })),
-    proposals: proposals.map((item) => {
+    proposals: state.proposals.slice(-PROPOSAL_LIMIT).map((item) => {
       const decided = item.decisions.at(-1) ?? null;
-      const open = item.status === "proposed" || item.status === "deferred";
-      const checks = open
-        ? questPlanEditChecks(state, item.edits, new Set(item.edits.map((edit) => edit.id)))
-        : null;
+      if (!isOpenProposal(item))
+        return {
+          id: item.id,
+          link: link("proposal", item.id, item.title),
+          status: item.status,
+          decidedRevision: decided?.revision ?? null,
+        };
+      const checks = questPlanEditChecks(
+        state,
+        item.edits,
+        new Set(item.edits.map((edit) => edit.id)),
+      );
+      const overlaps = questProposalOverlaps(state, item);
       return {
         id: item.id,
-        title: item.title,
+        link: link("proposal", item.id, item.title),
         status: item.status,
         fromYou: threadId !== null && item.source?.threadId === threadId,
-        source: item.source,
-        provenance: item.provenance,
+        sourceThreadId: item.source?.threadId ?? null,
         baseRevision: item.baseRevision,
-        rationale: bounded(item.rationale),
         contributionIds: item.contributionIds,
         supersedes: item.supersedes,
-        edits: item.edits.map((edit) => ({
-          id: edit.id,
-          ...questPlanEditSummary(state, edit),
-          ...(checks ? { check: checks.get(edit.id)?.status ?? null } : {}),
-          ...(decided?.status === "applied"
-            ? { applied: decided.selectedEditIds.includes(edit.id) }
-            : {}),
-        })),
-        lastDecision: decided,
+        edits: item.edits.map((edit) => {
+          const summary = questPlanEditSummary(state, edit);
+          return {
+            id: edit.id,
+            label:
+              edit.type === "add-follows" ? `${summary.label}: ${summary.after}` : summary.label,
+            check: checks.get(edit.id)?.status ?? null,
+          };
+        }),
+        ...(overlaps.length > 0 ? { overlapsOpenProposals: overlaps } : {}),
       };
     }),
     sinceYourContext:
@@ -303,14 +341,16 @@ function questCoordination(state: QuestState, threadId: string | null, workId: s
               )
               .map((item) => item.id),
           },
+    more: "Excerpts only. Read full records with t3_quest_context resultIds or proposalIds (summary, evidence, limitations, exact edit before/after values), plan: true for dependencies, revision for an earlier saved state, and documents with Read at workspace.root + path.",
   };
 }
 
-/** Current, bounded context for an agent in a Quest conversation. History is a separate read. */
+/** Bounded orientation for an agent in a Quest conversation. Full records are a separate read. */
 export function questAgentContext(
   state: QuestState,
   threadId: string | null,
   identity: QuestIdentity,
+  link: QuestLinker,
 ) {
   const member = state.conversations.find((item) => item.threadId === threadId) ?? null;
   // The core coordinates whatever is current now; a focused discussion keeps its own subject.
@@ -348,6 +388,7 @@ export function questAgentContext(
     work: work
       ? {
           id: work.id,
+          link: link("work", work.id, work.title),
           title: work.title,
           state: work.state,
           understanding: bounded(work.understanding),
@@ -356,6 +397,18 @@ export function questAgentContext(
           documentIds: work.documentIds,
         }
       : null,
+    // Registered documents live in the workspace; their current bytes are read from disk.
+    workspace: {
+      root: state.workspace?.root ?? null,
+      documents: state.files.map((file) => ({
+        id: file.id,
+        path: file.path,
+        link: link("document", file.id, file.title),
+        usedBy: state.work
+          .filter((item) => item.documentIds.includes(file.id))
+          .map((item) => item.id),
+      })),
+    },
     obligations: state.questions
       .filter(
         (item) =>
@@ -378,6 +431,7 @@ export function questAgentContext(
       })),
     conversations: state.conversations.map((item) => ({
       threadId: item.threadId,
+      title: item.title,
       role: item.role,
       purposeKind: item.purposeKind,
       purpose: item.purpose,
@@ -400,6 +454,90 @@ export function questAgentContext(
       path: item.path,
       status: item.status,
     })),
-    ...questCoordination(state, threadId, workId),
+    ...questCoordination(state, threadId, workId, link),
+  };
+}
+
+interface QuestDetailSelection {
+  readonly resultIds?: ReadonlyArray<string> | undefined;
+  readonly proposalIds?: ReadonlyArray<string> | undefined;
+  readonly plan?: boolean | undefined;
+}
+
+/** Full records the orientation only lists, including the exact values each edit replaces. */
+export function questAgentDetails(
+  state: QuestState,
+  identity: QuestIdentity,
+  link: QuestLinker,
+  selection: QuestDetailSelection,
+) {
+  const resultIds = selection.resultIds ?? [];
+  const proposalIds = selection.proposalIds ?? [];
+  const results = state.contributions.filter((item) => resultIds.includes(item.id));
+  const proposals = state.proposals.filter((item) => proposalIds.includes(item.id));
+  const missing = [
+    ...resultIds.filter((id) => !results.some((item) => item.id === id)),
+    ...proposalIds.filter((id) => !proposals.some((item) => item.id === id)),
+  ];
+  return {
+    questId: identity.id,
+    revision: state.revision,
+    ...(missing.length > 0 ? { missing } : {}),
+    ...(results.length > 0
+      ? {
+          results: results.map((item) => ({
+            ...item,
+            link: link("result", item.id, item.title),
+            sources: item.sources.map((pin) => ({
+              documentId: pin.documentId,
+              path: pin.path,
+              pinnedSha256: pin.sha256,
+              unavailable: pin.unavailable,
+            })),
+          })),
+        }
+      : {}),
+    ...(proposals.length > 0
+      ? {
+          proposals: proposals.map((item) => {
+            const checks = isOpenProposal(item)
+              ? questPlanEditChecks(state, item.edits, new Set(item.edits.map((edit) => edit.id)))
+              : null;
+            return {
+              ...item,
+              link: link("proposal", item.id, item.title),
+              edits: item.edits.map((edit) => ({
+                ...edit,
+                label: questPlanEditSummary(state, edit).label,
+                ...(checks ? { check: checks.get(edit.id) ?? null } : {}),
+              })),
+              ...(isOpenProposal(item)
+                ? { overlapsOpenProposals: questProposalOverlaps(state, item) }
+                : {}),
+            };
+          }),
+        }
+      : {}),
+    ...(selection.plan
+      ? {
+          plan: {
+            currentWorkId: state.currentWorkId,
+            work: state.work.map((item) => ({
+              id: item.id,
+              parentId: item.parentId,
+              kind: item.kind,
+              title: item.title,
+              state: item.state,
+              ...(item.focus === undefined ? {} : { focus: item.focus }),
+              ...(item.role === undefined ? {} : { role: item.role }),
+              ...(item.phase === undefined ? {} : { phase: item.phase }),
+              ...(item.workstreamIds === undefined ? {} : { workstreamIds: item.workstreamIds }),
+            })),
+            follows: state.relations
+              .filter((item) => item.type === "follows")
+              .map((item) => ({ id: item.id, from: item.from, to: item.to })),
+          },
+        }
+      : {}),
   };
 }
