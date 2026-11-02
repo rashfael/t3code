@@ -61,7 +61,6 @@ vi.mock("~/state/entities", () => ({
 vi.mock("~/state/filesystem", () => ({
   useFilesystemReadAccess: () => ({ canReadFiles: true, isPending: false, error: null }),
 }));
-vi.mock("~/hooks/useThreadRouteTarget", () => ({ useThreadRouteRef: () => state.threadRef }));
 vi.mock("~/hooks/useSettings", () => ({
   useClientSettings: (select: (settings: ClientSettings) => unknown) =>
     select(DEFAULT_CLIENT_SETTINGS),
@@ -194,7 +193,12 @@ it.each([
     using context = setup(failedBaseRef);
     await using screen = await render(
       <RegistryContext.Provider value={context.registry}>
-        <DiffPanel composerDraftTarget={context.threadRef} workspaceMutationId={null} visible />
+        <DiffPanel
+          threadRef={context.threadRef}
+          composerDraftTarget={context.threadRef}
+          workspaceMutationId={null}
+          visible
+        />
       </RegistryContext.Provider>,
     );
     await expect.element(screen.getByText(errorMessage, { exact: true })).toBeVisible();
