@@ -71,6 +71,15 @@ export function useQuestConversationThreads(): ReadonlyMap<string, EnvironmentTh
   );
 }
 
+/** A discussion's name: its thread's own title once generated or renamed, else what the Quest recorded. */
+export function conversationName(
+  conversation: QuestConversation,
+  thread: Pick<EnvironmentThreadShell, "title"> | null | undefined,
+): string {
+  if (thread && thread.title !== conversation.title) return thread.title;
+  return conversation.purpose || conversation.title;
+}
+
 export function conversationStatusLabel(thread: EnvironmentThreadShell | null): string {
   if (!thread) return "not available";
   if (thread.deletedAt) return "deleted";
@@ -520,7 +529,7 @@ function ConversationSelector({
     label:
       item.role === "core"
         ? "Coordinate the Quest"
-        : item.purpose || threads.get(item.threadId)?.title || item.title,
+        : conversationName(item, threads.get(item.threadId)),
   }));
   return (
     <div className="flex h-9 shrink-0 items-center gap-2 border-b px-3">
@@ -873,7 +882,7 @@ function ConversationRow({
           />
         )}
         <span className="min-w-0 flex-1">
-          <span className="block truncate">{item.purpose || shell?.title || item.title}</span>
+          <span className="block truncate">{conversationName(item, shell)}</span>
           <span className="block truncate text-xs text-muted-foreground">
             {purposeLabels[item.purposeKind]}
             {about ? ` · ${about}` : ""} · {presence.label}

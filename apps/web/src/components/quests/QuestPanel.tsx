@@ -12,7 +12,11 @@ import type { ReactNode } from "react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { useQuest, type PanelEntry, type QuestCellEntry } from "./questContext";
-import { conversationStatusLabel, useQuestConversationThreads } from "./QuestConversations";
+import {
+  conversationName,
+  conversationStatusLabel,
+  useQuestConversationThreads,
+} from "./QuestConversations";
 import { DocumentAssociations, HandoffEditor, useEditorDraft, WorkEditor } from "./QuestEditors";
 import { ReconstructRevision } from "./QuestDocuments";
 import { QuestMapCellDetail } from "./QuestMapCellDetail";
@@ -360,8 +364,7 @@ function WorkInspector({ id, preview }: { id: string; preview: boolean }) {
                       className="block text-start underline"
                       onClick={() => showView("conversation", { thread: item.threadId })}
                     >
-                      {item.purpose || thread?.title || item.title} (
-                      {conversationStatusLabel(thread)})
+                      {conversationName(item, thread)} ({conversationStatusLabel(thread)})
                     </button>
                   );
                 })}

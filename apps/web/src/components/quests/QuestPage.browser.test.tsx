@@ -1454,7 +1454,10 @@ it("reads documents from one tree, keeps reading state, compares a pin and share
           },
         ],
       }),
-      conversation("talk-1", "Second talk"),
+      conversation("talk-1", "Example · New discussion", {
+        purposeKind: "digress",
+        purpose: "New discussion",
+      }),
     ],
     workspace: { root: "/quest", registeredAt: at },
     files: [{ id: "plan-file", path: "plan.md", title: "Plan", registeredAt: at }],
@@ -1463,7 +1466,8 @@ it("reads documents from one tree, keeps reading state, compares a pin and share
   // The file was read before the comparison was asked for; only a fresh read may complete it.
   harness.files = { "plan-file": { content: "Current plan line", sha256: "now-plan", readAt: 1 } };
   harness.canReadFiles = true;
-  harness.shells = [shell("core-1"), shell("talk-1")];
+  // The thread titled itself on its first send; the Quest kept its placeholder purpose.
+  harness.shells = [shell("core-1"), shell("talk-1", { title: "Second talk" })];
   await page.viewport(1500, 900);
   await using _viewport = { [Symbol.asyncDispose]: () => page.viewport(414, 896) };
   const { screen, router } = await renderRoutes("/quests?view=documents");
